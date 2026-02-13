@@ -39,7 +39,12 @@
       "options": {
         "targetName": "test"
       },
-      "exclude": ["apps/mova-back-e2e/**/*"]
+      "exclude": [
+        "apps/mova-back-e2e/**/*",
+        "apps/api-gateway-e2e/**/*",
+        "apps/agent-worker-e2e/**/*",
+        "apps/realtime-service-e2e/**/*"
+      ]
     }
   ]
 }

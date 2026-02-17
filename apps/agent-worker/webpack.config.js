@@ -2,12 +2,16 @@ const { NxAppWebpackPlugin } = require('@nx/webpack/app-plugin');
 const { join } = require('path');
 
 module.exports = {
+  entry: {
+    main: join(__dirname, './src/main.ts'),
+    // Увага: переконайтеся, що файл лежить саме в src/agent.logic.ts
+    'agent.logic': join(__dirname, './src/agent.logic.ts'),
+  },
   output: {
     path: join(__dirname, '../../dist/apps/agent-worker'),
+    filename: '[name].js', // Повертаємо .js
+    libraryTarget: 'commonjs', // Це дозволить LiveKit коректно імпортувати бандл
     clean: true,
-    ...(process.env.NODE_ENV !== 'production' && {
-      devtoolModuleFilenameTemplate: '[absolute-resource-path]',
-    }),
   },
   plugins: [
     new NxAppWebpackPlugin({

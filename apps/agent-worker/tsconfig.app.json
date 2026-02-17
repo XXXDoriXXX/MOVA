@@ -2,18 +2,13 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "outDir": "../../dist/out-tsc",
-    "module": "commonjs",
+    "module": "CommonJS", // ПОВЕРТАЄМО CommonJS
+    "moduleResolution": "node",
+    "target": "es2021",
     "types": ["node"],
     "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
-    "target": "es2021",
-    "moduleResolution": "node"
+    "emitDecoratorMetadata": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": [
-    "jest.config.ts",
-    "jest.config.cts",
-    "src/**/*.spec.ts",
-    "src/**/*.test.ts"
-  ]
+  "exclude": ["src/**/*.spec.ts"]
 }

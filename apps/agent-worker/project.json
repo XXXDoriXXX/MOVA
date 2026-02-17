@@ -6,15 +6,40 @@
   "tags": [],
   "targets": {
     "build": {
-      "executor": "nx:run-commands",
+      "executor": "@nx/webpack:webpack",
+      "outputs": ["{options.outputPath}"],
+      "defaultConfiguration": "production",
       "options": {
-        "command": "webpack-cli build",
-        "args": ["--node-env=production"],
-        "cwd": "apps/agent-worker"
+        "target": "node",
+        "compiler": "tsc",
+        "outputPath": "dist/apps/agent-worker",
+        "main": "apps/agent-worker/src/main.ts",
+        "tsConfig": "apps/agent-worker/tsconfig.app.json",
+        "webpackConfig": "apps/agent-worker/webpack.config.js",
+        "additionalEntryPoints": [
+          {
+            "entryName": "worker",
+            "entryPath": "apps/agent-worker/src/worker.entry.ts"
+          }
+        ],
+        "assets": ["apps/agent-worker/src/assets"]
       },
       "configurations": {
         "development": {
-          "args": ["--node-env=development"]
+          "optimization": false,
+          "extractLicenses": false,
+          "inspect": false
+        },
+        "production": {
+          "optimization": true,
+          "extractLicenses": true,
+          "inspect": false,
+          "fileReplacements": [
+            {
+              "replace": "apps/agent-worker/src/environments/environment.ts",
+              "with": "apps/agent-worker/src/environments/environment.prod.ts"
+            }
+          ]
         }
       }
     },

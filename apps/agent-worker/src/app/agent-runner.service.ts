@@ -1,58 +1,162 @@
-// agent-runner.service.ts
-import { Injectable, OnApplicationBootstrap, Logger } from '@nestjs/common';
+
+import { Injectable, OnApplicationBootstrap, Logger, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { WorkerOptions, cli } from '@livekit/agents';
-import { join } from 'path';
-import { existsSync } from 'fs';
+import { Room, RoomEvent } from '@livekit/rtc-node';
+import { AccessToken } from 'livekit-server-sdk';
+import * as silero from '@livekit/agents-plugin-silero';
+import { initializeLogger } from '@livekit/agents';
+import { AgentFactory, AgentContext } from './agent/agent.factory';
+import { REDIS_CLIENT } from '@mova-back/shared-redis';
+import { Redis } from 'ioredis';
 
 @Injectable()
 export class AgentRunnerService implements OnApplicationBootstrap {
   private readonly logger = new Logger(AgentRunnerService.name);
+  private vadModel: silero.VAD;
+  private subscriber: Redis;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly agentFactory: AgentFactory,
+    @Inject(REDIS_CLIENT) private readonly redis: Redis,
+  ) {
+    this.logger.debug('🛠 [Init] Duplicating Redis client for SUB connection...');
+    this.subscriber = this.redis.duplicate();
+  }
 
   async onApplicationBootstrap() {
-    if (process.env.NODE_ENV === 'test') return;
-
-    const apiKey = this.config.getOrThrow<string>('LIVEKIT_API_KEY');
-    const apiSecret = this.config.getOrThrow<string>('LIVEKIT_API_SECRET');
-    const wsURL = this.config.getOrThrow<string>('LIVEKIT_URL');
-
-    // Environment-aware resolution (Враховуємо різницю між локальним Nx та Docker)
-    const isProd = process.env.NODE_ENV === 'production';
-
-    // В Docker CMD ["node", "dist/main.js"] виконується з /app
-    // Локально Nx виконує з root директорії воркспейсу
-    const workerPath = isProd
-      ? join(process.cwd(), 'dist', 'worker.js')
-      : join(process.cwd(), 'dist/apps/agent-worker', 'worker.js');
-
-    this.logger.log(`🚀 Resolving LiveKit Worker at: ${workerPath}`);
-
-    // Fail-Fast Pattern: запобігаємо silent failures, якщо файл збірки відсутній
-    if (!existsSync(workerPath)) {
-      this.logger.error(`🚨 Fatal: Worker entry not found at ${workerPath}. Halting agent runner.`);
+    if (process.env.NODE_ENV === 'test') {
+      this.logger.warn('⚠️ [Bootstrap] Test environment detected. Skipping worker initialization.');
       return;
     }
 
-    const command = isProd ? 'start' : 'dev';
-
-    if (!process.argv.includes(command) && !process.argv.includes('start') && !process.argv.includes('dev')) {
-      process.argv.push(command);
-    }
+    this.logger.log('🚀 [Bootstrap] Starting Embedded LiveKit Worker initialization process...');
 
     try {
-      await cli.runApp(
-        new WorkerOptions({
-          agent: workerPath,
-          apiKey,
-          apiSecret,
-          wsURL,
-          production: isProd,
-        })
-      );
-    } catch (err: any) {
-      this.logger.error(`❌ Worker Runner Failed: ${err.message}`, err.stack);
+      this.logger.debug('🛠 [Init] Initializing LiveKit internal logger...');
+   initializeLogger({ level: 'info', pretty: false });
+
+      this.logger.debug('🧠 [VAD] Pre-warming Silero VAD model...');
+      const vadStartTime = Date.now();
+
+      // Memory management: singleton instance is maintained here
+      this.vadModel = await silero.VAD.load();
+
+      this.logger.log(`✅ [VAD] Silero VAD loaded into memory in ${Date.now() - vadStartTime}ms`);
+
+      this.logger.debug('📡 [Redis] Subscribing to "call-dispatch" channel...');
+      this.subscriber.subscribe('call-dispatch', (err) => {
+        if (err) {
+          this.logger.error(`❌ [Redis] Failed to subscribe to call-dispatch: ${err.message}`, err.stack);
+        } else {
+          this.logger.log('🎧 [Redis] Successfully subscribed. Listening for new calls from API Gateway...');
+        }
+      });
+
+      this.subscriber.on('message', async (channel, message) => {
+        if (channel === 'call-dispatch') {
+          this.logger.debug(`📥 [Redis] Received message on channel "${channel}": ${message}`);
+
+          try {
+            const payload = JSON.parse(message);
+            if (payload.roomName) {
+              this.logger.log(`⚡ [Event] Triggering direct call handler for room: ${payload.roomName}`);
+
+              // Non-blocking execution
+              this.handleDirectCall(payload.roomName).catch(err =>
+                this.logger.error(`🚨 [Fatal] Unhandled error in call loop for room ${payload.roomName}`, err.stack)
+              );
+            } else {
+              this.logger.warn(`⚠️ [Payload] Received payload without roomName: ${message}`);
+            }
+          } catch (parseError) {
+            this.logger.error(`❌ [Payload] Failed to parse Redis message: ${message}`, parseError.stack);
+          }
+        }
+      });
+
+    } catch (bootstrapError) {
+      this.logger.error(`🚨 [Bootstrap] Critical failure during initialization`, bootstrapError.stack);
+    }
+  }
+
+  private async handleDirectCall(roomName: string) {
+    const callStartTime = Date.now();
+    this.logger.log(`📞 [Call Lifecycle] Initiating connection sequence for room: ${roomName}`);
+
+    try {
+      // Context Retrieval
+      const redisKey = `call:${roomName}:context`;
+      this.logger.debug(`🔍 [Context] Fetching user context from Redis key: ${redisKey}`);
+      const contextRaw = await this.redis.get(redisKey);
+
+      if (!contextRaw) {
+        this.logger.warn(`🛑 [Context] Missing context for room ${roomName}. Aborting connection.`);
+        return;
+      }
+
+      this.logger.debug(`✅ [Context] Successfully retrieved raw context: ${contextRaw}`);
+      const userContext: AgentContext = JSON.parse(contextRaw);
+
+      // Token Generation
+      this.logger.debug('🔐 [Auth] Generating LiveKit Access Token...');
+      const apiKey = this.config.getOrThrow<string>('LIVEKIT_API_KEY');
+      const apiSecret = this.config.getOrThrow<string>('LIVEKIT_API_SECRET');
+      const wsURL = this.config.getOrThrow<string>('LIVEKIT_URL');
+
+      const at = new AccessToken(apiKey, apiSecret, {
+        identity: `agent-${roomName}`,
+        name: userContext.userName,
+      });
+      at.addGrant({ roomJoin: true, room: roomName, canPublish: true, canSubscribe: true });
+      const token = await at.toJwt();
+      this.logger.debug('✅ [Auth] Token generated successfully');
+
+      // Room Connection
+      this.logger.debug(`🌐 [WebRTC] Connecting to LiveKit server at ${wsURL}...`);
+      const room = new Room();
+
+      const connectStartTime = Date.now();
+      await room.connect(wsURL, token);
+      this.logger.log(`✅ [WebRTC] Agent joined room "${roomName}" in ${Date.now() - connectStartTime}ms`);
+
+      // Agent Initialization
+      this.logger.debug('🤖 [Agent] Creating agent session and AI pipeline...');
+      const session = await this.agentFactory.createSession(this.vadModel);
+      const agent = this.agentFactory.createAgent(userContext);
+
+      // Event Binding
+      this.logger.debug('🔗 [Events] Binding speech commit listeners...');
+      const sessionEmitter = session as any;
+
+      const publishEvent = (sender: string, text: string) => {
+        this.logger.debug(`📤 [Event] Publishing speech committed by ${sender}`);
+        this.redis.publish('call-events', JSON.stringify({ roomName, sender, text, timestamp: new Date() }))
+          .catch(err => this.logger.error(`❌ [Event] Failed to publish event: ${err.message}`));
+      };
+
+      sessionEmitter.on('user_speech_committed', (msg: { content: string }) => publishEvent('user', msg.content));
+      sessionEmitter.on('agent_speech_committed', (msg: { content: string }) => publishEvent('agent', msg.content));
+
+      // Lifecycle Events
+      room.on(RoomEvent.Disconnected, () => {
+        const duration = Date.now() - callStartTime;
+        this.logger.log(`🚪 [Call Lifecycle] Room "${roomName}" disconnected. Call duration: ${duration}ms`);
+      });
+
+      // Session Start
+      this.logger.debug('▶️ [Agent] Starting session pipeline...');
+      session.start({ room, agent });
+
+      this.logger.debug('🗣 [Agent] Initiating greeting...');
+      await session.say(this.agentFactory.getInitialGreeting(userContext), {
+        allowInterruptions: false,
+      });
+
+      this.logger.log(`🎉 [Call Lifecycle] Connection sequence completed for room ${roomName} in ${Date.now() - callStartTime}ms`);
+
+    } catch (error: any) {
+      this.logger.error(`❌ [Call Lifecycle] Fatal error in room ${roomName}: ${error.message}`, error.stack);
     }
   }
 }

@@ -59,6 +59,12 @@ export class CallService {
 
       this.logger.log(`✅ Call initiated. Participant ID: ${participant.participantId}`);
 
+      const eventPayload = JSON.stringify({ roomName });
+
+      // Публікуємо подію в канал 'call-dispatch', який слухає наш In-Process Worker
+      await this.redis.publish('call-dispatch', eventPayload);
+      
+      this.logger.log(`📢 [Pub/Sub] Dispatched call event to worker for room: ${roomName}`);
       return {
         success: true,
         roomName,

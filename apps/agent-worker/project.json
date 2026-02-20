@@ -17,12 +17,6 @@
         "main": "apps/agent-worker/src/main.ts",
         "tsConfig": "apps/agent-worker/tsconfig.app.json",
         "webpackConfig": "apps/agent-worker/webpack.config.js",
-        "additionalEntryPoints": [
-          {
-            "entryName": "worker",
-            "entryPath": "apps/agent-worker/src/worker.entry.ts"
-          }
-        ],
         "assets": ["apps/agent-worker/src/assets"]
       },
       "configurations": {

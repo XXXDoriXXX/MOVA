@@ -1,5 +1,5 @@
 
-import { Injectable, OnApplicationBootstrap, Logger, Inject } from '@nestjs/common';
+import { Injectable, OnApplicationBootstrap,OnApplicationShutdown, Logger, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Room, RoomEvent } from '@livekit/rtc-node';
 import { AccessToken } from 'livekit-server-sdk';
@@ -10,10 +10,12 @@ import { REDIS_CLIENT } from '@mova-back/shared-redis';
 import { Redis } from 'ioredis';
 
 @Injectable()
-export class AgentRunnerService implements OnApplicationBootstrap {
+export class AgentRunnerService implements OnApplicationBootstrap, OnApplicationShutdown {
   private readonly logger = new Logger(AgentRunnerService.name);
   private vadModel: silero.VAD;
   private subscriber: Redis;
+
+  private activeRooms = new Map<string, Room>();
 
   constructor(
     private readonly config: ConfigService,
@@ -80,6 +82,33 @@ export class AgentRunnerService implements OnApplicationBootstrap {
     }
   }
 
+  async onApplicationShutdown(signal?: string) {
+    this.logger.log(`🛑 [Shutdown] Received OS signal: ${signal}. Initiating Graceful Shutdown sequence...`);
+
+    if (this.subscriber) {
+      await this.subscriber.unsubscribe('call-dispatch');
+      this.logger.log('🛑 [Shutdown] Unsubscribed from Redis. Stopped accepting new calls.');
+    }
+    //close all active rooms
+    if (this.activeRooms.size > 0) {
+      this.logger.log(`⏳ [Shutdown] Draining ${this.activeRooms.size} active WebRTC connections...`);
+
+      const disconnectPromises = Array.from(this.activeRooms.values()).map(room => room.disconnect());
+      await Promise.all(disconnectPromises);
+
+      this.activeRooms.clear();
+      this.logger.log('✅ [Shutdown] All active rooms safely disconnected.');
+    }
+
+    //clsoe redis connections
+    if (this.subscriber) {
+      this.subscriber.quit();
+      this.logger.log('✅ [Shutdown] Redis connections closed.');
+    }
+
+    this.logger.log('👋 [Shutdown] Graceful Shutdown complete. Process will exit safely.');
+  }
+
   private async handleDirectCall(roomName: string) {
     const callStartTime = Date.now();
     this.logger.log(`📞 [Call Lifecycle] Initiating connection sequence for room: ${roomName}`);
@@ -116,6 +145,8 @@ export class AgentRunnerService implements OnApplicationBootstrap {
       this.logger.debug(`🌐 [WebRTC] Connecting to LiveKit server at ${wsURL}...`);
       const room = new Room();
 
+      this.activeRooms.set(roomName, room);
+
       const connectStartTime = Date.now();
       await room.connect(wsURL, token);
       this.logger.log(`✅ [WebRTC] Agent joined room "${roomName}" in ${Date.now() - connectStartTime}ms`);
@@ -140,6 +171,7 @@ export class AgentRunnerService implements OnApplicationBootstrap {
 
       // Lifecycle Events
       room.on(RoomEvent.Disconnected, () => {
+        this.activeRooms.delete(roomName);
         const duration = Date.now() - callStartTime;
         this.logger.log(`🚪 [Call Lifecycle] Room "${roomName}" disconnected. Call duration: ${duration}ms`);
       });

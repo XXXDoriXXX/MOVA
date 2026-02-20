@@ -57,6 +57,9 @@ services:
       restart: always
       ports:
         - "3001:3001"
+      dns:
+        - 8.8.8.8
+        - 8.8.4.4
       env_file:
         - .env # Injects LIVEKIT_*, OPENAI_API_KEY, etc.
       environment:

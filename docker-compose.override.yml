@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: base
+    command: npx nx serve api-gateway --host 0.0.0.0 --skip-nx-cache
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/dist          # Ізолюємо результати збірки від Windows
+      - /app/.nx
+    environment:
+      NODE_ENV: development
+      NPM_CONFIG_CACHE: /tmp/.npm
+      NX_DAEMON: "false"   # Вимикаємо демона для стабільності в Docker
+
+  agent-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: base
+    command: npx nx serve agent-worker --host 0.0.0.0
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/dist          # Ізолюємо результати збірки від Windows
+      - /app/.nx/cache     # Ізолюємо кеш Nx
+    environment:
+      NODE_ENV: development
+      NPM_CONFIG_CACHE: /tmp/.npm
+      NX_DAEMON: "false"   # Вимикаємо демона для стабільності в Docker
+      NX_SKIP_NX_CACHE: "true"

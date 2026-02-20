@@ -1,9 +1,10 @@
 version: '3.8'
 
 services:
+
   redis:
     image: redis/redis-stack:latest
-    container_name: voice-agent-redis
+    container_name: mova_redis
     ports:
       - "6379:6379"
       - "8001:8001"
@@ -12,10 +13,79 @@ services:
     volumes:
       - redis_data:/data
     networks:
-      - voice-network
+      - mova_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "fish-potato-table", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_NAME: api-gateway
+    container_name: mova_gateway
+    restart: always
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env # Injects LIVEKIT_*, OPENAI_API_KEY, etc.
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      # Internal Docker networking variables override .env
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      AGENT_SERVICE_URL: http://agent-worker:3001
+    depends_on:
+      redis:
+        condition: service_healthy
+      agent-worker:
+        condition: service_started
+    networks:
+      - mova_network
+
+  agent-worker:
+      build:
+        context: .
+        dockerfile: Dockerfile
+        args:
+          APP_NAME: agent-worker
+      container_name: mova_agent_worker
+      restart: always
+      ports:
+        - "3001:3001"
+      env_file:
+        - .env # Injects LIVEKIT_*, OPENAI_API_KEY, etc.
+      environment:
+        NODE_ENV: production
+        PORT: 3001
+        RUN_MODE: start
+        REDIS_HOST: redis
+        REDIS_PORT: 6379
+      depends_on:
+        redis:
+          condition: service_healthy
+      networks:
+        - mova_network
+
+  # 3. Приклад ще одного сервісу (на майбутнє)
+  # auth-service:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #     args:
+  #       APP_NAME: auth-service
+  #   container_name: mova_auth
+  #   environment:
+  #     REDIS_HOST: redis
+  #   networks:
+  #     - mova_network
 
 networks:
-  voice-network:
+  mova_network:
     driver: bridge
 
 volumes:

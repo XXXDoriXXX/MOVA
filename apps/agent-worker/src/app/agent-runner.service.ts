@@ -1,7 +1,9 @@
+// agent-runner.service.ts
 import { Injectable, OnApplicationBootstrap, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WorkerOptions, cli } from '@livekit/agents';
 import { join } from 'path';
+import { existsSync } from 'fs';
 
 @Injectable()
 export class AgentRunnerService implements OnApplicationBootstrap {
@@ -16,14 +18,26 @@ export class AgentRunnerService implements OnApplicationBootstrap {
     const apiSecret = this.config.getOrThrow<string>('LIVEKIT_API_SECRET');
     const wsURL = this.config.getOrThrow<string>('LIVEKIT_URL');
 
-    const workerPath = join(process.cwd(), 'dist/apps/agent-worker/worker.js');
+    // Environment-aware resolution (Враховуємо різницю між локальним Nx та Docker)
+    const isProd = process.env.NODE_ENV === 'production';
 
-    this.logger.log(`🚀 Initializing LiveKit Worker from: ${workerPath}`);
+    // В Docker CMD ["node", "dist/main.js"] виконується з /app
+    // Локально Nx виконує з root директорії воркспейсу
+    const workerPath = isProd
+      ? join(process.cwd(), 'dist', 'worker.js')
+      : join(process.cwd(), 'dist/apps/agent-worker', 'worker.js');
 
-    const command = process.env.NODE_ENV === 'production' ? 'start' : 'dev';
+    this.logger.log(`🚀 Resolving LiveKit Worker at: ${workerPath}`);
+
+    // Fail-Fast Pattern: запобігаємо silent failures, якщо файл збірки відсутній
+    if (!existsSync(workerPath)) {
+      this.logger.error(`🚨 Fatal: Worker entry not found at ${workerPath}. Halting agent runner.`);
+      return;
+    }
+
+    const command = isProd ? 'start' : 'dev';
 
     if (!process.argv.includes(command) && !process.argv.includes('start') && !process.argv.includes('dev')) {
-      this.logger.log(`🔧 Injecting CLI command: ${command}`);
       process.argv.push(command);
     }
 
@@ -34,7 +48,7 @@ export class AgentRunnerService implements OnApplicationBootstrap {
           apiKey,
           apiSecret,
           wsURL,
-          production: process.env.NODE_ENV === 'production',
+          production: isProd,
         })
       );
     } catch (err: any) {

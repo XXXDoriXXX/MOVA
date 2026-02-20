@@ -12,6 +12,7 @@
       "options": {
         "target": "node",
         "compiler": "tsc",
+        "externalDependencies": "all",
         "outputPath": "dist/apps/agent-worker",
         "main": "apps/agent-worker/src/main.ts",
         "tsConfig": "apps/agent-worker/tsconfig.app.json",

@@ -114,7 +114,6 @@ export class AgentRunnerService implements OnApplicationBootstrap, OnApplication
     this.logger.log(`📞 [Call Lifecycle] Initiating connection sequence for room: ${roomName}`);
 
     try {
-      // Context Retrieval
       const redisKey = `call:${roomName}:context`;
       this.logger.debug(`🔍 [Context] Fetching user context from Redis key: ${redisKey}`);
       const contextRaw = await this.redis.get(redisKey);
@@ -156,27 +155,86 @@ export class AgentRunnerService implements OnApplicationBootstrap, OnApplication
       const session = await this.agentFactory.createSession(this.vadModel);
       const agent = this.agentFactory.createAgent(userContext);
 
-      // Event Binding
-      this.logger.debug('🔗 [Events] Binding speech commit listeners...');
+      this.logger.debug('🔗 [Events] Binding SDK events with Type Assertion...');
+
       const sessionEmitter = session as any;
 
-      const publishEvent = (sender: string, text: string) => {
-        this.logger.debug(`📤 [Event] Publishing speech committed by ${sender}`);
-        this.redis.publish('call-events', JSON.stringify({ roomName, sender, text, timestamp: new Date() }))
+      const publishFinalEvent = (sender: string, text: string) => {
+        this.logger.debug(`📤 [Event] Publishing final speech by ${sender}: "${text.substring(0, 30)}..."`);
+        this.redis.publish('call-events', JSON.stringify({ roomName, sender, text, timestamp: new Date(), isFinal: true }))
           .catch(err => this.logger.error(`❌ [Event] Failed to publish event: ${err.message}`));
       };
 
-      sessionEmitter.on('user_speech_committed', (msg: { content: string }) => publishEvent('user', msg.content));
-      sessionEmitter.on('agent_speech_committed', (msg: { content: string }) => publishEvent('agent', msg.content));
+      const publishInterimEvent = (sender: string, text: string) => {
+        this.redis.publish('call-interim-events', JSON.stringify({ roomName, sender, text, isFinal: false }))
+          .catch(err => this.logger.error(`❌ [Interim Event] Failed: ${err.message}`));
+      };
 
-      // Lifecycle Events
-      room.on(RoomEvent.Disconnected, () => {
-        this.activeRooms.delete(roomName);
-        const duration = Date.now() - callStartTime;
-        this.logger.log(`🚪 [Call Lifecycle] Room "${roomName}" disconnected. Call duration: ${duration}ms`);
+      sessionEmitter.on('user_input_transcribed', (ev: any) => {
+        const text = ev.text || ev.transcript || '';
+        if (!text) return;
+
+        if (ev.isFinal) {
+          publishFinalEvent('user', text);
+        } else {
+          publishInterimEvent('user', text);
+        }
       });
 
-      // Session Start
+      sessionEmitter.on('conversation_item_added', (ev: any) => {
+        const item = ev?.item;
+        if (!item || item.role !== 'assistant') return;
+
+        let text = '';
+        if (typeof item.content === 'string') {
+          text = item.content;
+        } else if (Array.isArray(item.content) && item.content.length > 0) {
+          text = item.content[0]?.text || '';
+        }
+
+        if (text) publishFinalEvent('agent', text);
+      });
+      const controlSubscriber = this.redis.duplicate();
+      controlSubscriber.subscribe('call-controls');
+
+      controlSubscriber.on('message', async (channel, message) => {
+        const payload = JSON.parse(message);
+
+        if (payload.roomName === roomName && payload.action === 'interrupt_and_speak') {
+          this.logger.log(`🛑 [Agent Control] Interrupting AI in room ${roomName}.`);
+
+          try {
+            session.interrupt();
+            await session.say(payload.text, {
+              allowInterruptions: false,
+              addToChatCtx: true
+            });
+            publishFinalEvent('user_manual', payload.text);
+          } catch (err) {
+            this.logger.error(`❌ [Agent Control] Override failed: ${err.message}`);
+          }
+        }
+      });
+
+
+      room.on(RoomEvent.Disconnected, async () => {
+        this.activeRooms.delete(roomName);
+
+        try {
+          await session.close();
+          this.logger.debug(`🧹 [Memory] AgentSession successfully closed and resources deallocated.`);
+        } catch (err) {
+          this.logger.error(`❌ [Memory] Failed to close AgentSession: ${err.message}`);
+        }
+
+        controlSubscriber.quit().catch(err =>
+          this.logger.error(`❌ [Redis] Failed to quit subscriber`, err)
+        );
+
+        const duration = Date.now() - callStartTime;
+        this.logger.log(`🚪 [Call Lifecycle] Room "${roomName}" disconnected. Call duration: ${duration}ms.`);
+      });
+
       this.logger.debug('▶️ [Agent] Starting session pipeline...');
       session.start({ room, agent });
 

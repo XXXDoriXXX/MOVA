@@ -42,7 +42,9 @@ export class AgentFactory {
       }),
       vad: vad,
       voiceOptions: {
-        allowInterruptions: false,
+        allowInterruptions:true,
+        minEndpointingDelay: 500,
+        maxEndpointingDelay: 1500,
       },
     });
   }

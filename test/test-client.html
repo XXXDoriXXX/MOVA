@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>WebSocket E2E Test</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body>
+<h2>Transcription Monitor</h2>
+<div id="logs" style="background: #1e1e1e; color: #00ff00; padding: 10px; font-family: monospace; height: 400px; overflow-y: scroll;"></div>
+
+<script>
+  const logPanel = document.getElementById('logs');
+  const log = (msg) => logPanel.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+
+  // 1. Connection Establishment (Встановлення з'єднання)
+  const socket = io('http://localhost:3000/call-stream'); // Твій порт API Gateway
+
+  socket.on('connect', () => {
+    log('🟢 Connected to WebSocket Server');
+
+    // 2. Joining the Room (Приєднання до кімнати дзвінка)
+    const testRoomName = 'call-5ca68201-bb89-4982-a68b-630e8f5c5dfe';
+    socket.emit('join-room', { roomName: testRoomName });
+    log(`➡️ Sent join-room event for: ${testRoomName}`);
+  });
+
+  // 3. Event Listeners (Слухачі подій)
+  socket.on('call-interim-events', (data) => {
+    log(`<i>⏳ [Interim] ${data.sender}: ${data.text}</i>`);
+  });
+
+  socket.on('call-events', (data) => {
+    log(`<b>✅ [Final] ${data.sender}: ${data.text}</b>`);
+  });
+
+  socket.on('disconnect', () => log('🔴 Disconnected'));
+</script>
+</body>
+</html>

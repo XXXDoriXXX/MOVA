@@ -24,25 +24,45 @@ export class AgentFactory {
   }
 
   async createSession(vad: silero.VAD) {
-
     const sttModel = this.config.get('DEEPGRAM_MODEL') || 'nova-3';
 
+    const stt = new deepgram.STT({
+      model: sttModel,
+      language: 'uk',
+      smartFormat: true,
+    });
+
+    const llm = new openai.LLM({
+      model: 'gpt-4.1-mini',
+    });
+
+    const tts = new openai.TTS({
+      voice: 'fable',
+      speed: 1.0,
+    });
+
+    const createErrorHandler = (moduleName: string) => (err: any) => {
+      const innerError = err?.error || err;
+
+      if (innerError?.name === 'APIUserAbortError' || innerError?.message?.includes('aborted')) {
+        this.logger.debug(`🛑 [Plugin:${moduleName}] Stream gracefully aborted due to interruption.`);
+        return;
+      }
+
+      this.logger.error(`❌ [Plugin:${moduleName}] Critical Exception: ${innerError?.message}`, innerError?.stack);
+    };
+
+    stt.on('error', createErrorHandler('STT'));
+    llm.on('error', createErrorHandler('LLM'));
+    tts.on('error', createErrorHandler('TTS'));
+
     return new voice.AgentSession({
-      stt: new deepgram.STT({
-        model: sttModel,
-        language: 'uk',
-        smartFormat: true,
-      }),
-      llm: new openai.LLM({
-        model: 'gpt-4.1-mini',
-      }),
-      tts: new openai.TTS({
-        voice: 'fable',
-        speed: 1.0,
-      }),
+      stt: stt,
+      llm: llm,
+      tts: tts,
       vad: vad,
       voiceOptions: {
-        allowInterruptions:true,
+        allowInterruptions: true,
         minEndpointingDelay: 500,
         maxEndpointingDelay: 1500,
       },
@@ -69,7 +89,7 @@ export class AgentFactory {
     1. **Conciseness (Стислість):** Твої відповіді мають бути максимально короткими (1-2 речення). Довгі паузи в телефонії сприймаються як розрив зв'язку.
     2. **No Meta-Talk:** Ніколи не кажи "Я штучний інтелект", "Як ШІ помічник" або "Я передам текст". Ти — людина на іншому кінці дроту.
     3. **No Formatting:** Не використовуй списки, bold, італік або емодзі. Тільки чистий текст для коректної роботи TTS.
-    4. **Handling Uncertainty:** Якщо тобі ставлять питання, на яке немає відповіді в контексті — відповідай: "Хвилинку, я уточню це у себе і повернусь до вас" або "Я запишу це запитання і ми зв'яжемося пізніше".
+    4. **Handling Uncertainty:** Якщо тобі ставлять питання, на яке немає відповіді в контексті — відповідай: "Вибачте, я не знаю відповіді на це питання" або "Я передам це питання людині, оскільки не знаю відповіді".
 
     # INTERACTION PROTOCOL
     - Якщо співрозмовник мовчить: ввічливо перепитай, чи тебе чути.

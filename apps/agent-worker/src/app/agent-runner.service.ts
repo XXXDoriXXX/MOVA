@@ -215,7 +215,16 @@ export class AgentRunnerService implements OnApplicationBootstrap, OnApplication
           }
         }
       });
+      sessionEmitter.on('error', (err: any) => {
 
+        const innerError = err?.error || err;
+
+        if (innerError?.name === 'APIUserAbortError' || innerError?.message?.includes('aborted')) {
+          this.logger.debug('⚠️ [AgentSession] TTS request gracefully aborted due to user interruption.');
+          return;
+        }
+        this.logger.error(`❌ [AgentSession] Unhandled SDK Exception: ${innerError?.message || 'Unknown'}`, innerError?.stack);
+      });
 
       room.on(RoomEvent.Disconnected, async () => {
         this.activeRooms.delete(roomName);

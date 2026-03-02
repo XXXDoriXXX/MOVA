@@ -2,6 +2,9 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { SharedRedisModule } from '@mova-back/shared-redis';
 import { AgentFactory } from './agent.factory';
+import { SttFactory } from './factories/stt.factory';
+import { LlmFactory } from './factories/llm.factory';
+import { TtsFactory } from './factories/tts.factory';
 import { envSchema } from '@mova-back/shared-config';
 
 @Module({
@@ -18,7 +21,7 @@ import { envSchema } from '@mova-back/shared-config';
     }),
     SharedRedisModule,
   ],
-  providers: [AgentFactory],
+  providers: [AgentFactory, SttFactory, LlmFactory, TtsFactory],
   exports: [AgentFactory, SharedRedisModule, ConfigModule],
 })
 export class AgentModule {}

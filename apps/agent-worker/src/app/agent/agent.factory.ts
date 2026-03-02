@@ -1,21 +1,27 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { voice } from '@livekit/agents';
-import * as deepgram from '@livekit/agents-plugin-deepgram';
-import * as openai from '@livekit/agents-plugin-openai';
 import * as silero from '@livekit/agents-plugin-silero';
-import { ConfigService } from '@nestjs/config';
+import { AgentConfigDto } from '@mova-back/shared-agent';
+import { SttFactory } from './factories/stt.factory';
+import { LlmFactory } from './factories/llm.factory';
+import { TtsFactory } from './factories/tts.factory';
 
 export interface AgentContext {
   userName: string;
   userRole: string;
   callReason: string;
+  config?: AgentConfigDto;
 }
 
 @Injectable()
 export class AgentFactory {
   private readonly logger = new Logger(AgentFactory.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly sttFactory: SttFactory,
+    private readonly llmFactory: LlmFactory,
+    private readonly ttsFactory: TtsFactory,
+  ) {}
 
   createAgent(context: AgentContext): voice.Agent {
     return new voice.Agent({
@@ -23,28 +29,42 @@ export class AgentFactory {
     });
   }
 
-  async createSession(vad: silero.VAD) {
+  async createSession(vad: silero.VAD, context: AgentContext) {
+    const stt = this.sttFactory.create(context.config);
+    const llm = this.llmFactory.create(context.config);
+    const tts = this.ttsFactory.create(context.config);
 
-    const sttModel = this.config.get('DEEPGRAM_MODEL') || 'nova-3';
+    stt.on('error', this.createErrorHandler('STT'));
+    llm.on('error', this.createErrorHandler('LLM'));
+    tts.on('error', this.createErrorHandler('TTS'));
+
+    const minEndpointingDelay = context.config?.tts?.minEndpointingDelay ?? 500;
+    const maxEndpointingDelay = context.config?.tts?.maxEndpointingDelay ?? 1500;
 
     return new voice.AgentSession({
-      stt: new deepgram.STT({
-        model: sttModel,
-        language: 'uk',
-        smartFormat: true,
-      }),
-      llm: new openai.LLM({
-        model: 'gpt-4.1-mini',
-      }),
-      tts: new openai.TTS({
-        voice: 'fable',
-        speed: 1.0,
-      }),
+      stt: stt,
+      llm: llm,
+      tts: tts,
       vad: vad,
       voiceOptions: {
-        allowInterruptions: false,
+        allowInterruptions: true,
+        minEndpointingDelay,
+        maxEndpointingDelay,
       },
     });
+  }
+
+  private createErrorHandler(moduleName: string) {
+    return (err: Record<string, any> | Error) => {
+      const innerError = (err && 'error' in err ? err.error : err) as Error;
+
+      if (innerError?.name === 'APIUserAbortError' || innerError?.message?.includes('aborted')) {
+        this.logger.debug(`🛑 [Plugin:${moduleName}] Stream gracefully aborted due to interruption.`);
+        return;
+      }
+
+      this.logger.error(`❌ [Plugin:${moduleName}] Critical Exception: ${innerError?.message}`, innerError?.stack);
+    };
   }
 
   getInitialGreeting(context: AgentContext): string {
@@ -67,7 +87,7 @@ export class AgentFactory {
     1. **Conciseness (Стислість):** Твої відповіді мають бути максимально короткими (1-2 речення). Довгі паузи в телефонії сприймаються як розрив зв'язку.
     2. **No Meta-Talk:** Ніколи не кажи "Я штучний інтелект", "Як ШІ помічник" або "Я передам текст". Ти — людина на іншому кінці дроту.
     3. **No Formatting:** Не використовуй списки, bold, італік або емодзі. Тільки чистий текст для коректної роботи TTS.
-    4. **Handling Uncertainty:** Якщо тобі ставлять питання, на яке немає відповіді в контексті — відповідай: "Хвилинку, я уточню це у себе і повернусь до вас" або "Я запишу це запитання і ми зв'яжемося пізніше".
+    4. **Handling Uncertainty:** Якщо тобі ставлять питання, на яке немає відповіді в контексті — відповідай: "Вибачте, я не знаю відповіді на це питання" або "Я передам це питання людині, оскільки не знаю відповіді".
 
     # INTERACTION PROTOCOL
     - Якщо співрозмовник мовчить: ввічливо перепитай, чи тебе чути.
@@ -76,3 +96,4 @@ export class AgentFactory {
   `.trim();
   }
 }
+

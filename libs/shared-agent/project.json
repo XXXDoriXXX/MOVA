@@ -1,0 +1,23 @@
+{
+  "name": "shared-agent",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/shared-agent/src",
+  "projectType": "library",
+  "tags": [],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": [
+        "{options.outputPath}"
+      ],
+      "options": {
+        "outputPath": "dist/libs/shared-agent",
+        "main": "libs/shared-agent/src/index.ts",
+        "tsConfig": "libs/shared-agent/tsconfig.lib.json",
+        "assets": [
+          "libs/shared-agent/*.md"
+        ]
+      }
+    }
+  }
+}

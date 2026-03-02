@@ -6,6 +6,7 @@ import { ConfigModule } from '@nestjs/config';
 import { SharedRedisModule } from '@mova-back/shared-redis';
 import { CallController } from './call/call.controller';
 import { CallService } from './call/call.service';
+import { CallModule } from './call/call.module';
 
 @Module({
   imports: [
@@ -20,9 +21,8 @@ import { CallService } from './call/call.service';
         return parsed.data;
       }
     }),
-    SharedRedisModule
+    SharedRedisModule,
+    CallModule
   ],
-  controllers: [CallController],
-  providers: [CallService],
 })
 export class AppModule {}

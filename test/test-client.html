@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>WebSocket E2E Test & Control</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body style="font-family: sans-serif; background: #2b2b2b; color: #fff; padding: 20px;">
+
+<h2>Transcription Monitor & Control</h2>
+
+<div style="margin-bottom: 15px; display: flex; gap: 10px;">
+  <input type="text" id="manualInput" placeholder="Введіть текст для озвучки..." style="flex-grow: 1; padding: 10px; border-radius: 4px; border: none;">
+  <button id="interruptBtn" style="padding: 10px 20px; background: #ff4444; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">
+    🛑 Зупинити AI та сказати
+  </button>
+</div>
+
+<div id="logs" style="background: #1e1e1e; color: #00ff00; padding: 15px; font-family: monospace; height: 500px; overflow-y: scroll; border-radius: 4px; border: 1px solid #444;"></div>
+
+<script>
+  const logPanel = document.getElementById('logs');
+  const log = (msg) => {
+    logPanel.innerHTML += `<div style="margin-bottom: 5px;">[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+    logPanel.scrollTop = logPanel.scrollHeight; // Автоскрол вниз
+  };
+
+  // 🚨 НЕ ЗАБУДЬ ЗАМІНИТИ ЦЕЙ UUID НА АКТУАЛЬНИЙ З POSTMAN!
+  const testRoomName = 'call-2ec93b9a-793f-4cb5-a868-e298a043b4ae';
+
+  // Перевіряємо, чи завантажилась бібліотека
+  if (typeof io === 'undefined') {
+    log('<span style="color: red;">❌ КРИТИЧНА ПОМИЛКА: Бібліотека Socket.io не завантажилась. Перевір підключення до інтернету або вимкни AdBlock.</span>');
+  } else {
+    const socket = io('http://localhost:3000/call-stream');
+
+    socket.on('connect', () => {
+      log('🟢 Connected to WebSocket Server');
+      socket.emit('join-room', { roomName: testRoomName });
+      log(`➡️ Sent join-room event for: ${testRoomName}`);
+    });
+
+    // --- ЛОГІКА КНОПКИ ПЕРЕРИВАННЯ ---
+    document.getElementById('interruptBtn').addEventListener('click', () => {
+      const text = document.getElementById('manualInput').value.trim();
+
+      if (!text) {
+        alert('Введіть текст!');
+        return;
+      }
+
+      socket.emit('interrupt-and-speak', {
+        roomName: testRoomName,
+        text: text
+      });
+
+      log(`<span style="color: #ffaa00;">⚠️ [Command] Sent Override: "${text}"</span>`);
+      document.getElementById('manualInput').value = '';
+    });
+
+    // --- СЛУХАЧІ ТРАНСКРИПЦІЇ ---
+    socket.on('call-interim-events', (data) => {
+      log(`<i>⏳ [Interim] ${data.sender}: ${data.text}</i>`);
+    });
+
+    socket.on('call-events', (data) => {
+      log(`<b>✅ [Final] ${data.sender}: ${data.text}</b>`);
+    });
+
+    socket.on('disconnect', () => log('🔴 Disconnected'));
+  }
+</script>
+</body>
+</html>

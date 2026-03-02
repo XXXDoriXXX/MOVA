@@ -1,9 +1,22 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { voice } from '@livekit/agents';
+import { voice, stt, llm, tts } from '@livekit/agents';
 import * as deepgram from '@livekit/agents-plugin-deepgram';
 import * as openai from '@livekit/agents-plugin-openai';
+import * as elevenlabs from '@livekit/agents-plugin-elevenlabs';
 import * as silero from '@livekit/agents-plugin-silero';
 import { ConfigService } from '@nestjs/config';
+
+// ---------------------------------------------------------
+// 🛡️ Future-Proof Type Extraction via Utility Types
+// We dynamically infer the allowed strings for 'model' and 'voice'
+// directly from the constructors of the plugins' public API.
+// This prevents compilation breaks if LiveKit restructures its internal /dist folders.
+// ---------------------------------------------------------
+type DeepgramSTTOptions = NonNullable<ConstructorParameters<typeof deepgram.STT>[0]>;
+export type DeepgramSTTModel = DeepgramSTTOptions['model'];
+
+type OpenAITTSOptions = NonNullable<ConstructorParameters<typeof openai.TTS>[0]>;
+export type OpenAITTSVoice = OpenAITTSOptions['voice'];
 
 export interface AgentContext {
   userName: string;
@@ -24,37 +37,13 @@ export class AgentFactory {
   }
 
   async createSession(vad: silero.VAD) {
-    const sttModel = this.config.get('DEEPGRAM_MODEL') || 'nova-3';
+    const stt = this.createSTT();
+    const llm = this.createLLM();
+    const tts = this.createTTS();
 
-    const stt = new deepgram.STT({
-      model: sttModel,
-      language: 'uk',
-      smartFormat: true,
-    });
-
-    const llm = new openai.LLM({
-      model: 'gpt-4.1-mini',
-    });
-
-    const tts = new openai.TTS({
-      voice: 'fable',
-      speed: 1.0,
-    });
-
-    const createErrorHandler = (moduleName: string) => (err: any) => {
-      const innerError = err?.error || err;
-
-      if (innerError?.name === 'APIUserAbortError' || innerError?.message?.includes('aborted')) {
-        this.logger.debug(`🛑 [Plugin:${moduleName}] Stream gracefully aborted due to interruption.`);
-        return;
-      }
-
-      this.logger.error(`❌ [Plugin:${moduleName}] Critical Exception: ${innerError?.message}`, innerError?.stack);
-    };
-
-    stt.on('error', createErrorHandler('STT'));
-    llm.on('error', createErrorHandler('LLM'));
-    tts.on('error', createErrorHandler('TTS'));
+    stt.on('error', this.createErrorHandler('STT'));
+    llm.on('error', this.createErrorHandler('LLM'));
+    tts.on('error', this.createErrorHandler('TTS'));
 
     return new voice.AgentSession({
       stt: stt,
@@ -67,6 +56,101 @@ export class AgentFactory {
         maxEndpointingDelay: 1500,
       },
     });
+  }
+
+  // ---- Factory Methods for Providers ----
+
+  private createSTT(): stt.STT {
+    const provider = this.config.get<string>('STT_PROVIDER', 'deepgram').toLowerCase();
+
+    switch (provider) {
+      case 'deepgram': {
+        const model = this.config.get<string>('DEEPGRAM_MODEL', 'nova-3') as DeepgramSTTModel;
+        const language = this.config.get<string>('STT_LANGUAGE', 'uk');
+        const stt = new deepgram.STT({ model, language, smartFormat: true });
+        stt.setMaxListeners(0);
+        return stt;
+      }
+      default: {
+        this.logger.warn(`⚠️ [Factory: STT] Unknown provider "${provider}", falling back to Deepgram`);
+        const fallbackStt = new deepgram.STT({ model: 'nova-3' as DeepgramSTTModel, language: 'uk', smartFormat: true });
+        fallbackStt.setMaxListeners(0);
+        return fallbackStt;
+      }
+    }
+  }
+
+  private createLLM(): llm.LLM {
+    const provider = this.config.get<string>('LLM_PROVIDER', 'openai').toLowerCase();
+
+    switch (provider) {
+      case 'openai': {
+        const model = this.config.get<string>('LLM_MODEL', 'gpt-4o-mini');
+        const llm = new openai.LLM({ model });
+        llm.setMaxListeners(0);
+        return llm;
+      }
+      default: {
+        this.logger.warn(`⚠️ [Factory: LLM] Unknown provider "${provider}", falling back to OpenAI`);
+        const fallbackLlm = new openai.LLM({ model: 'gpt-4o-mini' });
+        fallbackLlm.setMaxListeners(0);
+        return fallbackLlm;
+      }
+    }
+  }
+
+  private createTTS(): tts.TTS {
+    const provider = this.config.get<string>('TTS_PROVIDER', 'openai').toLowerCase();
+
+    switch (provider) {
+      case 'elevenlabs': {
+        this.logger.debug('🔌 [Factory: TTS] Bootstrapping ElevenLabs Engine');
+
+        // Витягуємо Voice ID з конфігу.
+        const voiceId = this.config.get<string>('ELEVENLABS_VOICE_ID', 'EXAVITQu4vr4xnSDxMaL');
+        const apiKey = this.config.get<string>('ELEVENLABS_API_KEY') || this.config.get<string>('ELEVEN_API_KEY');
+
+        const tts = new elevenlabs.TTS({
+          apiKey: apiKey,
+          // Обов'язково v2 для багатомовності (включаючи ідеальну українську)
+          model: 'eleven_multilingual_v2',
+          voiceId: voiceId,
+        });
+
+        // Type casting here is safe as all LiveKit TTS engines inherit from EventEmitter
+        (tts as any).setMaxListeners(0);
+        return tts;
+      }
+      case 'openai': {
+        const voiceStr = this.config.get<string>('TTS_VOICE', 'fable') as OpenAITTSVoice;
+        const speed = parseFloat(this.config.get<string>('TTS_SPEED', '1.0')) || 1.0;
+        const tts = new openai.TTS({ voice: voiceStr, speed });
+        tts.setMaxListeners(0);
+        return tts;
+      }
+      // Future placeholder examples:
+      // case 'elevenlabs':
+      //   return new elevenlabs.TTS({...});
+      default: {
+        this.logger.warn(`⚠️ [Factory: TTS] Unknown provider "${provider}", falling back to OpenAI`);
+        const fallbackTts = new openai.TTS({ voice: 'fable' as OpenAITTSVoice, speed: 1.0 });
+        fallbackTts.setMaxListeners(0);
+        return fallbackTts;
+      }
+    }
+  }
+
+  private createErrorHandler(moduleName: string) {
+    return (err: Record<string, any> | Error) => {
+      const innerError = (err && 'error' in err ? err.error : err) as Error;
+
+      if (innerError?.name === 'APIUserAbortError' || innerError?.message?.includes('aborted')) {
+        this.logger.debug(`🛑 [Plugin:${moduleName}] Stream gracefully aborted due to interruption.`);
+        return;
+      }
+
+      this.logger.error(`❌ [Plugin:${moduleName}] Critical Exception: ${innerError?.message}`, innerError?.stack);
+    };
   }
 
   getInitialGreeting(context: AgentContext): string {

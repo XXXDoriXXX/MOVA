@@ -61,7 +61,7 @@ export class AgentCallHandler {
 
       // 3. Agent Initialization
       this.logger.debug('🤖 [Agent] Creating agent session and AI pipeline...');
-      this.session = await this.agentFactory.createSession(this.vadModel);
+      this.session = await this.agentFactory.createSession(this.vadModel, this.userContext);
       const agent = this.agentFactory.createAgent(this.userContext);
 
       this.bindSessionEvents(this.session, this.roomName, callStartTime);

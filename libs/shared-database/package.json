@@ -10,6 +10,8 @@
     "@nestjs/common": "^11.0.0",
     "@nestjs/config": "^4.0.3",
     "@nestjs/typeorm": "^11.0.0",
+    "dotenv": "^17.2.5",
+    "reflect-metadata": "^0.2.0",
     "typeorm": "^0.3.28"
   }
 }

@@ -1,4 +1,5 @@
 export * from './lib/jwt-payload';
+export * from './lib/password-breach.service';
 export * from './lib/decorators/current-user.decorator';
 export * from './lib/decorators/public.decorator';
 export * from './lib/decorators/roles.decorator';

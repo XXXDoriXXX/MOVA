@@ -31,10 +31,14 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (!parsed.success) {
       throw new UnauthorizedException('Invalid token payload');
     }
-    const user = await this.usersService.findById(parsed.data.sub);
+    const user = await this.usersService.findActiveById(parsed.data.sub);
     if (!user) {
       // Token was valid but user no longer exists (deleted account) — deny.
       throw new UnauthorizedException();
+    }
+    if (user.isBlocked) {
+      // Admin blocked this user after the token was issued — deny.
+      throw new UnauthorizedException('Account is blocked');
     }
     return {
       id: user.id,

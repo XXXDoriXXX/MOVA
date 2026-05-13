@@ -10,6 +10,7 @@ import KeyvRedis from '@keyv/redis';
 import { LoggerModule } from 'nestjs-pino';
 import type { Redis } from 'ioredis';
 
+import { JwtAuthGuard } from '@mova-back/shared-auth';
 import { SharedConfigModule, type AppEnv } from '@mova-back/shared-config';
 import { REDIS_CLIENT, SharedRedisModule } from '@mova-back/shared-redis';
 
@@ -115,8 +116,11 @@ import { UsersModule } from './users/users.module';
   providers: [
     // Sentry error filter — must be first to capture before NestJS default filter
     { provide: APP_FILTER, useClass: SentryGlobalFilter },
-    // Global rate limiting
+    // GUARDS execute top-to-bottom in this list (NestJS order):
+    //   1. Throttler — rate limit BEFORE auth, so abuse is cheap to block.
+    //   2. JwtAuthGuard — globally enforces JWT, except @Public() routes.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
   ],
 })
 export class AppModule {}

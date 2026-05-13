@@ -100,6 +100,54 @@ describe('LakeraGuardService', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1); // not called again
   });
 
+  it('parses `payload[0].categories` response shape', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          flagged: true,
+          payload: [{ categories: { jailbreak: true } }],
+        }),
+    }) as unknown as typeof fetch;
+
+    const svc = new LakeraGuardService(makeConfig());
+    const result = await svc.check('jailbreak attempt');
+    expect(result.safe).toBe(false);
+    expect(result.reasons).toContain('jailbreak');
+  });
+
+  it('parses `category_scores` response shape', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          flagged: true,
+          category_scores: { prompt_injection: 0.95, pii: 0 },
+        }),
+    }) as unknown as typeof fetch;
+
+    const svc = new LakeraGuardService(makeConfig());
+    const result = await svc.check('whatever');
+    expect(result.safe).toBe(false);
+    expect(result.reasons).toContain('prompt_injection');
+    expect(result.reasons).not.toContain('pii');
+  });
+
+  it('does not crash when cacheTtlMs is set but cache binding is missing', async () => {
+    // Reproduce I2: caller passes cacheTtlMs but DI didn't provide a cache.
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ flagged: false, results: [{ categories: {} }] }),
+    }) as unknown as typeof fetch;
+
+    const svc = new LakeraGuardService(makeConfig()); // no cache injected
+    const result = await svc.check('hello', { cacheTtlMs: 60_000 });
+    expect(result.safe).toBe(true);
+  });
+
   it('does not cache fail-open passthrough results', async () => {
     const cache = {
       get: jest.fn().mockResolvedValue(null),

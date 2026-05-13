@@ -26,6 +26,9 @@
       ],
       "@mova-back/shared-agent": [
         "libs/shared-agent/src/index.ts"
+      ],
+      "@mova-back/shared-database": [
+        "libs/shared-database/src/index.ts"
       ]
     }
   },

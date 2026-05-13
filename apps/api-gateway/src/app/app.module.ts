@@ -1,12 +1,10 @@
 import { Module } from '@nestjs/common';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
-import { envSchema } from '@mova-back/shared-config';
 import { ConfigModule } from '@nestjs/config';
+import { envSchema } from '@mova-back/shared-config';
 import { SharedRedisModule } from '@mova-back/shared-redis';
-import { CallController } from './call/call.controller';
-import { CallService } from './call/call.service';
 import { CallModule } from './call/call.module';
+import { UsersModule } from './users/users.module';
+import { AuthModule } from './auth/auth.module';
 
 @Module({
   imports: [
@@ -22,7 +20,9 @@ import { CallModule } from './call/call.module';
       }
     }),
     SharedRedisModule,
-    CallModule
+    CallModule,
+    UsersModule,
+    AuthModule
   ],
 })
 export class AppModule {}

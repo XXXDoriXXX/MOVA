@@ -37,14 +37,20 @@ export class TemplatesService {
    * templates ordered after their own).
    */
   async listVisible(userId: string, language: UserLanguage): Promise<Template[]> {
-    const rows = await this.repo.find({
-      where: [
-        { userId, deletedAt: IsNull() },
-        { isSystem: true, userId: IsNull() as unknown as null, deletedAt: IsNull() },
-      ],
-      // Order: user's defaults first, then user's other, then system in lang, then other system.
-      order: { isDefault: 'DESC', createdAt: 'DESC' },
-    });
+    // Use the query builder for the OR-with-NULL clause. The previous
+    // `find({ where: [...] })` form required a `IsNull() as unknown as null`
+    // cast because TypeORM's `FindOptionsWhere<T>` types insist on the
+    // exact column type — clean here.
+    const rows = await this.repo
+      .createQueryBuilder('t')
+      .where('t."deletedAt" IS NULL')
+      .andWhere(
+        '(t."userId" = :userId OR (t."isSystem" = true AND t."userId" IS NULL))',
+        { userId },
+      )
+      .orderBy('t."isDefault"', 'DESC')
+      .addOrderBy('t."createdAt"', 'DESC')
+      .getMany();
     return this.sortByLanguagePreference(rows, language);
   }
 

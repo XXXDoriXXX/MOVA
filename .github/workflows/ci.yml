@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - 'feat/**'
   pull_request:
 
 permissions:
@@ -11,31 +12,79 @@ permissions:
   contents: read
 
 jobs:
-  main:
+  test:
+    name: Lint, Test & Build
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mova_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mova_test
+      JWT_SECRET: ci-test-jwt-secret-not-for-production
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ci-test-redis-password
+      LIVEKIT_URL: https://ci-placeholder.livekit.cloud
+      LIVEKIT_API_KEY: ci-placeholder-key
+      LIVEKIT_API_SECRET: ci-placeholder-secret
+      OPENAI_API_KEY: ci-placeholder-openai
+      DEEPGRAM_API_KEY: ci-placeholder-deepgram
+
     steps:
       - uses: actions/checkout@v4
         with:
-          filter: tree:0
           fetch-depth: 0
+          filter: tree:0
 
-      # This enables task distribution via Nx Cloud
-      # Run this command as early as possible, before dependencies are installed
-      # Learn more at https://nx.dev/ci/reference/nx-cloud-cli#npx-nxcloud-startcirun
-      # Uncomment this line to enable task distribution
-      # - run: npx nx start-ci-run --distribute-on="3 linux-medium-js" --stop-agents-after="build"
-
-      # Cache node_modules
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'npm'
 
-      - run: npm ci
+      - name: Install dependencies
+        run: npm ci
 
-      # Prepend any command with "nx record --" to record its logs to Nx Cloud
-      # - run: npx nx record -- echo Hello World
-      - run: npx nx run-many -t lint test build
-      # Nx Cloud recommends fixes for failures to help you get CI green faster. Learn more: https://nx.dev/ci/features/self-healing-ci
-      - run: npx nx fix-ci
-        if: always()
+      - name: Lint
+        run: npx nx run-many -t lint
+
+      - name: Test
+        run: npx nx run-many -t test --passWithNoTests
+
+      - name: Build
+        run: npx nx run-many -t build
+
+  docker-build:
+    name: Verify Docker Builds
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        app: [api-gateway, agent-worker]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Build Docker image (${{ matrix.app }})
+        run: |
+          docker build \
+            --build-arg APP_NAME=${{ matrix.app }} \
+            --tag mova-back/${{ matrix.app }}:ci-${{ github.sha }} \
+            --file Dockerfile \
+            .

@@ -10,27 +10,18 @@
     "importHelpers": true,
     "target": "es2015",
     "module": "esnext",
-    "lib": [
-      "es2020",
-      "dom"
-    ],
+    "lib": ["es2020", "dom"],
     "skipLibCheck": true,
     "skipDefaultLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "@mova-back/shared-config": [
-        "libs/shared-config/src/index.ts"
-      ],
-      "@mova-back/shared-redis": [
-        "libs/shared-redis/src/index.ts"
-      ],
-      "@mova-back/shared-agent": [
-        "libs/shared-agent/src/index.ts"
-      ]
+      "@mova-back/shared-config": ["libs/shared-config/src/index.ts"],
+      "@mova-back/shared-redis": ["libs/shared-redis/src/index.ts"],
+      "@mova-back/shared-agent": ["libs/shared-agent/src/index.ts"],
+      "@mova-back/shared-database": ["libs/shared-database/src/index.ts"],
+      "@mova-back/shared-realtime": ["libs/shared-realtime/src/index.ts"],
+      "@mova-back/shared-auth": ["libs/shared-auth/src/index.ts"]
     }
   },
-  "exclude": [
-    "node_modules",
-    "tmp"
-  ]
+  "exclude": ["node_modules", "tmp"]
 }

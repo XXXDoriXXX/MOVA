@@ -33,7 +33,6 @@ async function bootstrap(): Promise<void> {
 }
 
 bootstrap().catch((err) => {
-  // eslint-disable-next-line no-console
-  console.error('[agent-worker] Fatal bootstrap error:', err);
+  process.stderr.write(`[agent-worker] Fatal bootstrap error: ${String(err)}\n`);
   process.exit(1);
 });

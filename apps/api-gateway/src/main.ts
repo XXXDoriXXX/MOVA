@@ -80,7 +80,6 @@ async function bootstrap(): Promise<void> {
 }
 
 bootstrap().catch((err) => {
-  // eslint-disable-next-line no-console
-  console.error('[api-gateway] Fatal bootstrap error:', err);
+  process.stderr.write(`[api-gateway] Fatal bootstrap error: ${String(err)}\n`);
   process.exit(1);
 });

@@ -6,6 +6,10 @@
   "main": "./src/index.js",
   "types": "./src/index.d.ts",
   "dependencies": {
-    "tslib": "^2.3.0"
+    "tslib": "^2.3.0",
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/config": "^4.0.3",
+    "@nestjs/typeorm": "^11.0.0",
+    "typeorm": "^0.3.28"
   }
 }

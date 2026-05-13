@@ -58,8 +58,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint, test & build
-        run: npx nx run-many -t lint test build --passWithNoTests
+      - name: Lint
+        run: npx nx run-many -t lint
+
+      - name: Test
+        run: npx nx run-many -t test --passWithNoTests
+
+      - name: Build
+        run: npx nx run-many -t build
 
   docker-build:
     name: Verify Docker Builds

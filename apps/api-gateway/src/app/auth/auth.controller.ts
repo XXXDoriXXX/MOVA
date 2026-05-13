@@ -9,6 +9,7 @@ import {
   Patch,
   Post,
   Req,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -106,8 +107,9 @@ export class AuthController {
   async me(@CurrentUser() user: AuthenticatedUser): Promise<PublicUser> {
     const fullUser = await this.usersService.findActiveById(user.id);
     if (!fullUser) {
-      // Token valid but user deleted in the meantime — let global filter map to 401.
-      throw new Error('User not found');
+      // Token valid but user was soft-deleted in the meantime — 401, not 500.
+      // The mobile client treats 401 by purging tokens + showing login.
+      throw new UnauthorizedException();
     }
     return this.authService.toPublic(fullUser);
   }

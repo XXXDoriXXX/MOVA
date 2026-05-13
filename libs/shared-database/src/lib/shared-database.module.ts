@@ -2,8 +2,12 @@ import { Global, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
+import { PaymentEvent } from './entities/payment-event.entity';
+import { Plan } from './entities/plan.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
+import { Subscription } from './entities/subscription.entity';
 import { Template } from './entities/template.entity';
+import { UsageRecord } from './entities/usage-record.entity';
 import { User } from './entities/user.entity';
 
 /**
@@ -38,7 +42,7 @@ import { User } from './entities/user.entity';
           ssl: config.get<boolean>('DATABASE_SSL')
             ? { rejectUnauthorized: false }
             : false,
-          entities: [User, RefreshToken, Template],
+          entities: [User, RefreshToken, Template, Plan, Subscription, UsageRecord, PaymentEvent],
           synchronize: !isProduction,
           migrationsRun: false,
           autoLoadEntities: false,
@@ -51,7 +55,15 @@ import { User } from './entities/user.entity';
         };
       },
     }),
-    TypeOrmModule.forFeature([User, RefreshToken, Template]),
+    TypeOrmModule.forFeature([
+      User,
+      RefreshToken,
+      Template,
+      Plan,
+      Subscription,
+      UsageRecord,
+      PaymentEvent,
+    ]),
   ],
   exports: [TypeOrmModule],
 })

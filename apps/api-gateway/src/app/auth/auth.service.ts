@@ -3,12 +3,17 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 
 import { PasswordBreachService, type JwtPayload } from '@mova-back/shared-auth';
 import { User } from '@mova-back/shared-database';
 
+import {
+  USER_REGISTERED_EVENT,
+  type UserRegisteredPayload,
+} from '../billing/billing.events';
 import { UsersService } from '../users/users.service';
 import type {
   ChangePasswordDto,
@@ -56,6 +61,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly refreshTokens: RefreshTokenService,
     private readonly passwordBreach: PasswordBreachService,
+    private readonly events: EventEmitter2,
   ) {}
 
   async register(dto: RegisterDto, ctx: ClientContext): Promise<AuthResponse> {
@@ -69,6 +75,16 @@ export class AuthService {
       passwordHash,
       name: dto.name,
     });
+
+    // Fire-and-await: subscription creation is critical (every active user
+    // must have one). We emit and await — listener errors propagate up and
+    // surface to the client. Sentry captures via global filter.
+    const event: UserRegisteredPayload = {
+      userId: user.id,
+      email: user.email,
+      registeredAt: user.createdAt.toISOString(),
+    };
+    await this.events.emitAsync(USER_REGISTERED_EVENT, event);
 
     return this.buildAuthResponse(user, ctx);
   }

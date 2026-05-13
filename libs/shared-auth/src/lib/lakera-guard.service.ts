@@ -80,9 +80,14 @@ export class LakeraGuardService {
       return { safe: true, reasons: [] };
     }
 
-    const cacheKey = opts.cacheTtlMs && this.cache ? this.makeCacheKey(text) : null;
-    if (cacheKey) {
-      const cached = await this.cache!.get<SafetyCheckResult>(cacheKey);
+    // Bind the cache reference once. The narrowing flows through the closure
+    // so the rest of the function never has to use a `!` assertion on a
+    // possibly-undefined dependency — eliminates the foot-gun where a missing
+    // DI wiring would crash inside callers that pass cacheTtlMs.
+    const cache = this.cache;
+    const cacheKey = opts.cacheTtlMs && cache ? this.makeCacheKey(text) : null;
+    if (cacheKey && cache) {
+      const cached = await cache.get<SafetyCheckResult>(cacheKey);
       if (cached) {
         return cached;
       }
@@ -90,13 +95,15 @@ export class LakeraGuardService {
 
     const result = await this.callLakera(text);
 
-    if (cacheKey && opts.cacheTtlMs) {
+    if (cacheKey && cache && opts.cacheTtlMs && !result.passthrough) {
       // Cache only OK / blocked results, NEVER cache fail-open passes —
       // those should be retried so the user gets real feedback once the
       // service recovers.
-      if (!result.passthrough) {
-        await this.cache!.set(cacheKey, { safe: result.safe, reasons: result.reasons }, opts.cacheTtlMs);
-      }
+      await cache.set(
+        cacheKey,
+        { safe: result.safe, reasons: result.reasons },
+        opts.cacheTtlMs,
+      );
     }
 
     return { safe: result.safe, reasons: result.reasons };
@@ -106,6 +113,15 @@ export class LakeraGuardService {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
+      // Lakera /v2/guard accepts both `messages` (chat-completion shape) and
+      // `input` (single-string shape). We send `messages` because that's the
+      // future-proof form for AI-pipeline checks where one day we'll include
+      // system+user role context. The endpoint is auto-routed by Lakera.
+      // Spec: https://docs.lakera.ai/reference/post_v2-guard
+      //
+      // If a future API version requires `input` exclusively, switch the
+      // body and update tests — the response parser already handles both
+      // result shapes.
       const res = await fetch(this.apiUrl, {
         method: 'POST',
         headers: {
@@ -119,22 +135,39 @@ export class LakeraGuardService {
       });
 
       if (!res.ok) {
-        throw new Error(`Lakera returned ${res.status}`);
+        // Distinguish auth/quota errors (likely persistent) from transient
+        // 5xx for better Sentry signal. The thrown Error message ends up in
+        // the WARN/ERROR log below; we don't expose it to clients.
+        const body = await res.text().catch(() => '');
+        throw new Error(`Lakera returned ${res.status}: ${body.slice(0, 200)}`);
       }
 
-      // Lakera /v2/guard returns: { flagged: bool, payload: { categories: {...} } }
-      // We accept multiple field shapes defensively to survive minor API revs.
+      // Response shape variations seen in production:
+      //   v2/guard: { flagged: bool, payload: [{ categories: {...}, ... }] }
+      //   alt:      { results: [{ categories: {...} }] }
+      //   alt:      { flagged: bool, category_scores: { name: float } }
+      // We accept any of them.
       const data = (await res.json()) as {
         flagged?: boolean;
         results?: Array<{ categories?: Record<string, boolean> }>;
+        payload?: Array<{ categories?: Record<string, boolean> }>;
         category_scores?: Record<string, number>;
       };
 
       const flagged = Boolean(data.flagged);
       const reasons: string[] = [];
-      const cats = data.results?.[0]?.categories ?? {};
+
+      // Walk all shapes; first match wins. category_scores is parsed
+      // separately because its shape is `name → float` (any non-zero is "on").
+      const cats =
+        data.results?.[0]?.categories ?? data.payload?.[0]?.categories ?? {};
       for (const [name, on] of Object.entries(cats)) {
         if (on) reasons.push(name);
+      }
+      if (reasons.length === 0 && data.category_scores) {
+        for (const [name, score] of Object.entries(data.category_scores)) {
+          if (typeof score === 'number' && score > 0) reasons.push(name);
+        }
       }
 
       return { safe: !flagged, reasons, passthrough: false };

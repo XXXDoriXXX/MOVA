@@ -3,6 +3,7 @@ import { config as loadDotenv } from 'dotenv';
 import { DataSource } from 'typeorm';
 
 import { RefreshToken } from './lib/entities/refresh-token.entity';
+import { Template } from './lib/entities/template.entity';
 import { User } from './lib/entities/user.entity';
 
 /**
@@ -26,7 +27,7 @@ export const AppDataSource = new DataSource({
   // Migrations replace `synchronize: true` — schema changes are explicit and reviewable.
   synchronize: false,
   logging: process.env['DATABASE_LOG'] === 'true',
-  entities: [User, RefreshToken],
+  entities: [User, RefreshToken, Template],
   migrations: ['libs/shared-database/src/lib/migrations/*.{ts,js}'],
   migrationsTableName: 'migrations',
   ssl: process.env['DATABASE_SSL'] === 'true' ? { rejectUnauthorized: false } : false,

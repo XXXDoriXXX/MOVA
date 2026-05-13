@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { RefreshToken } from './entities/refresh-token.entity';
+import { Template } from './entities/template.entity';
 import { User } from './entities/user.entity';
 
 /**
@@ -37,7 +38,7 @@ import { User } from './entities/user.entity';
           ssl: config.get<boolean>('DATABASE_SSL')
             ? { rejectUnauthorized: false }
             : false,
-          entities: [User, RefreshToken],
+          entities: [User, RefreshToken, Template],
           synchronize: !isProduction,
           migrationsRun: false,
           autoLoadEntities: false,
@@ -50,7 +51,7 @@ import { User } from './entities/user.entity';
         };
       },
     }),
-    TypeOrmModule.forFeature([User, RefreshToken]),
+    TypeOrmModule.forFeature([User, RefreshToken, Template]),
   ],
   exports: [TypeOrmModule],
 })

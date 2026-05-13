@@ -1,21 +1,38 @@
 /**
- * This is not a production server yet!
- * This is only a minimal backend to get started.
+ * realtime-service entry point.
+ * See api-gateway/main.ts for bootstrap-order rationale.
  */
+import './instrument';
 
-import { Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import helmet from 'helmet';
+import { Logger } from 'nestjs-pino';
+import { ZodValidationPipe } from 'nestjs-zod';
+
+import type { AppEnv } from '@mova-back/shared-config';
+
 import { AppModule } from './app/app.module';
 
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-  const globalPrefix = 'api';
-  app.setGlobalPrefix(globalPrefix);
-  const port = process.env.PORT || 3000;
+async function bootstrap(): Promise<void> {
+  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  app.useLogger(app.get(Logger));
+  app.enableShutdownHooks();
+
+  const config = app.get<ConfigService<AppEnv, true>>(ConfigService);
+
+  app.use(helmet({ contentSecurityPolicy: false }));
+  app.enableCors({ origin: true });
+  app.useGlobalPipes(new ZodValidationPipe());
+
+  const port = config.get('PORT', { infer: true });
   await app.listen(port);
-  Logger.log(
-    `🚀 Application is running on: http://localhost:${port}/${globalPrefix}`,
-  );
+
+  const logger = app.get(Logger);
+  logger.log(`🚀 realtime-service listening on http://localhost:${port}`);
 }
 
-bootstrap();
+bootstrap().catch((err) => {
+  process.stderr.write(`[realtime-service] Fatal bootstrap error: ${String(err)}\n`);
+  process.exit(1);
+});

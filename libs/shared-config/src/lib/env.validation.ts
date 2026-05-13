@@ -1,32 +1,146 @@
 import { z } from 'zod';
 
+/**
+ * Environment schema for all Mova services.
+ *
+ * Each variable has either:
+ *   - a sane default for local dev (`.default()`), or
+ *   - is required (no default + .min(1) / .url()).
+ *
+ * Optional-in-prod variables (Sentry, Lakera, Anthropic, Groq, ElevenLabs) DEGRADE
+ * gracefully: the consumer code checks the presence and disables the corresponding
+ * feature when missing. This makes local-dev frictionless and lets us roll out
+ * vendor keys incrementally in production.
+ *
+ * IMPORTANT: never read `process.env` directly elsewhere. Always inject
+ * `ConfigService<AppEnv, true>` from `@nestjs/config`.
+ */
 export const envSchema = z.object({
-  // Infrastructure
-  REDIS_HOST: z.string().default('localhost'),
-  REDIS_PORT: z.coerce.number().default(6379),
-  REDIS_PASSWORD: z.string().default('my-secure-password'),
+  // ── App ────────────────────────────────────────────
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  PORT: z.coerce.number().int().positive().default(3000),
+  SERVICE_NAME: z.string().default('mova-service'),
+  APP_VERSION: z.string().default('0.0.0'),
+  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
 
-  // LiveKit
-  LIVEKIT_URL: z.string().url({ message: "LIVEKIT_URL must be a valid URL" }),
+  // ── Database (Postgres) ────────────────────────────
+  DATABASE_URL: z
+    .string()
+    .url({ message: 'DATABASE_URL must be a valid postgres:// URL' })
+    .default('postgresql://postgres:postgres@localhost:5432/mova_dev'),
+  DATABASE_SSL: z.coerce.boolean().default(false),
+  DATABASE_POOL_SIZE: z.coerce.number().int().positive().default(20),
+
+  // ── Redis ──────────────────────────────────────────
+  REDIS_HOST: z.string().default('localhost'),
+  REDIS_PORT: z.coerce.number().int().positive().default(6379),
+  REDIS_PASSWORD: z.string().default(''),
+  REDIS_DB: z.coerce.number().int().nonnegative().default(0),
+
+  // ── Auth (JWT) ─────────────────────────────────────
+  // SECURITY: JWT_SECRET has a dev-only default, but is REQUIRED in production
+  // (refine below). Without this, a deploy with a forgotten env var would sign
+  // tokens with the public default and any reader of this file could forge them.
+  JWT_SECRET: z
+    .string()
+    .min(32, 'JWT_SECRET must be at least 32 chars (HS256). Replace with RS256 in prod.')
+    .default('dev-only-secret-please-replace-in-production-min-32-chars'),
+  JWT_ACCESS_TTL: z.string().default('15m'),
+  JWT_REFRESH_TTL: z.string().default('30d'),
+
+  // ── LiveKit (SIP + WebRTC) ─────────────────────────
+  LIVEKIT_URL: z
+    .string()
+    .url({ message: 'LIVEKIT_URL must be a wss:// or https:// URL' }),
   LIVEKIT_API_KEY: z.string().min(1),
   LIVEKIT_API_SECRET: z.string().min(1),
+  SIP_TRUNK_ID: z.string().optional(),
 
-  // OpenAI / Deepgram
+  // ── AI providers ───────────────────────────────────
   OPENAI_API_KEY: z.string().min(1),
   DEEPGRAM_API_KEY: z.string().min(1),
+  ELEVENLABS_API_KEY: z.string().optional(),
+  ANTHROPIC_API_KEY: z.string().optional(), // Fallback LLM
+  GROQ_API_KEY: z.string().optional(), // Fast LLM for suggestions
 
-  // App Specific
-  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  PORT: z.coerce.number().default(3000),
-});
+  // ── LLM safety (Lakera Guard, Phase 2/4) ───────────
+  LAKERA_API_KEY: z.string().optional(),
+  LAKERA_API_URL: z.string().url().default('https://api.lakera.ai/v2/guard'),
+  LAKERA_FAIL_OPEN: z.coerce.boolean().default(true),
+  LAKERA_TIMEOUT_MS: z.coerce.number().int().positive().default(1500),
 
-export type EnvConfig = z.infer<typeof envSchema>;
+  // ── Error tracking (Sentry) ────────────────────────
+  SENTRY_DSN: z.string().url().optional(),
+  SENTRY_ENVIRONMENT: z.string().optional(),
+  SENTRY_RELEASE: z.string().optional(),
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0.1),
 
-export function validate(config: Record<string, unknown>) {
-  const result = envSchema.safeParse(config);
+  // ── Password breach check (HaveIBeenPwned) ─────────
+  HIBP_ENABLED: z.coerce.boolean().default(true),
+  HIBP_API_URL: z.string().url().default('https://api.pwnedpasswords.com'),
+  HIBP_TIMEOUT_MS: z.coerce.number().int().positive().default(2000),
+
+  // ── Rate limiting ──────────────────────────────────
+  RATE_LIMIT_TTL: z.coerce.number().int().positive().default(60), // seconds
+  RATE_LIMIT_DEFAULT: z.coerce.number().int().positive().default(100), // req/window
+
+  // ── Billing ────────────────────────────────────────
+  FREE_SECONDS_PER_MONTH: z.coerce.number().int().positive().default(300),
+  PAID_PRICE_PER_SECOND_CENTS: z.coerce.number().int().positive().default(1),
+  MAX_CALL_DURATION_SECONDS: z.coerce.number().int().positive().default(3600),
+  MAX_CONCURRENT_CALLS_PER_USER: z.coerce.number().int().positive().default(1),
+
+  // ── Internal service URLs ──────────────────────────
+  AGENT_SERVICE_URL: z.string().url().optional(),
+  REALTIME_PUBLIC_URL: z.string().url().optional(),
+})
+  // Cross-field invariants — caught at startup, prevent footguns.
+  .superRefine((env, ctx) => {
+    if (env.NODE_ENV === 'production') {
+      if (env.JWT_SECRET === 'dev-only-secret-please-replace-in-production-min-32-chars') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['JWT_SECRET'],
+          message:
+            'JWT_SECRET must be set to a strong production value when NODE_ENV=production',
+        });
+      }
+      if (!env.SENTRY_DSN) {
+        // Warn, don't fail — we still allow Sentry-less deploys, but make it explicit.
+        // No-op here; observability layer will log a warning at bootstrap.
+      }
+    }
+  });
+
+export type AppEnv = z.infer<typeof envSchema>;
+
+/**
+ * Legacy alias — kept for backward compat with existing imports.
+ * @deprecated use `AppEnv` instead
+ */
+export type EnvConfig = AppEnv;
+
+/**
+ * Validate raw env (process.env) at app bootstrap.
+ * Throws a structured error listing every invalid var — fail-fast.
+ *
+ * Used as `validate: validateEnv` in NestJS ConfigModule.forRoot().
+ */
+export function validateEnv(raw: Record<string, unknown>): AppEnv {
+  const result = envSchema.safeParse(raw);
   if (!result.success) {
-    console.error('[FATAL]: Invalid Configuration', result.error.format());
-    process.exit(1);
+    const issues = result.error.issues
+      .map((i) => `  - ${i.path.join('.') || '(root)'}: ${i.message}`)
+      .join('\n');
+    throw new Error(
+      `[shared-config] Invalid environment configuration:\n${issues}\n\n` +
+        'Fix the env vars and restart. Schema: libs/shared-config/src/lib/env.validation.ts',
+    );
   }
   return result.data;
 }
+
+/**
+ * @deprecated use `validateEnv` instead. Kept for back-compat with old imports.
+ */
+export const validate = validateEnv;

@@ -1,28 +1,157 @@
-import { Controller, Post, Body, Get, UseGuards, Request } from '@nestjs/common';
-import { AuthService } from './auth.service';
-import { RegisterDto } from './dto/register.dto';
-import { LoginDto } from './dto/login.dto';
-import { JwtAuthGuard } from './jwt-auth.guard';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Ip,
+  Patch,
+  Post,
+  Req,
+} from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
+import type { Request } from 'express';
 
+import { CurrentUser, Public, type AuthenticatedUser } from '@mova-back/shared-auth';
+
+import { UsersService } from '../users/users.service';
+import { AuthService, type PublicUser } from './auth.service';
+import {
+  ChangePasswordDto,
+  DeleteAccountDto,
+  LoginDto,
+  LogoutDto,
+  RefreshDto,
+  RegisterDto,
+  UpdateProfileDto,
+} from './dto/auth.schemas';
+
+/**
+ * Auth endpoints.
+ *
+ * Rate-limit policy:
+ *   - register / login: 10 req/min per IP (override of global 100/min).
+ *     Prevents credential-stuffing without blocking legitimate retries.
+ *   - refresh: at global rate (frequent on mobile-side timer expiry).
+ *   - change-password, delete-account: very low (5 req/min) — privileged ops.
+ */
+@ApiTags('auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly usersService: UsersService,
+  ) {}
 
+  @Public()
   @Post('register')
-  async register(@Body() dto: RegisterDto) {
-    return this.authService.register(dto);
+  @HttpCode(HttpStatus.CREATED)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Register a new user account' })
+  register(
+    @Body() dto: RegisterDto,
+    @Req() req: Request,
+    @Ip() ip: string,
+  ): Promise<unknown> {
+    return this.authService.register(dto, {
+      userAgent: this.extractUserAgent(req),
+      ipAddress: ip,
+    });
   }
 
+  @Public()
   @Post('login')
-  async login(@Body() dto: LoginDto) {
-    return this.authService.login(dto);
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Authenticate with email + password' })
+  login(
+    @Body() dto: LoginDto,
+    @Req() req: Request,
+    @Ip() ip: string,
+  ): Promise<unknown> {
+    return this.authService.login(dto, {
+      userAgent: this.extractUserAgent(req),
+      ipAddress: ip,
+    });
   }
 
-  @UseGuards(JwtAuthGuard)
+  @Public()
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Rotate refresh token + issue new access token' })
+  refresh(
+    @Body() dto: RefreshDto,
+    @Req() req: Request,
+    @Ip() ip: string,
+  ): Promise<unknown> {
+    return this.authService.refresh(dto.refreshToken, {
+      userAgent: this.extractUserAgent(req),
+      ipAddress: ip,
+    });
+  }
+
+  @Public()
+  @Post('logout')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Revoke the presented refresh token (current device)' })
+  async logout(@Body() dto: LogoutDto): Promise<void> {
+    await this.authService.logout(dto.refreshToken);
+  }
+
   @Get('me')
-  getProfile(@Request() req: any) {
-    // passport jwt strategy assigns the returned user to req.user
-    const { passwordHash, ...result } = req.user;
-    return result;
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get current authenticated user profile' })
+  async me(@CurrentUser() user: AuthenticatedUser): Promise<PublicUser> {
+    const fullUser = await this.usersService.findActiveById(user.id);
+    if (!fullUser) {
+      // Token valid but user deleted in the meantime — let global filter map to 401.
+      throw new Error('User not found');
+    }
+    return this.authService.toPublic(fullUser);
+  }
+
+  @Patch('me')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update profile fields (name, phone, preferences)' })
+  async updateMe(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: UpdateProfileDto,
+  ): Promise<PublicUser> {
+    const updated = await this.usersService.updateProfile(user.id, dto);
+    return this.authService.toPublic(updated);
+  }
+
+  @Post('change-password')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Change password — invalidates other sessions' })
+  async changePassword(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: ChangePasswordDto,
+  ): Promise<void> {
+    await this.authService.changePassword(user.id, dto);
+  }
+
+  @Delete('me')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Soft-delete the account (anonymized after 30 days)' })
+  async deleteMe(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: DeleteAccountDto,
+  ): Promise<void> {
+    await this.authService.deleteAccount(user.id, dto.password);
+  }
+
+  // ─── helpers ────────────────────────────────────────
+
+  private extractUserAgent(req: Request): string | null {
+    const ua = req.headers['user-agent'];
+    if (!ua) return null;
+    return Array.isArray(ua) ? ua[0] : ua.slice(0, 500);
   }
 }

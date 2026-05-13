@@ -2,8 +2,12 @@ import 'reflect-metadata';
 import { config as loadDotenv } from 'dotenv';
 import { DataSource } from 'typeorm';
 
+import { PaymentEvent } from './lib/entities/payment-event.entity';
+import { Plan } from './lib/entities/plan.entity';
 import { RefreshToken } from './lib/entities/refresh-token.entity';
+import { Subscription } from './lib/entities/subscription.entity';
 import { Template } from './lib/entities/template.entity';
+import { UsageRecord } from './lib/entities/usage-record.entity';
 import { User } from './lib/entities/user.entity';
 
 /**
@@ -27,7 +31,7 @@ export const AppDataSource = new DataSource({
   // Migrations replace `synchronize: true` — schema changes are explicit and reviewable.
   synchronize: false,
   logging: process.env['DATABASE_LOG'] === 'true',
-  entities: [User, RefreshToken, Template],
+  entities: [User, RefreshToken, Template, Plan, Subscription, UsageRecord, PaymentEvent],
   migrations: ['libs/shared-database/src/lib/migrations/*.{ts,js}'],
   migrationsTableName: 'migrations',
   ssl: process.env['DATABASE_SSL'] === 'true' ? { rejectUnauthorized: false } : false,

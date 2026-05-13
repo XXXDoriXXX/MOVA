@@ -79,16 +79,29 @@ export class BillingService {
     }
 
     const now = new Date();
-    return this.subscriptions.save({
-      userId,
-      planId: freePlan.id,
-      plan: freePlan,
-      status: SubscriptionStatus.ACTIVE,
-      currentPeriodStart: now,
-      currentPeriodEnd: nextMonthBoundary(now),
-      freeSecondsUsed: 0,
-      balanceCents: 0,
-    });
+
+    // Use ON CONFLICT (userId) DO NOTHING to neutralize the read-then-write
+    // race when two concurrent requests both miss the existing-row check.
+    // Without this, the second INSERT would violate the unique constraint
+    // and 500. After the INSERT we re-read to return a fully hydrated row
+    // (covers both the "we won" and "we lost the race" cases identically).
+    await this.subscriptions
+      .createQueryBuilder()
+      .insert()
+      .into(Subscription)
+      .values({
+        userId,
+        planId: freePlan.id,
+        status: SubscriptionStatus.ACTIVE,
+        currentPeriodStart: now,
+        currentPeriodEnd: nextMonthBoundary(now),
+        freeSecondsUsed: 0,
+        balanceCents: 0,
+      })
+      .orIgnore() // ON CONFLICT DO NOTHING
+      .execute();
+
+    return this.loadSubscription(userId);
   }
 
   async getSummary(userId: string): Promise<BillingSummary> {
@@ -197,8 +210,21 @@ export class BillingService {
 
   /**
    * Atomically decrement balance / increment free-used after a call ends.
-   * Uses a single UPDATE with WHERE clause so concurrent calls (e.g. user on
-   * two devices) cannot oversell — invariant enforced by CHECK constraint.
+   *
+   * Concurrency model:
+   *   PAID branch — `UPDATE ... SET balanceCents = balanceCents - :cost WHERE
+   *   userId = :u AND balanceCents >= :cost`. If `affected === 0`, the user
+   *   doesn't have enough — surface `InsufficientBalanceError`, NOT a 500.
+   *   The CHECK constraint at the DB layer is a backstop; we want the typed
+   *   domain error here so the call-orchestrator can translate it into the
+   *   right WS `call.error BALANCE_EXHAUSTED`.
+   *
+   *   FREE branch — incrementing freeSecondsUsed has no negative-bound (the
+   *   counter is non-negative by CHECK). It still uses a parametrized SQL
+   *   fragment so we don't string-interpolate untrusted numbers.
+   *
+   * Input is validated upstream (Zod), but we coerce with Number() defensively
+   * because the SQL builder uses `:param` binding — never raw interpolation.
    */
   async applyCharge(input: {
     userId: string;
@@ -206,29 +232,76 @@ export class BillingService {
     costCents: number;
     source: UsageSource;
   }): Promise<Subscription> {
-    const result = await this.subscriptions
-      .createQueryBuilder()
-      .update(Subscription)
-      .set(
-        input.source === UsageSource.FREE
-          ? { freeSecondsUsed: () => `"freeSecondsUsed" + ${input.secondsUsed}` }
-          : { balanceCents: () => `"balanceCents" - ${input.costCents}` },
-      )
-      .where('"userId" = :userId', { userId: input.userId })
-      .returning('*')
-      .execute();
+    const seconds = Number(input.secondsUsed);
+    const cost = Number(input.costCents);
+    if (!Number.isFinite(seconds) || seconds < 0 || !Number.isFinite(cost) || cost < 0) {
+      // Shouldn't happen — DTO/service contracts enforce non-negative ints.
+      // Throw structured error so it bubbles to Sentry, not a silent 500.
+      throw new Error(`applyCharge: invalid input ${JSON.stringify(input)}`);
+    }
 
-    const updated = result.raw[0] as Subscription | undefined;
-    if (!updated) {
+    const baseQuery = this.subscriptions
+      .createQueryBuilder()
+      .update(Subscription);
+
+    const result =
+      input.source === UsageSource.FREE
+        ? await baseQuery
+            .set({ freeSecondsUsed: () => `"freeSecondsUsed" + :seconds` })
+            .where('"userId" = :userId', { userId: input.userId })
+            .setParameters({ seconds })
+            .returning('*')
+            .execute()
+        : await baseQuery
+            .set({ balanceCents: () => `"balanceCents" - :cost` })
+            // CAS: only succeed if balance >= cost; otherwise affected=0.
+            .where('"userId" = :userId AND "balanceCents" >= :cost', {
+              userId: input.userId,
+              cost,
+            })
+            .setParameters({ cost })
+            .returning('*')
+            .execute();
+
+    const updated = (result.raw as Subscription[])[0];
+    if (updated) return updated;
+
+    // affected === 0. Distinguish "no subscription" from "insufficient funds"
+    // so the call-orchestrator can surface the right error code.
+    const existing = await this.subscriptions.findOne({
+      where: { userId: input.userId },
+      relations: { plan: true },
+    });
+    if (!existing) {
       throw new SubscriptionNotFoundError(input.userId);
     }
-    return updated;
+    if (input.source === UsageSource.PAID) {
+      throw new InsufficientBalanceError(
+        { secondsNeeded: seconds, costCents: cost },
+        {
+          secondsRemaining:
+            existing.plan.freeSecondsPerMonth - existing.freeSecondsUsed,
+          balanceCents: existing.balanceCents,
+        },
+      );
+    }
+    // FREE branch with affected=0 should be impossible — the UPDATE has no
+    // narrow predicate beyond userId. Treat as inconsistency.
+    throw new SubscriptionNotFoundError(input.userId);
   }
 
   /**
    * Monthly reset — called by the BullMQ cron (Phase 8 will wire this).
-   * Resets all subscriptions whose `currentPeriodEnd <= now()`.
-   * Idempotent: re-running on the same day is a no-op.
+   *
+   * Idempotency: matches subscriptions whose period has ended AND that have
+   * NOT been reset to the same new period boundary yet. Compares against
+   * `date_trunc('month', :now)` so multiple cron firings on the same calendar
+   * day (BullMQ retries, multiple workers, manual trigger) all converge on
+   * the same result — running it twice does not zero out a freshly-reset row.
+   *
+   * Concretely: a subscription that just rolled to June would have
+   * currentPeriodStart=2026-06-01 00:00:00 UTC. A second run on June 1 would
+   * see `currentPeriodStart >= date_trunc('month', now)` and skip it.
    */
   async runMonthlyReset(now: Date = new Date()): Promise<number> {
     const result = await this.subscriptions
@@ -239,7 +312,14 @@ export class BillingService {
         currentPeriodStart: now,
         currentPeriodEnd: nextMonthBoundary(now),
       })
-      .where('"currentPeriodEnd" <= :now', { now })
+      // Two conditions for true idempotency under retries:
+      //   1. Period must have ended.
+      //   2. The subscription must NOT already be in the current month
+      //      (i.e. has not been reset by an earlier firing of this same job).
+      .where(
+        `"currentPeriodEnd" <= :now AND "currentPeriodStart" < date_trunc('month', :now::timestamptz)`,
+        { now },
+      )
       .execute();
     this.logger.log(`Monthly reset applied to ${result.affected ?? 0} subscriptions`);
     return result.affected ?? 0;

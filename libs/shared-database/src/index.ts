@@ -6,3 +6,6 @@ export * from './lib/entities/plan.entity';
 export * from './lib/entities/subscription.entity';
 export * from './lib/entities/usage-record.entity';
 export * from './lib/entities/payment-event.entity';
+export * from './lib/entities/conversation.entity';
+export * from './lib/entities/message.entity';
+export * from './lib/entities/suggestion.entity';

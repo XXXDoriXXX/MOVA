@@ -1,25 +1,52 @@
-import { IsString, IsNotEmpty, IsPhoneNumber, IsOptional } from 'class-validator';
-import { AgentConfigDto } from '@mova-back/shared-agent';
+import { createZodDto } from 'nestjs-zod';
+import parsePhoneNumberFromString from 'libphonenumber-js';
+import { z } from 'zod';
 
-export class StartCallDto {
-  @IsString()
-  @IsNotEmpty()
-  @IsPhoneNumber(undefined, { message: 'Phone number must be valid (E.164 format preferred)' })
-  targetPhone: string;
+/**
+ * StartCallDto — request body for `POST /v1/calls/start`.
+ *
+ * Migrated from class-validator to Zod (nestjs-zod) for consistency with
+ * the rest of the codebase (Phase 0). Phone numbers are normalized to
+ * canonical E.164 via libphonenumber-js so downstream services don't have
+ * to re-parse.
+ *
+ * Backward-compat: legacy fields (userName, userRole, callReason) are kept
+ * optional because the existing agent-worker reads them from the dispatched
+ * context. New flows should rely on `templateId` instead.
+ */
+const PhoneSchema = z
+  .string()
+  .trim()
+  .min(5)
+  .max(20)
+  .transform((raw, ctx) => {
+    const parsed = parsePhoneNumberFromString(raw);
+    if (!parsed?.isValid()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Invalid phone number',
+      });
+      return z.NEVER;
+    }
+    return parsed.number;
+  });
 
-  @IsString()
-  @IsNotEmpty()
-  userName: string;
+export const StartCallSchema = z.object({
+  targetPhone: PhoneSchema,
+  /** Optional template id — when null/missing, server falls back to user's default. */
+  templateId: z.string().uuid().optional(),
+  /**
+   * @deprecated kept for back-compat with existing agent-worker contracts.
+   * Will be removed once agent-worker reads everything from the resolved
+   * Template + Conversation context.
+   */
+  userName: z.string().trim().min(1).max(120).optional(),
+  /** @deprecated see userName */
+  userRole: z.string().trim().min(1).max(120).optional(),
+  /** @deprecated see userName */
+  callReason: z.string().trim().min(1).max(500).optional(),
+  /** Free-form provider config override (used by existing agent-worker). */
+  config: z.record(z.string(), z.unknown()).optional(),
+});
 
-  @IsString()
-  @IsNotEmpty()
-  userRole: string; // for example: "glovo courier", "customer", "support_agent"
-
-  @IsString()
-  @IsNotEmpty()
-  callReason: string; // for example: "customer support", "delivery issue", "general inquiry"
-
-  @IsOptional()
-  config?: AgentConfigDto;
-}
-
+export class StartCallDto extends createZodDto(StartCallSchema) {}

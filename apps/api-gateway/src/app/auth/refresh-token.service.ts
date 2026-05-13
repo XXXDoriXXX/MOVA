@@ -78,54 +78,71 @@ export class RefreshTokenService {
   }> {
     const tokenHash = this.hash(rawToken);
 
-    const record = await this.repo.findOne({
-      where: { tokenHash },
-      relations: { user: true },
-    });
-
-    if (!record) {
-      throw new UnauthorizedException('Invalid refresh token');
-    }
-
-    if (record.revokedAt) {
-      // Replay attack: someone is using an already-revoked token.
-      // Defense in depth — revoke all sessions for the user, force re-login.
-      this.logger.warn(
-        `Refresh token replay detected for user ${record.userId} — revoking all sessions`,
-      );
-      await this.revokeAllForUser(record.userId);
-      throw new UnauthorizedException('Refresh token revoked');
-    }
-
-    if (record.expiresAt < new Date()) {
-      throw new UnauthorizedException('Refresh token expired');
-    }
-
-    if (this.userBlocked(record.user)) {
-      // Token is technically valid but user is blocked.
-      throw new UnauthorizedException('Account is blocked');
-    }
-
-    // Atomic revoke + issue new. Wrap in a transaction so we don't end up
-    // in a state where the user has no working token if the second write fails.
+    // Atomic compare-and-swap: an UPDATE that succeeds only if the token is
+    // currently un-revoked. Concurrent refresh attempts with the same token
+    // race here — at most one wins (sets revokedAt), the others see
+    // `affected === 0` and are treated as a replay attempt.
+    //
+    // This closes the TOCTOU window where two simultaneous refresh requests
+    // both passed a separate `revokedAt is null` read before either could
+    // write — without the CAS they would each issue a new token, leaving the
+    // user with two valid sessions and no audit trail of the second.
     return this.repo.manager.transaction(async (tx) => {
-      record.revokedAt = new Date();
-      await tx.save(record);
+      const revocationTime = new Date();
+      const claim = await tx
+        .createQueryBuilder()
+        .update(RefreshToken)
+        .set({ revokedAt: revocationTime })
+        .where('"tokenHash" = :tokenHash AND "revokedAt" IS NULL', { tokenHash })
+        .returning('*')
+        .execute();
+
+      const claimed = (claim.raw as RefreshToken[])[0];
+      if (!claimed) {
+        // Either the token doesn't exist, is already revoked, or another
+        // concurrent request claimed it first. Investigate by reading once
+        // more so we can distinguish "never existed" from "replay attack".
+        const probe = await tx.findOne(RefreshToken, {
+          where: { tokenHash },
+          relations: { user: true },
+        });
+        if (!probe) {
+          throw new UnauthorizedException('Invalid refresh token');
+        }
+        // The token existed but was already revoked — that's a replay attempt
+        // (or this exact request's twin won the race; either way, the user
+        // should re-authenticate so we treat conservatively).
+        this.logger.warn(
+          `Refresh token replay/race detected for user ${probe.userId} — revoking all sessions`,
+        );
+        await this.revokeAllForUser(probe.userId);
+        throw new UnauthorizedException('Refresh token revoked');
+      }
+
+      if (claimed.expiresAt < revocationTime) {
+        throw new UnauthorizedException('Refresh token expired');
+      }
+
+      // Load the user separately — RETURNING doesn't hydrate the relation.
+      const user = await tx.findOne(User, { where: { id: claimed.userId } });
+      if (this.userBlocked(user ?? undefined)) {
+        throw new UnauthorizedException('Account is blocked');
+      }
 
       const token = randomBytes(64).toString('base64url');
       const newHash = this.hash(token);
       const expiresAt = new Date(Date.now() + this.ttlMs);
 
       await tx.save(RefreshToken, {
-        userId: record.userId,
+        userId: claimed.userId,
         tokenHash: newHash,
         expiresAt,
-        userAgent: opts.userAgent ?? record.userAgent,
-        ipAddress: opts.ipAddress ?? record.ipAddress,
+        userAgent: opts.userAgent ?? claimed.userAgent,
+        ipAddress: opts.ipAddress ?? claimed.ipAddress,
       });
 
       return {
-        userId: record.userId,
+        userId: claimed.userId,
         newToken: { token, expiresAt },
       };
     });
@@ -133,12 +150,20 @@ export class RefreshTokenService {
 
   /**
    * Revoke a single device's token. Idempotent — re-revoking is a no-op.
+   *
+   * Implementation note: TypeORM's `update({ tokenHash, revokedAt: null })`
+   * compiles to `WHERE revokedAt = NULL` (always false) rather than
+   * `IS NULL`. We use the query builder to express `IS NULL` correctly,
+   * otherwise revoke would silently do nothing.
    */
   async revoke(rawToken: string): Promise<void> {
     const tokenHash = this.hash(rawToken);
-    await this.repo.update({ tokenHash, revokedAt: null as unknown as Date }, {
-      revokedAt: new Date(),
-    });
+    await this.repo
+      .createQueryBuilder()
+      .update(RefreshToken)
+      .set({ revokedAt: new Date() })
+      .where('"tokenHash" = :tokenHash AND "revokedAt" IS NULL', { tokenHash })
+      .execute();
   }
 
   /** Revoke ALL refresh tokens for a user. Used on password change / breach. */

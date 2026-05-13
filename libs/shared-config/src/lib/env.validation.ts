@@ -38,6 +38,9 @@ export const envSchema = z.object({
   REDIS_DB: z.coerce.number().int().nonnegative().default(0),
 
   // ── Auth (JWT) ─────────────────────────────────────
+  // SECURITY: JWT_SECRET has a dev-only default, but is REQUIRED in production
+  // (refine below). Without this, a deploy with a forgotten env var would sign
+  // tokens with the public default and any reader of this file could forge them.
   JWT_SECRET: z
     .string()
     .min(32, 'JWT_SECRET must be at least 32 chars (HS256). Replace with RS256 in prod.')
@@ -90,7 +93,24 @@ export const envSchema = z.object({
   // ── Internal service URLs ──────────────────────────
   AGENT_SERVICE_URL: z.string().url().optional(),
   REALTIME_PUBLIC_URL: z.string().url().optional(),
-});
+})
+  // Cross-field invariants — caught at startup, prevent footguns.
+  .superRefine((env, ctx) => {
+    if (env.NODE_ENV === 'production') {
+      if (env.JWT_SECRET === 'dev-only-secret-please-replace-in-production-min-32-chars') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['JWT_SECRET'],
+          message:
+            'JWT_SECRET must be set to a strong production value when NODE_ENV=production',
+        });
+      }
+      if (!env.SENTRY_DSN) {
+        // Warn, don't fail — we still allow Sentry-less deploys, but make it explicit.
+        // No-op here; observability layer will log a warning at bootstrap.
+      }
+    }
+  });
 
 export type AppEnv = z.infer<typeof envSchema>;
 

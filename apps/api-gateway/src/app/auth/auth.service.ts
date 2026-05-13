@@ -147,11 +147,14 @@ export class AuthService {
     await this.passwordBreach.assertNotBreached(dto.newPassword);
 
     const newHash = await bcrypt.hash(dto.newPassword, BCRYPT_COST);
-    await this.usersService.updatePasswordHash(userId, newHash);
 
-    // Force re-login on all other devices when password changes — defense
-    // against credential-stuffing scenarios where the user is in panic mode.
+    // Order matters: revoke sessions FIRST, then write the new hash.
+    // If the order were reversed and updatePasswordHash succeeded but
+    // revokeAllForUser failed, the password would be rotated while old
+    // sessions still work — strictly worse than "sessions cleared but
+    // password unchanged" (user simply retries).
     await this.refreshTokens.revokeAllForUser(userId);
+    await this.usersService.updatePasswordHash(userId, newHash);
   }
 
   async deleteAccount(userId: string, password: string): Promise<void> {

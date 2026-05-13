@@ -46,11 +46,8 @@ export class PasswordBreachService {
     if (!this.enabled) {
       return false;
     }
-    if (password.length < 1) {
-      // Defensive: empty password is already invalid upstream, but don't
-      // hash empty strings.
-      return false;
-    }
+    // DTO validation rejects passwords shorter than 8 chars, so the empty-
+    // string guard from a previous iteration was dead code — removed.
 
     const sha1Hex = createHash('sha1').update(password).digest('hex').toUpperCase();
     const prefix = sha1Hex.slice(0, 5);

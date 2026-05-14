@@ -28,6 +28,17 @@ export enum TtsStatus {
 }
 
 /**
+ * For USER_TYPED messages only — distinguishes "the user actually typed
+ * this" from "the user tapped an AI-generated suggestion". The distinction
+ * matters for style learning: only `typed` reflects the user's real voice.
+ * Null for non-USER_TYPED roles (AI, INTERLOCUTOR, SYSTEM).
+ */
+export enum MessageSource {
+  TYPED = 'typed',
+  SUGGESTION = 'suggestion',
+}
+
+/**
  * A single message in the conversation transcript.
  *
  * Mobile UX:
@@ -62,6 +73,14 @@ export class Message {
 
   @Column({ type: 'enum', enum: MessageRole })
   role!: MessageRole;
+
+  /**
+   * Set only when role=USER_TYPED. Drives style-learning eligibility — the
+   * UserStyleProfile builder ignores rows where source is 'suggestion'
+   * (those are the AI's words, not the user's).
+   */
+  @Column({ type: 'enum', enum: MessageSource, nullable: true })
+  source!: MessageSource | null;
 
   @Column({ type: 'text' })
   content!: string;

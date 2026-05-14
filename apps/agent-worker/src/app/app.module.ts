@@ -15,6 +15,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { EventsModule } from './events/events.module';
 import { HealthModule } from './health/health.module';
+import { AgentMetricsModule } from './metrics/metrics.module';
 import { ProvidersModule } from './providers/providers.module';
 import { SuggestionsModule } from './suggestions/suggestions.module';
 
@@ -55,6 +56,7 @@ import { SuggestionsModule } from './suggestions/suggestions.module';
     EventEmitterModule.forRoot({ wildcard: false }),
 
     HealthModule,
+    AgentMetricsModule,
     EventsModule,
     AgentModule,
     ProvidersModule,

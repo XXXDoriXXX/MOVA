@@ -7,7 +7,7 @@ import { REDIS_CLIENT } from '@mova-back/shared-redis';
 import { RedisChannels } from '@mova-back/shared-realtime';
 
 import { ProviderRegistry } from '../providers/provider-registry.service';
-import { UserStyleReaderService } from './user-style-reader.service';
+import { StyleResolverService } from './style-resolver.service';
 
 export interface SuggestionsRequest {
   conversationId: string;
@@ -26,11 +26,18 @@ export interface SuggestionsRequest {
   language?: string;
   /**
    * Authenticated owner of the conversation. Required for per-user style
-   * adaptation — when set and the user has a warmed-up profile, we inject
-   * a "match the user's dialect" addendum into the system prompt. Absent
-   * for legacy calls; suggestions fall back to neutral style.
+   * adaptation — when set and the active style is PERSONAL (or unspecified),
+   * we inject a "mimic this user's voice" addendum. Custom styles also need
+   * userId for the cross-tenant ownership check at resolver time.
    */
   userId?: string;
+  /**
+   * Active conversation style wire id ("builtin:<key>" or "custom:<uuid>").
+   * Defaults to PERSONAL when absent. Hot-swapped mid-call via
+   * CallControlAction.CHANGE_STYLE — the new value is read on the next
+   * suggestions turn.
+   */
+  styleId?: string;
 }
 
 /**
@@ -73,7 +80,7 @@ export class SuggestionsService {
   constructor(
     private readonly registry: ProviderRegistry,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
-    private readonly styleReader: UserStyleReaderService,
+    private readonly styleResolver: StyleResolverService,
   ) {}
 
   /**
@@ -106,10 +113,16 @@ export class SuggestionsService {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
 
-    // Fetch the style addendum in parallel with provider selection. Null on
-    // cold-start / warmup — buildMessages handles either branch.
-    const styleAddendum = await this.styleReader.buildPromptAddendum(
+    // Resolve the active style → its prompt block. The resolver:
+    //   - Reads the styleId (built-in or custom uuid)
+    //   - For PERSONAL: delegates to UserStyleReader; cold-start falls
+    //     back to FRIENDLY so we always have signal
+    //   - For OFFICIAL/FRIENDLY: returns the static instructions
+    //   - For custom:<uuid>: DB-fetches the row owned by `userId`
+    //   - On any failure: returns FRIENDLY (suggestions never crash)
+    const styleAddendum = await this.styleResolver.resolve(
       request.userId,
+      request.styleId,
     );
 
     try {

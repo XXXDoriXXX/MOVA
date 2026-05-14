@@ -91,6 +91,15 @@ export class Template {
   @Column({ type: 'varchar', length: 50, nullable: true })
   defaultTtsProvider!: string | null;
 
+  /**
+   * Default conversation style applied when /calls/start uses this template.
+   * Opaque ID string — `builtin:<key>` or `custom:<uuid>` (see
+   * shared-realtime/conversation-styles). The user's preferredStyleId still
+   * wins over this; null falls through to the global default (PERSONAL).
+   */
+  @Column({ type: 'varchar', length: 80, nullable: true })
+  defaultStyleId!: string | null;
+
   /** This user's chosen default — exactly one per user (partial unique idx). */
   @Column({ default: false })
   isDefault!: boolean;

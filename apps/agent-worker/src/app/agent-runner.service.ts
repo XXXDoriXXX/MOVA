@@ -33,6 +33,8 @@ interface CallControlMessage {
   model?: string;
   suggestionId?: string;
   reason?: string;
+  /** Active conversation style id, wire format ("builtin:..." | "custom:..."). */
+  styleId?: string;
   /** Legacy shape support — old api-gateway code path. */
   roomName?: string;
 }
@@ -235,6 +237,13 @@ export class AgentRunnerService
         this.logger.log(
           `change_model type=${msg.providerType} provider=${msg.provider} model=${msg.model} — applies next call`,
         );
+        return;
+
+      case CallControlAction.CHANGE_STYLE:
+        // Style is consumed lazily by SuggestionsService at the next turn;
+        // we just mutate the handler's tracked id. No audio interruption,
+        // no provider swap — safe to do mid-utterance.
+        if (msg.styleId) await handler.setActiveStyle(msg.styleId);
         return;
 
       default:

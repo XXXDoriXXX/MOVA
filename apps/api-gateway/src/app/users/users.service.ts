@@ -19,6 +19,11 @@ interface UpdateProfileInput {
   preferredLlmProvider?: string;
   preferredLlmModel?: string;
   preferredTtsProvider?: string;
+  /**
+   * Wire ID — "builtin:<key>" or "custom:<uuid>". Validated by
+   * ConversationStylesService before this method is called. NULL clears.
+   */
+  preferredStyleId?: string | null;
 }
 
 /**

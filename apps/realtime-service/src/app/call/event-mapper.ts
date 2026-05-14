@@ -158,6 +158,16 @@ export function mapInternalToServer(event: InternalCallEvent): ServerEvent | nul
       // the next GET /conversations/:id/messages page.
       return null;
 
+    case 'call.config.changed':
+      // Style / voice / model swap confirmation. All fields optional — pass
+      // through only those present so the WS payload stays minimal.
+      return {
+        type: 'call.config.changed',
+        id,
+        timestamp,
+        data: { ...event.data },
+      };
+
     default:
       return null;
   }

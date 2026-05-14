@@ -129,7 +129,7 @@ export const ServerEvent = {
     }),
   }),
 
-  /** Confirmation of `user.change_voice` / `user.change_model`. */
+  /** Confirmation of `user.change_voice` / `user.change_model` / `user.change_style`. */
   callConfigChanged: envelope.extend({
     type: z.literal('call.config.changed'),
     data: z.object({
@@ -137,6 +137,14 @@ export const ServerEvent = {
       provider: z.string().optional(),
       model: z.string().optional(),
       voice: z.string().optional(),
+      /**
+       * Active conversation style after the change — wire ID:
+       * "builtin:official" / "builtin:friendly" / "builtin:personal" /
+       * "custom:<uuid>". Surfaces so the mobile picker can keep its
+       * selected-chip state in sync after a switch from another device or
+       * after a reconnect-replay.
+       */
+      styleId: z.string().optional(),
     }),
   }),
 
@@ -232,6 +240,20 @@ export const ClientCommand = {
     }),
   }),
 
+  /**
+   * Switch the active conversation style mid-call. Wire id is the same
+   * format the REST endpoints use: "builtin:<key>" or "custom:<uuid>".
+   * Takes effect on the NEXT suggestion turn (no re-rendering of past
+   * messages). Server confirms with a `call.config.changed` event carrying
+   * the new `styleId`.
+   */
+  changeStyle: z.object({
+    type: z.literal('user.change_style'),
+    data: z.object({
+      styleId: z.string().min(1).max(80),
+    }),
+  }),
+
   endCall: z.object({
     type: z.literal('user.end_call'),
   }),
@@ -247,6 +269,7 @@ export const ClientCommandSchema = z.discriminatedUnion('type', [
   ClientCommand.stopTts,
   ClientCommand.changeVoice,
   ClientCommand.changeModel,
+  ClientCommand.changeStyle,
   ClientCommand.endCall,
   ClientCommand.ping,
 ]);

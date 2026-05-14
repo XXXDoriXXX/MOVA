@@ -21,6 +21,13 @@ export interface AgentContext {
     defaultTtsProvider: string | null;
     defaultVoice: string | null;
   } | null;
+  /**
+   * Active conversation style at call start. Resolved by api-gateway with
+   * precedence: user.preferredStyleId > template.defaultStyleId > built-in
+   * PERSONAL. Wire format: "builtin:<key>" or "custom:<uuid>". Mutated
+   * mid-call via CallControlAction.CHANGE_STYLE.
+   */
+  activeStyleId?: string;
   /** Legacy fields kept for back-compat with the existing LiveKit Agents pipeline. */
   userName: string;
   userRole: string;

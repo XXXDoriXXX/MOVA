@@ -292,6 +292,9 @@ export class AgentCallHandler {
         systemPrompt: this.userContext.template.systemPrompt,
         recentMessages: this.recentMessages.slice(),
         language: this.userContext.template.language,
+        // Forward userId so SuggestionsService can adapt to the user's style.
+        // Optional — null userContext.userId disables style mimicry.
+        userId: this.userContext.userId,
       });
     }
   }

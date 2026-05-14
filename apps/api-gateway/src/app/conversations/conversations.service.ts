@@ -8,6 +8,7 @@ import {
   ConversationStatus,
   Message,
   MessageRole,
+  MessageSource,
   Suggestion,
   TtsStatus,
 } from '@mova-back/shared-database';
@@ -39,6 +40,8 @@ interface InsertMessageInput {
   ttsProvider?: string | null;
   ttsVoice?: string | null;
   durationMs?: number | null;
+  /** For role=USER_TYPED: distinguishes 'typed' vs 'suggestion'. Null otherwise. */
+  source?: MessageSource | null;
 }
 
 export interface ListConversationsQuery {
@@ -253,6 +256,10 @@ export class ConversationsService {
       ttsProvider: input.ttsProvider ?? null,
       ttsVoice: input.ttsVoice ?? null,
       durationMs: input.durationMs ?? null,
+      // source only meaningful for USER_TYPED; defensively null otherwise so
+      // the column never claims an AI message was "typed by the user".
+      source:
+        input.role === MessageRole.USER_TYPED ? input.source ?? null : null,
     });
   }
 

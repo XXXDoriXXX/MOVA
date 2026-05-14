@@ -1,9 +1,12 @@
-import { NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
+import type { Redis } from 'ioredis';
 import { Repository } from 'typeorm';
 
 import {
   AuditAction,
+  AuditTargetType,
   Conversation,
+  ConversationEndReason,
   ConversationStatus,
   Message,
   MessageRole,
@@ -15,6 +18,7 @@ import {
 } from '@mova-back/shared-database';
 
 import { RefreshTokenService } from '../auth/refresh-token.service';
+import type { ConversationLifecycleService } from '../conversations/conversation-lifecycle.service';
 import { AdminService } from './admin.service';
 import type { AuditActor, AuditLogService } from './audit-log.service';
 
@@ -112,6 +116,8 @@ describe('AdminService', () => {
   let messages: jest.Mocked<Repository<Message>>;
   let refreshTokens: jest.Mocked<RefreshTokenService>;
   let auditLog: jest.Mocked<AuditLogService>;
+  let lifecycle: jest.Mocked<ConversationLifecycleService>;
+  let redis: jest.Mocked<Redis>;
   let svc: AdminService;
 
   beforeEach(() => {
@@ -130,6 +136,12 @@ describe('AdminService', () => {
       listByActor: jest.fn(),
       listByTarget: jest.fn(),
     } as unknown as jest.Mocked<AuditLogService>;
+    lifecycle = {
+      endCall: jest.fn(),
+    } as unknown as jest.Mocked<ConversationLifecycleService>;
+    redis = {
+      publish: jest.fn().mockResolvedValue(1),
+    } as unknown as jest.Mocked<Redis>;
     svc = new AdminService(
       users,
       subs,
@@ -138,6 +150,8 @@ describe('AdminService', () => {
       messages,
       refreshTokens,
       auditLog,
+      lifecycle,
+      redis,
     );
   });
 
@@ -442,6 +456,153 @@ describe('AdminService', () => {
       const qb = wireQb([]);
       await svc.listConversationMessages('conv-id', { limit: 9999 });
       expect(qb.limit).toHaveBeenCalledWith(101); // 100 + 1 for hasMore
+    });
+  });
+
+  describe('forceEndConversation', () => {
+    it('publishes END control + calls lifecycle.endCall + writes audit row', async () => {
+      const active = makeConv({ status: ConversationStatus.ACTIVE });
+      const ended = makeConv({ status: ConversationStatus.ENDED });
+      convs.findOne.mockResolvedValue(active);
+      (lifecycle.endCall as jest.Mock).mockResolvedValue({
+        conversation: ended,
+        secondsBilled: 42,
+        costCents: 0,
+        source: 'free',
+        idempotentReplay: false,
+      });
+
+      const result = await svc.forceEndConversation(
+        active.id,
+        'abuse on call',
+        ADMIN_ACTOR,
+        REQ_CTX,
+      );
+
+      expect(redis.publish).toHaveBeenCalledWith(
+        expect.stringContaining(`call-controls:${active.id}`),
+        expect.stringContaining('"action":"end"'),
+      );
+      expect(lifecycle.endCall).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: active.id,
+          reason: ConversationEndReason.ADMIN,
+          errorCode: 'admin_forced',
+        }),
+      );
+      expect(auditLog.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: AuditAction.CONVERSATION_FORCE_ENDED,
+          targetType: AuditTargetType.CONVERSATION,
+          targetId: active.id,
+          metadata: expect.objectContaining({
+            reason: 'abuse on call',
+            previousStatus: ConversationStatus.ACTIVE,
+            durationSeconds: 42,
+          }),
+        }),
+      );
+      expect(result).toBe(ended);
+    });
+
+    it('proceeds with DB-side end-call even if Redis publish fails', async () => {
+      const active = makeConv({ status: ConversationStatus.ACTIVE });
+      convs.findOne.mockResolvedValue(active);
+      (redis.publish as jest.Mock).mockRejectedValueOnce(new Error('redis down'));
+      (lifecycle.endCall as jest.Mock).mockResolvedValue({
+        conversation: makeConv({ status: ConversationStatus.ENDED }),
+        secondsBilled: 0,
+        costCents: 0,
+        source: 'free',
+        idempotentReplay: false,
+      });
+
+      await expect(
+        svc.forceEndConversation(active.id, 'r', ADMIN_ACTOR),
+      ).resolves.toBeDefined();
+      expect(lifecycle.endCall).toHaveBeenCalled();
+      expect(auditLog.record).toHaveBeenCalled();
+    });
+
+    it('throws 404 on missing conversation', async () => {
+      convs.findOne.mockResolvedValue(null);
+      await expect(
+        svc.forceEndConversation('missing', 'r', ADMIN_ACTOR),
+      ).rejects.toThrow(NotFoundException);
+      expect(lifecycle.endCall).not.toHaveBeenCalled();
+    });
+
+    it('throws 409 on already-terminal conversation', async () => {
+      convs.findOne.mockResolvedValue(makeConv({ status: ConversationStatus.ENDED }));
+      await expect(
+        svc.forceEndConversation('conv', 'r', ADMIN_ACTOR),
+      ).rejects.toThrow(ConflictException);
+      expect(lifecycle.endCall).not.toHaveBeenCalled();
+      expect(auditLog.record).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('resolveIncident', () => {
+    const INCIDENT_ID = '00000000-0000-4000-8000-00000000c00d';
+
+    function makeIncident(over: Partial<ProviderIncident> = {}): ProviderIncident {
+      return {
+        id: INCIDENT_ID,
+        conversationId: null,
+        providerType: ProviderType.LLM,
+        providerName: 'openai',
+        errorCode: 'timeout',
+        errorMessage: 'boom',
+        occurredAt: new Date('2026-05-14T10:00:00Z'),
+        recoveredAt: null,
+        conversation: null,
+        ...over,
+      } as ProviderIncident;
+    }
+
+    it('marks recoveredAt + writes audit row', async () => {
+      const open = makeIncident();
+      const resolved = makeIncident({ recoveredAt: new Date('2026-05-14T11:00:00Z') });
+      // First findOne: before resolution. Second: after.
+      incidents.findOne
+        .mockResolvedValueOnce(open)
+        .mockResolvedValueOnce(resolved);
+
+      const result = await svc.resolveIncident(INCIDENT_ID, 'breaker green', ADMIN_ACTOR, REQ_CTX);
+
+      expect(incidents.update).toHaveBeenCalledWith(
+        { id: INCIDENT_ID },
+        expect.objectContaining({ recoveredAt: expect.any(Date) }),
+      );
+      expect(auditLog.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: AuditAction.INCIDENT_RESOLVED,
+          targetType: AuditTargetType.INCIDENT,
+          targetId: INCIDENT_ID,
+          metadata: expect.objectContaining({
+            note: 'breaker green',
+            providerName: 'openai',
+          }),
+        }),
+      );
+      expect(result).toBe(resolved);
+    });
+
+    it('is idempotent — already-resolved incident is a no-op', async () => {
+      const already = makeIncident({ recoveredAt: new Date() });
+      incidents.findOne.mockResolvedValueOnce(already);
+
+      const result = await svc.resolveIncident(INCIDENT_ID, 'n', ADMIN_ACTOR);
+      expect(result).toBe(already);
+      expect(incidents.update).not.toHaveBeenCalled();
+      expect(auditLog.record).not.toHaveBeenCalled();
+    });
+
+    it('throws 404 on missing incident', async () => {
+      incidents.findOne.mockResolvedValue(null);
+      await expect(
+        svc.resolveIncident('missing', 'n', ADMIN_ACTOR),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 });

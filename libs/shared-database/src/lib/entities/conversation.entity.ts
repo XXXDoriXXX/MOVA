@@ -26,6 +26,12 @@ export enum ConversationEndReason {
   BALANCE = 'balance',
   FATAL_ERROR = 'fatal_error',
   TIMEOUT = 'timeout',
+  /**
+   * Force-ended by an admin (moderation, stuck-call cleanup). The audit_logs
+   * row carries the actor + reason; this enum value is what shows up on the
+   * conversation row and in the mobile history banner.
+   */
+  ADMIN = 'admin',
 }
 
 /**

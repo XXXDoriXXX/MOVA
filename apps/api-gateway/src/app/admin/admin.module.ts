@@ -11,6 +11,7 @@ import {
 } from '@mova-back/shared-database';
 
 import { AuthModule } from '../auth/auth.module';
+import { ConversationsModule } from '../conversations/conversations.module';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { AuditLogService } from './audit-log.service';
@@ -34,6 +35,7 @@ import { AuditLogService } from './audit-log.service';
       AuditLog,
     ]),
     AuthModule,
+    ConversationsModule,
   ],
   controllers: [AdminController],
   providers: [AdminService, AuditLogService],

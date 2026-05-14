@@ -1,10 +1,24 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import type { Redis } from 'ioredis';
 import { IsNull, MoreThan, Repository } from 'typeorm';
 
+import { REDIS_CLIENT } from '@mova-back/shared-redis';
+import {
+  CallControlAction,
+  RedisChannels,
+} from '@mova-back/shared-realtime';
 import {
   AuditAction,
+  AuditTargetType,
   Conversation,
+  ConversationEndReason,
   ConversationStatus,
   Message,
   ProviderIncident,
@@ -14,6 +28,7 @@ import {
 } from '@mova-back/shared-database';
 
 import { RefreshTokenService } from '../auth/refresh-token.service';
+import { ConversationLifecycleService } from '../conversations/conversation-lifecycle.service';
 import { AuditLogService, type AuditActor } from './audit-log.service';
 
 export interface ListUsersQuery {
@@ -103,6 +118,8 @@ export class AdminService {
     private readonly messages: Repository<Message>,
     private readonly refreshTokens: RefreshTokenService,
     private readonly auditLog: AuditLogService,
+    private readonly lifecycle: ConversationLifecycleService,
+    @Inject(REDIS_CLIENT) private readonly redis: Redis,
   ) {}
 
   // ── Users ──────────────────────────────────────────
@@ -344,6 +361,154 @@ export class AdminService {
       ? items[items.length - 1].createdAt.toISOString()
       : null;
     return { items, nextCursor };
+  }
+
+  /**
+   * Admin moderation: force-end an in-progress call.
+   *
+   * Use cases:
+   *   - Stuck call: WS dropped, agent-worker crashed mid-call, the row is
+   *     stuck in ACTIVE state and the watchdog hasn't tripped yet.
+   *   - Abusive content: support sees abuse on the live feed and pulls the
+   *     plug. (Note: live transcript visibility for support is a separate
+   *     follow-up; for now this serves stuck-call cleanup.)
+   *
+   * Flow:
+   *   1. Lookup + state check. Reject 409 if already ENDED/FAILED.
+   *   2. Publish CallControlAction.END on `call-controls:{id}` so agent-worker
+   *      tears down LiveKit gracefully (releases the SIP trunk, frees the room).
+   *      Failure here is logged but NOT fatal — the DB-side mark-ended below
+   *      still happens. Worst case: a zombie LiveKit room until its idle timeout.
+   *   3. ConversationLifecycleService.endCall with reason=ADMIN. This handles
+   *      idempotency, billing settlement, metrics, the works.
+   *   4. AuditLog write — failure non-fatal.
+   *
+   * Returns the freshly-ended Conversation row.
+   */
+  async forceEndConversation(
+    id: string,
+    reason: string,
+    actor: AuditActor | null,
+    request?: { ip?: string | null; userAgent?: string | null },
+  ): Promise<Conversation> {
+    const conversation = await this.conversations.findOne({
+      where: { id },
+      withDeleted: true,
+    });
+    if (!conversation) {
+      throw new NotFoundException('Conversation not found');
+    }
+    if (
+      conversation.status === ConversationStatus.ENDED ||
+      conversation.status === ConversationStatus.FAILED
+    ) {
+      throw new ConflictException(
+        `Conversation is already in terminal state (${conversation.status})`,
+      );
+    }
+
+    // Signal agent-worker first so LiveKit/SIP teardown overlaps with our
+    // billing commit. Best-effort — Redis blip shouldn't block the DB write.
+    try {
+      await this.redis.publish(
+        RedisChannels.callControls(id),
+        JSON.stringify({
+          action: CallControlAction.END,
+          initiatedBy: actor?.id ?? 'system',
+          reason: 'admin',
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Force-end Redis publish failed for conversation ${id} — DB-side mark-ended will still proceed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    const truncatedReason = reason.slice(0, 280);
+    const result = await this.lifecycle.endCall({
+      conversationId: id,
+      reason: ConversationEndReason.ADMIN,
+      errorCode: 'admin_forced',
+    });
+
+    this.logger.warn(
+      `Admin force-ended conversation ${id} by actor=${actor?.id ?? 'system'}: ${truncatedReason}`,
+    );
+
+    await this.auditLog.record({
+      actor,
+      action: AuditAction.CONVERSATION_FORCE_ENDED,
+      targetType: AuditTargetType.CONVERSATION,
+      targetId: id,
+      metadata: {
+        reason: truncatedReason,
+        previousStatus: conversation.status,
+        idempotentReplay: result.idempotentReplay,
+        durationSeconds: result.secondsBilled,
+        userId: conversation.userId,
+      },
+      ipAddress: request?.ip ?? null,
+      userAgent: request?.userAgent ?? null,
+    });
+
+    return result.conversation;
+  }
+
+  /**
+   * Admin moderation: manually mark a ProviderIncident as recovered.
+   *
+   * Use case: the breaker recovered but the half-open probe never tripped
+   * the success path (rare — but the alerts page still shows it "active").
+   * Admin clicks "resolve" to clear the noise.
+   *
+   * Idempotent: resolving an already-resolved incident is a no-op (no DB
+   * write, no second audit row). Returns the canonical row either way.
+   */
+  async resolveIncident(
+    id: string,
+    note: string,
+    actor: AuditActor | null,
+    request?: { ip?: string | null; userAgent?: string | null },
+  ): Promise<ProviderIncident> {
+    const incident = await this.incidents.findOne({ where: { id } });
+    if (!incident) {
+      throw new NotFoundException('Incident not found');
+    }
+    if (incident.recoveredAt) {
+      // Already resolved — don't re-audit. Surface the existing row.
+      return incident;
+    }
+
+    const now = new Date();
+    await this.incidents.update({ id }, { recoveredAt: now });
+    const updated = (await this.incidents.findOne({ where: { id } })) ?? {
+      ...incident,
+      recoveredAt: now,
+    };
+
+    this.logger.log(
+      `Admin resolved incident ${id} (${incident.providerType}:${incident.providerName})`,
+    );
+
+    await this.auditLog.record({
+      actor,
+      action: AuditAction.INCIDENT_RESOLVED,
+      targetType: AuditTargetType.INCIDENT,
+      targetId: id,
+      metadata: {
+        note: note.slice(0, 280),
+        providerType: incident.providerType,
+        providerName: incident.providerName,
+        errorCode: incident.errorCode,
+        occurredAt: incident.occurredAt.toISOString(),
+      },
+      ipAddress: request?.ip ?? null,
+      userAgent: request?.userAgent ?? null,
+    });
+
+    return updated;
   }
 
   // ── Stats + incidents ──────────────────────────────

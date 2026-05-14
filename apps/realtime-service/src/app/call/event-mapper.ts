@@ -21,11 +21,14 @@ import {
  * Returns null for events that have no public counterpart (e.g. provider.failure
  * goes to ProviderIncident logging, not the client). Callers must guard.
  *
- * Each emitted event gets a fresh UUID `id` so the client can dedupe and use
- * it as `lastEventId` on reconnect (Phase 5 replay buffer follow-up).
+ * Event id strategy:
+ *   - Prefer `event.streamId` (set by CallEventPublisher via XADD) — gives
+ *     the client a monotonic cursor for `lastStreamId` reconnects.
+ *   - Fall back to a fresh UUID when streamId is missing (legacy producers
+ *     or events synthesized inside realtime-service like AGENT_LOST).
  */
 export function mapInternalToServer(event: InternalCallEvent): ServerEvent | null {
-  const id = randomUUID();
+  const id = event.streamId ?? randomUUID();
   const timestamp = event.occurredAt;
 
   switch (event.type) {

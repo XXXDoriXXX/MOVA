@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, Repository } from 'typeorm';
+import { Between, QueryFailedError, Repository } from 'typeorm';
 
 import {
   PaymentEvent,
@@ -372,26 +372,59 @@ export class BillingService {
    *   - The current callers (mobile topup flow) get the paymentUrl from
    *     `paymentUrl?: string` field that we plumb through here.
    *
-   * Idempotency:
-   *   - externalId is a fresh UUID per call (no real provider correlation
-   *     possible yet). If we ever resubmit the exact same externalId, the
-   *     UNIQUE index on payment_events.externalId rejects the duplicate;
-   *     callers must catch and re-read.
+   * Idempotency (two-layer):
+   *   - `externalId` (UUID per call) is the **provider-side** key; UNIQUE
+   *     prevents double-process of provider webhook retries.
+   *   - `idempotencyKey` (optional, from the mobile `Idempotency-Key` header)
+   *     is the **client-side** key. When supplied:
+   *       1. We first look up (userId, idempotencyKey) — if a SUCCESS row
+   *          exists, we return it WITHOUT charging again. The reported
+   *          `balanceCents` is the current balance (which already includes
+   *          the original credit), so the client UI converges to the same
+   *          state on retry.
+   *       2. Otherwise we proceed with the topup and persist the key.
+   *       3. If two retries race past the lookup AND both reach INSERT, the
+   *          partial UNIQUE index raises a `unique_violation` on the loser.
+   *          We catch that specific error code, re-read the winner's row,
+   *          and return it.
+   *     Without a key (legacy clients / cron): behaves exactly like before.
    *
    * Money invariants:
    *   - amountCents must be in [MIN_TOPUP_CENTS, MAX_TOPUP_CENTS]. Below
    *     min we waste a webhook; above max we want manual review (anti-
    *     fraud + chargeback risk).
+   *   - idempotencyKey length capped at 64 chars to match the column.
    */
   async fakeTopup(
     userId: string,
     amountCents: number,
-  ): Promise<{ paymentEvent: PaymentEvent; balanceCents: number }> {
+    idempotencyKey?: string | null,
+  ): Promise<{ paymentEvent: PaymentEvent; balanceCents: number; reused: boolean }> {
     if (!Number.isInteger(amountCents) || amountCents < MIN_TOPUP_CENTS) {
       throw new Error(`Topup amount below min (${MIN_TOPUP_CENTS} cents)`);
     }
     if (amountCents > MAX_TOPUP_CENTS) {
       throw new Error(`Topup amount above max (${MAX_TOPUP_CENTS} cents)`);
+    }
+
+    const normalizedKey = this.normalizeIdempotencyKey(idempotencyKey);
+
+    // Fast path: same key resubmitted. Skip the whole transaction.
+    if (normalizedKey) {
+      const existing = await this.payments.findOne({
+        where: { userId, idempotencyKey: normalizedKey },
+      });
+      if (existing) {
+        this.logger.log(
+          `Topup idempotency hit userId=${userId} key=${normalizedKey} → reused paymentEvent=${existing.id}`,
+        );
+        const sub = await this.loadSubscription(userId);
+        return {
+          paymentEvent: existing,
+          balanceCents: sub.balanceCents,
+          reused: true,
+        };
+      }
     }
 
     const sub = await this.loadSubscription(userId);
@@ -400,36 +433,90 @@ export class BillingService {
     // atomic. PaymentEvent INSERT first (UNIQUE externalId guards against
     // dup-submit); balance UPDATE second (the CHECK constraint makes
     // negative balance impossible).
-    return this.subscriptions.manager.transaction(async (tx) => {
-      const externalId = `fake_${randomUUID()}`;
-      const paymentEvent = await tx.save(PaymentEvent, {
-        userId,
-        externalId,
-        amountCents,
-        currency: sub.plan.currency,
-        status: PaymentEventStatus.SUCCESS,
-        payload: { provider: 'fake', note: 'MVP test mode — no real provider' },
-        processedAt: new Date(),
+    try {
+      return await this.subscriptions.manager.transaction(async (tx) => {
+        const externalId = `fake_${randomUUID()}`;
+        const paymentEvent = await tx.save(PaymentEvent, {
+          userId,
+          externalId,
+          idempotencyKey: normalizedKey,
+          amountCents,
+          currency: sub.plan.currency,
+          status: PaymentEventStatus.SUCCESS,
+          payload: { provider: 'fake', note: 'MVP test mode — no real provider' },
+          processedAt: new Date(),
+        });
+
+        const result = await tx
+          .createQueryBuilder()
+          .update(Subscription)
+          .set({ balanceCents: () => `"balanceCents" + :amount` })
+          .where('"userId" = :userId', { userId })
+          .setParameters({ amount: amountCents })
+          .returning('*')
+          .execute();
+
+        const updated = (result.raw as Subscription[])[0];
+        if (!updated) {
+          throw new SubscriptionNotFoundError(userId);
+        }
+        this.logger.log(
+          `Fake topup userId=${userId} amount=${amountCents}c → balance=${updated.balanceCents}c` +
+            (normalizedKey ? ` key=${normalizedKey}` : ''),
+        );
+        return {
+          paymentEvent,
+          balanceCents: updated.balanceCents,
+          reused: false,
+        };
       });
-
-      const result = await tx
-        .createQueryBuilder()
-        .update(Subscription)
-        .set({ balanceCents: () => `"balanceCents" + :amount` })
-        .where('"userId" = :userId', { userId })
-        .setParameters({ amount: amountCents })
-        .returning('*')
-        .execute();
-
-      const updated = (result.raw as Subscription[])[0];
-      if (!updated) {
-        throw new SubscriptionNotFoundError(userId);
+    } catch (err) {
+      // Two simultaneous retries with the same idempotency key can both pass
+      // the fast-path lookup. The partial UNIQUE index serializes the writes
+      // — the loser sees pg error 23505 (unique_violation). Recover by
+      // returning the winner's row instead of bubbling the 500.
+      if (normalizedKey && this.isUniqueViolation(err)) {
+        const winner = await this.payments.findOne({
+          where: { userId, idempotencyKey: normalizedKey },
+        });
+        if (winner) {
+          const refreshed = await this.loadSubscription(userId);
+          this.logger.log(
+            `Topup idempotency race resolved userId=${userId} key=${normalizedKey} → reused paymentEvent=${winner.id}`,
+          );
+          return {
+            paymentEvent: winner,
+            balanceCents: refreshed.balanceCents,
+            reused: true,
+          };
+        }
       }
-      this.logger.log(
-        `Fake topup userId=${userId} amount=${amountCents}c → balance=${updated.balanceCents}c`,
-      );
-      return { paymentEvent, balanceCents: updated.balanceCents };
-    });
+      throw err;
+    }
+  }
+
+  /**
+   * Trim + length-cap idempotency keys from clients. We accept up to 64
+   * chars; longer strings are rejected outright (loud failure beats silently
+   * deduping against the wrong row).
+   */
+  private normalizeIdempotencyKey(
+    raw: string | null | undefined,
+  ): string | null {
+    if (raw == null) return null;
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return null;
+    if (trimmed.length > 64) {
+      throw new Error('Idempotency-Key exceeds 64 chars');
+    }
+    return trimmed;
+  }
+
+  /** Recognise Postgres unique_violation (SQLSTATE 23505) on either externalId or idempotencyKey. */
+  private isUniqueViolation(err: unknown): boolean {
+    if (!(err instanceof QueryFailedError)) return false;
+    const driverError = (err as QueryFailedError & { code?: string }).code;
+    return driverError === '23505';
   }
 
   /**

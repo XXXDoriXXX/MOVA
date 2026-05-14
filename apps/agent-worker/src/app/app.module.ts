@@ -6,6 +6,7 @@ import { SentryGlobalFilter, SentryModule } from '@sentry/nestjs/setup';
 import { LoggerModule } from 'nestjs-pino';
 
 import { SharedConfigModule, type AppEnv } from '@mova-back/shared-config';
+import { SharedDatabaseModule } from '@mova-back/shared-database';
 import { SharedRedisModule } from '@mova-back/shared-redis';
 
 import { AgentRunnerService } from './agent-runner.service';
@@ -13,6 +14,7 @@ import { AgentModule } from './agent/agent.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { HealthModule } from './health/health.module';
+import { ProvidersModule } from './providers/providers.module';
 
 @Module({
   imports: [
@@ -46,10 +48,13 @@ import { HealthModule } from './health/health.module';
 
     SharedRedisModule,
 
+    SharedDatabaseModule,
+
     EventEmitterModule.forRoot({ wildcard: false }),
 
     HealthModule,
     AgentModule,
+    ProvidersModule,
   ],
   controllers: [AppController],
   providers: [AppService, AgentRunnerService, { provide: APP_FILTER, useClass: SentryGlobalFilter }],

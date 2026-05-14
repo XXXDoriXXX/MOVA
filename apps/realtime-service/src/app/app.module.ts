@@ -10,6 +10,7 @@ import { SharedRedisModule } from '@mova-back/shared-redis';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { CallModule } from './call/call.module';
 import { HealthModule } from './health/health.module';
 
 @Module({
@@ -51,6 +52,7 @@ import { HealthModule } from './health/health.module';
     EventEmitterModule.forRoot({ wildcard: false }),
 
     HealthModule,
+    CallModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_FILTER, useClass: SentryGlobalFilter }],

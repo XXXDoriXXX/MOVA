@@ -1,6 +1,24 @@
-version: '3.8'
+# ============================================================================
+# Development overrides — auto-merged into docker-compose.yml.
+#
+# What changes vs. base compose:
+#   - All three Node services switch to `nx serve` (hot reload).
+#   - Source code is bind-mounted so edits restart the process automatically.
+#   - dist + .nx folders are kept INSIDE the container (anonymous volumes)
+#     to prevent Windows ↔ Linux path-separator cross-OS cache poisoning.
+#
+# To run prod-shaped stack (without these overrides):
+#   docker compose -f docker-compose.yml up -d --build
+# ============================================================================
 
 services:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Migrations — same in dev as prod (one-shot). No override needed.
+  # ──────────────────────────────────────────────────────────────────────────
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # api-gateway — nx serve with hot reload
+  # ──────────────────────────────────────────────────────────────────────────
   api-gateway:
     build:
       context: .
@@ -9,27 +27,49 @@ services:
     command: npx nx serve api-gateway --host 0.0.0.0 --skip-nx-cache
     volumes:
       - .:/app
+      - /app/node_modules # anonymous — never bind-mount host node_modules
+      - /app/dist         # isolate build output from host FS (Windows safety)
+      - /app/.nx          # isolate Nx cache for the same reason
+    environment:
+      NODE_ENV: development
+      NPM_CONFIG_CACHE: /tmp/.npm
+      NX_DAEMON: "false"  # daemon is unreliable inside containers; disable
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # realtime-service — same dev pattern
+  # ──────────────────────────────────────────────────────────────────────────
+  realtime-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: base
+    command: npx nx serve realtime-service --host 0.0.0.0 --skip-nx-cache
+    volumes:
+      - .:/app
       - /app/node_modules
-      - /app/dist          # Ізолюємо результати збірки від Windows
+      - /app/dist
       - /app/.nx
     environment:
       NODE_ENV: development
       NPM_CONFIG_CACHE: /tmp/.npm
-      NX_DAEMON: "false"   # Вимикаємо демона для стабільності в Docker
+      NX_DAEMON: "false"
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # agent-worker — same dev pattern
+  # ──────────────────────────────────────────────────────────────────────────
   agent-worker:
     build:
       context: .
       dockerfile: Dockerfile
       target: base
-    command: npx nx serve agent-worker --host 0.0.0.0
+    command: npx nx serve agent-worker --host 0.0.0.0 --skip-nx-cache
     volumes:
       - .:/app
       - /app/node_modules
-      - /app/dist          # Ізолюємо результати збірки від Windows
-      - /app/.nx/cache     # Ізолюємо кеш Nx
+      - /app/dist
+      - /app/.nx
     environment:
       NODE_ENV: development
       NPM_CONFIG_CACHE: /tmp/.npm
-      NX_DAEMON: "false"   # Вимикаємо демона для стабільності в Docker
+      NX_DAEMON: "false"
       NX_SKIP_NX_CACHE: "true"

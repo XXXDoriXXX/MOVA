@@ -44,11 +44,24 @@ describe('ProviderRegistry', () => {
     openai = makeProvider(LlmProviderEnum.OPENAI);
     anthropic = makeProvider(LlmProviderEnum.ANTHROPIC);
     groq = makeProvider(LlmProviderEnum.GROQ);
+    // Stub histograms + gauges — Prom-client objects are heavy; we just
+    // need the call surface for the registry to invoke without errors.
+    const stubHistogram = {
+      startTimer: jest.fn(() => jest.fn()),
+      observe: jest.fn(),
+    } as unknown as never;
+    const stubGauge = {
+      set: jest.fn(),
+      inc: jest.fn(),
+      dec: jest.fn(),
+    } as unknown as never;
     registry = new ProviderRegistry(
       incidents,
       openai as never,
       anthropic as never,
       groq as never,
+      stubHistogram,
+      stubGauge,
     );
   });
 

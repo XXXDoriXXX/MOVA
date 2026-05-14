@@ -3,6 +3,7 @@ import { config as loadDotenv } from 'dotenv';
 import { DataSource } from 'typeorm';
 
 import { AuditLog } from './lib/entities/audit-log.entity';
+import { ConversationStyle } from './lib/entities/conversation-style.entity';
 import { UserStyleProfile } from './lib/entities/user-style-profile.entity';
 import { Conversation } from './lib/entities/conversation.entity';
 import { Message } from './lib/entities/message.entity';
@@ -51,6 +52,7 @@ export const AppDataSource = new DataSource({
     ProviderIncident,
     AuditLog,
     UserStyleProfile,
+    ConversationStyle,
   ],
   migrations: ['libs/shared-database/src/lib/migrations/*.{ts,js}'],
   migrationsTableName: 'migrations',

@@ -138,6 +138,24 @@ export const ProviderFailureEvent = baseEvent.extend({
   }),
 });
 
+/**
+ * Sent when an in-call configuration field changes — voice swap, model
+ * swap, or (now) conversation-style switch. Surfaces to the mobile client
+ * via the WS `call.config.changed` event so its UI keeps picker state in
+ * sync (especially for multi-device sessions and reconnect-replay).
+ */
+export const CallConfigChangedEvent = baseEvent.extend({
+  type: z.literal('call.config.changed'),
+  data: z.object({
+    providerType: z.enum(['stt', 'llm', 'tts']).optional(),
+    provider: z.string().optional(),
+    model: z.string().optional(),
+    voice: z.string().optional(),
+    /** Active conversation style id (wire format: builtin:<key> | custom:<uuid>). */
+    styleId: z.string().optional(),
+  }),
+});
+
 /** Discriminated union of all internal events. */
 export const InternalCallEventSchema = z.discriminatedUnion('type', [
   TranscriptFinalEvent,
@@ -150,6 +168,7 @@ export const InternalCallEventSchema = z.discriminatedUnion('type', [
   CallEndedEvent,
   CallTickEvent,
   ProviderFailureEvent,
+  CallConfigChangedEvent,
 ]);
 
 export type InternalCallEvent = z.infer<typeof InternalCallEventSchema>;
@@ -167,6 +186,7 @@ export type CallConnected = z.infer<typeof CallConnectedEvent>;
 export type CallEnded = z.infer<typeof CallEndedEvent>;
 export type CallTick = z.infer<typeof CallTickEvent>;
 export type ProviderFailure = z.infer<typeof ProviderFailureEvent>;
+export type CallConfigChanged = z.infer<typeof CallConfigChangedEvent>;
 
 /** Parse a raw JSON event; returns null on shape mismatch (logged by caller). */
 export function parseInternalCallEvent(raw: unknown): InternalCallEvent | null {

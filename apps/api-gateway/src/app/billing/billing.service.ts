@@ -1,8 +1,12 @@
+import { randomUUID } from 'crypto';
+
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Repository } from 'typeorm';
 
 import {
+  PaymentEvent,
+  PaymentEventStatus,
   Plan,
   PlanCode,
   Subscription,
@@ -50,6 +54,15 @@ export function nextMonthBoundary(from: Date = new Date()): Date {
   return new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 1, 0, 0, 0));
 }
 
+/**
+ * Topup amount bounds, in minor units (kopecks/cents):
+ *   - MIN: 100 (1 UAH / $1) — below this, the per-transaction fee dominates.
+ *   - MAX: 100_000 (1000 UAH / $1000) — above this, anti-fraud review.
+ * The real LiqPay implementation will tighten these per Acquirer policy.
+ */
+export const MIN_TOPUP_CENTS = 100;
+export const MAX_TOPUP_CENTS = 100_000;
+
 @Injectable()
 export class BillingService {
   private readonly logger = new Logger(BillingService.name);
@@ -58,6 +71,7 @@ export class BillingService {
     @InjectRepository(Plan) private readonly plans: Repository<Plan>,
     @InjectRepository(Subscription) private readonly subscriptions: Repository<Subscription>,
     @InjectRepository(UsageRecord) private readonly usage: Repository<UsageRecord>,
+    @InjectRepository(PaymentEvent) private readonly payments: Repository<PaymentEvent>,
   ) {}
 
   /**
@@ -344,6 +358,110 @@ export class BillingService {
 
   async listPlans(): Promise<Plan[]> {
     return this.plans.find({ where: { isActive: true }, order: { pricePerSecondCents: 'ASC' } });
+  }
+
+  /**
+   * Fake payment provider for MVP — credits the user's balance immediately
+   * and writes a successful PaymentEvent row.
+   *
+   * Real-LiqPay migration path (post-MVP):
+   *   - This method becomes "create pending PaymentEvent + return paymentUrl".
+   *   - A new webhook handler validates the LiqPay signature, locates the
+   *     pending event by externalId, flips it to success, and applies the
+   *     balance change.
+   *   - The current callers (mobile topup flow) get the paymentUrl from
+   *     `paymentUrl?: string` field that we plumb through here.
+   *
+   * Idempotency:
+   *   - externalId is a fresh UUID per call (no real provider correlation
+   *     possible yet). If we ever resubmit the exact same externalId, the
+   *     UNIQUE index on payment_events.externalId rejects the duplicate;
+   *     callers must catch and re-read.
+   *
+   * Money invariants:
+   *   - amountCents must be in [MIN_TOPUP_CENTS, MAX_TOPUP_CENTS]. Below
+   *     min we waste a webhook; above max we want manual review (anti-
+   *     fraud + chargeback risk).
+   */
+  async fakeTopup(
+    userId: string,
+    amountCents: number,
+  ): Promise<{ paymentEvent: PaymentEvent; balanceCents: number }> {
+    if (!Number.isInteger(amountCents) || amountCents < MIN_TOPUP_CENTS) {
+      throw new Error(`Topup amount below min (${MIN_TOPUP_CENTS} cents)`);
+    }
+    if (amountCents > MAX_TOPUP_CENTS) {
+      throw new Error(`Topup amount above max (${MAX_TOPUP_CENTS} cents)`);
+    }
+
+    const sub = await this.loadSubscription(userId);
+
+    // Reuse the same transaction so the payment row + balance bump are
+    // atomic. PaymentEvent INSERT first (UNIQUE externalId guards against
+    // dup-submit); balance UPDATE second (the CHECK constraint makes
+    // negative balance impossible).
+    return this.subscriptions.manager.transaction(async (tx) => {
+      const externalId = `fake_${randomUUID()}`;
+      const paymentEvent = await tx.save(PaymentEvent, {
+        userId,
+        externalId,
+        amountCents,
+        currency: sub.plan.currency,
+        status: PaymentEventStatus.SUCCESS,
+        payload: { provider: 'fake', note: 'MVP test mode — no real provider' },
+        processedAt: new Date(),
+      });
+
+      const result = await tx
+        .createQueryBuilder()
+        .update(Subscription)
+        .set({ balanceCents: () => `"balanceCents" + :amount` })
+        .where('"userId" = :userId', { userId })
+        .setParameters({ amount: amountCents })
+        .returning('*')
+        .execute();
+
+      const updated = (result.raw as Subscription[])[0];
+      if (!updated) {
+        throw new SubscriptionNotFoundError(userId);
+      }
+      this.logger.log(
+        `Fake topup userId=${userId} amount=${amountCents}c → balance=${updated.balanceCents}c`,
+      );
+      return { paymentEvent, balanceCents: updated.balanceCents };
+    });
+  }
+
+  /**
+   * Switch the user's plan. Idempotent — switching to the already-active
+   * plan is a no-op (returns current summary). Free quota counters carry
+   * over (good UX: upgrading mid-month doesn't punish you).
+   */
+  async switchPlan(userId: string, planCode: PlanCode): Promise<BillingSummary> {
+    const targetPlan = await this.plans.findOne({
+      where: { code: planCode, isActive: true },
+    });
+    if (!targetPlan) {
+      throw new PlanNotFoundError(planCode);
+    }
+
+    const sub = await this.loadSubscription(userId);
+    if (sub.planId === targetPlan.id) {
+      // Already on target plan — no-op.
+      return this.toSummary(sub);
+    }
+
+    await this.subscriptions
+      .createQueryBuilder()
+      .update(Subscription)
+      .set({ planId: targetPlan.id })
+      .where('"userId" = :userId', { userId })
+      .execute();
+
+    // Re-read with relation hydrated so the summary reflects the new plan.
+    const refreshed = await this.loadSubscription(userId);
+    this.logger.log(`Plan switch userId=${userId} → ${planCode}`);
+    return this.toSummary(refreshed);
   }
 
   // ── helpers ─────────────────────────────────────────

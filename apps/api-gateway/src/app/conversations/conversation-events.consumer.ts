@@ -21,9 +21,11 @@ import {
 import {
   ConversationEndReason,
   MessageRole,
+  MessageSource,
   TtsStatus,
 } from '@mova-back/shared-database';
 
+import { UserStyleProfileService } from '../users/user-style-profile.service';
 import { ConversationLifecycleService } from './conversation-lifecycle.service';
 import { ConversationsService } from './conversations.service';
 
@@ -66,6 +68,7 @@ export class ConversationEventsConsumer implements OnModuleInit, OnModuleDestroy
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly conversations: ConversationsService,
     private readonly lifecycle: ConversationLifecycleService,
+    private readonly styleProfile: UserStyleProfileService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -170,6 +173,11 @@ export class ConversationEventsConsumer implements OnModuleInit, OnModuleDestroy
   }
 
   private async onUserSpoke(event: UserSpoke): Promise<void> {
+    const messageSource =
+      event.data.source === 'suggestion'
+        ? MessageSource.SUGGESTION
+        : MessageSource.TYPED;
+
     await this.conversations.appendMessage({
       conversationId: event.conversationId,
       role: MessageRole.USER_TYPED,
@@ -177,9 +185,21 @@ export class ConversationEventsConsumer implements OnModuleInit, OnModuleDestroy
       ttsStatus: TtsStatus.COMPLETED,
       ttsProvider: event.data.ttsProvider,
       ttsVoice: event.data.ttsVoice,
+      source: messageSource,
     });
     if (event.data.source === 'suggestion' && event.data.suggestionId) {
       await this.conversations.markSuggestionChosen(event.data.suggestionId);
+    }
+
+    // Train the user's style profile ONLY on genuinely typed text — accepted
+    // suggestions are the AI's words and would collapse the profile toward
+    // the model's default register. The service is best-effort: a failure
+    // here does NOT roll back the message persistence above.
+    if (messageSource === MessageSource.TYPED) {
+      await this.styleProfile.recordFromConversation(
+        event.conversationId,
+        event.data.text,
+      );
     }
   }
 

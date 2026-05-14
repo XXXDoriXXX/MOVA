@@ -19,11 +19,13 @@ import {
   ConversationStatus,
   UserRole,
   type Conversation,
+  type Message,
   type ProviderIncident,
 } from '@mova-back/shared-database';
 
 import {
   AdminService,
+  type AdminConversationDetail,
   type AdminStats,
   type AdminUserSummary,
   type CursorPage,
@@ -141,6 +143,37 @@ export class AdminController {
   }
 
   // ── Conversations ─────────────────────────────────
+
+  @Get('conversations/:id')
+  @ApiOperation({
+    summary:
+      'Conversation detail — full row + first page of messages + incidents + owner summary',
+  })
+  getConversationDetail(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('messageLimit') messageLimit?: string,
+  ): Promise<AdminConversationDetail> {
+    return this.admin.getConversationDetail(
+      id,
+      messageLimit ? Number(messageLimit) : undefined,
+    );
+  }
+
+  @Get('conversations/:id/messages')
+  @ApiOperation({
+    summary:
+      'Paginated transcript (createdAt ASC, cursor = last seen message createdAt)',
+  })
+  listConversationMessages(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('cursor') cursor?: string,
+    @Query('limit') limit?: string,
+  ): Promise<CursorPage<Message>> {
+    return this.admin.listConversationMessages(id, {
+      cursor,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
 
   @Get('conversations')
   @ApiOperation({ summary: 'List conversations across all users' })

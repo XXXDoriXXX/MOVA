@@ -6,6 +6,7 @@ import {
   AuditAction,
   Conversation,
   ConversationStatus,
+  Message,
   ProviderIncident,
   Subscription,
   User,
@@ -46,6 +47,20 @@ export interface AdminUserSummary {
   deletedAt: string | null;
 }
 
+export interface ListConversationMessagesQuery {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface AdminConversationDetail {
+  conversation: Conversation;
+  owner: AdminUserSummary;
+  messages: Message[];
+  nextMessageCursor: string | null;
+  incidents: ProviderIncident[];
+  messageCount: number;
+}
+
 export interface AdminStats {
   totalUsers: number;
   blockedUsers: number;
@@ -84,6 +99,8 @@ export class AdminService {
     private readonly conversations: Repository<Conversation>,
     @InjectRepository(ProviderIncident)
     private readonly incidents: Repository<ProviderIncident>,
+    @InjectRepository(Message)
+    private readonly messages: Repository<Message>,
     private readonly refreshTokens: RefreshTokenService,
     private readonly auditLog: AuditLogService,
   ) {}
@@ -214,6 +231,118 @@ export class AdminService {
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
     const nextCursor = hasMore ? items[items.length - 1].startedAt.toISOString() : null;
+    return { items, nextCursor };
+  }
+
+  /**
+   * Full detail view for one conversation — the screen support uses when a
+   * user reports "my call at 14:32 was weird".
+   *
+   * Returns:
+   *   - the Conversation row (with hydrated template, no relations exploded
+   *     into recursive depth)
+   *   - the owning user's summary (admins don't need to second-hop)
+   *   - the first page of messages (oldest first, so the transcript reads top-down)
+   *   - any ProviderIncidents that fired during this conversation
+   *   - the total message count (cheap COUNT(*) with the same index)
+   *
+   * Tenant isolation is intentionally bypassed — admins see all rows.
+   *
+   * Soft-deleted conversations (deletedAt IS NOT NULL) are STILL returned to
+   * admins. The mobile-facing endpoint already filters them; here we want
+   * forensic access.
+   */
+  async getConversationDetail(
+    id: string,
+    messageLimit = DEFAULT_PAGE_SIZE,
+  ): Promise<AdminConversationDetail> {
+    const conversation = await this.conversations.findOne({
+      where: { id },
+      withDeleted: true,
+      relations: { template: true },
+    });
+    if (!conversation) throw new NotFoundException('Conversation not found');
+
+    const safeLimit = Math.min(messageLimit, MAX_PAGE_SIZE);
+
+    // Parallelize the secondary reads — none depend on each other.
+    const [owner, messages, messageCount, incidents] = await Promise.all([
+      this.users.findOne({ where: { id: conversation.userId }, withDeleted: true }),
+      this.messages.find({
+        where: { conversationId: id },
+        order: { createdAt: 'ASC' },
+        take: safeLimit + 1, // +1 to detect hasMore for nextMessageCursor
+      }),
+      this.messages.count({ where: { conversationId: id } }),
+      this.incidents.find({
+        where: { conversationId: id },
+        order: { occurredAt: 'ASC' },
+        take: 100, // hard cap; a runaway call with >100 incidents is its own bug
+      }),
+    ]);
+
+    if (!owner) {
+      // Hard-deleted user but conversation still exists — surface gracefully
+      // rather than 500. The summary mapper handles the missing-fields case.
+      throw new NotFoundException('Conversation owner not found');
+    }
+
+    const hasMore = messages.length > safeLimit;
+    const items = hasMore ? messages.slice(0, safeLimit) : messages;
+    const nextMessageCursor = hasMore
+      ? items[items.length - 1].createdAt.toISOString()
+      : null;
+
+    return {
+      conversation,
+      owner: this.toSummary(owner),
+      messages: items,
+      nextMessageCursor,
+      incidents,
+      messageCount,
+    };
+  }
+
+  /**
+   * Paginated transcript for a conversation. Used by the detail screen when
+   * the admin scrolls past the initial 20 messages.
+   *
+   * Cursor is `createdAt` ISO of the last seen message — newer messages come
+   * after (ASC order, mirrors the detail view's "top-down transcript").
+   */
+  async listConversationMessages(
+    conversationId: string,
+    query: ListConversationMessagesQuery,
+  ): Promise<{ items: Message[]; nextCursor: string | null }> {
+    // Confirm the conversation exists before paging — gives a clean 404
+    // instead of "empty list" if the id is wrong.
+    const exists = await this.conversations.findOne({
+      where: { id: conversationId },
+      withDeleted: true,
+      select: { id: true },
+    });
+    if (!exists) throw new NotFoundException('Conversation not found');
+
+    const limit = Math.min(query.limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
+
+    const qb = this.messages
+      .createQueryBuilder('m')
+      .where('m."conversationId" = :id', { id: conversationId })
+      .orderBy('m."createdAt"', 'ASC')
+      .limit(limit + 1);
+
+    if (query.cursor) {
+      // Strict `>` (not >=) so the row at `cursor` is NOT re-returned. The
+      // client passes back the last `createdAt` they saw to continue.
+      qb.andWhere('m."createdAt" > :cursor', { cursor: new Date(query.cursor) });
+    }
+
+    const rows = await qb.getMany();
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const nextCursor = hasMore
+      ? items[items.length - 1].createdAt.toISOString()
+      : null;
     return { items, nextCursor };
   }
 

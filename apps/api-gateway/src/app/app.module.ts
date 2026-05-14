@@ -14,6 +14,7 @@ import { JwtAuthGuard } from '@mova-back/shared-auth';
 import { SharedConfigModule, type AppEnv } from '@mova-back/shared-config';
 import { REDIS_CLIENT, SharedRedisModule } from '@mova-back/shared-redis';
 
+import { AdminModule } from './admin/admin.module';
 import { AuthModule } from './auth/auth.module';
 import { BillingModule } from './billing/billing.module';
 import { CallModule } from './call/call.module';
@@ -121,6 +122,7 @@ import { UsersModule } from './users/users.module';
     BillingModule,
     ConversationsModule,
     CallModule,
+    AdminModule,
     ScheduledModule,
   ],
   providers: [

@@ -63,6 +63,7 @@ export const CallControlAction = {
   ACCEPT_SUGGESTION: 'accept_suggestion',
   CHANGE_VOICE: 'change_voice',
   CHANGE_MODEL: 'change_model',
+  CHANGE_STYLE: 'change_style',
 } as const;
 
 export type CallControlAction = (typeof CallControlAction)[keyof typeof CallControlAction];

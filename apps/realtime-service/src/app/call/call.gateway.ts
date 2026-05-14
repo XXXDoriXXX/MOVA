@@ -298,6 +298,21 @@ export class CallGateway implements OnModuleDestroy {
         );
         return;
 
+      case 'user.change_style':
+        // We do NOT validate the styleId here — the gateway is in the hot
+        // path and doesn't own the DB. agent-worker resolves it; an invalid
+        // id falls through to the default with a warn log. The mobile UI
+        // should only ever send IDs that GET /styles returned.
+        await this.redis.publish(
+          channel,
+          JSON.stringify({
+            action: CallControlAction.CHANGE_STYLE,
+            styleId: cmd.data.styleId,
+            initiatedBy: sockData(socket).userId,
+          }),
+        );
+        return;
+
       case 'user.end_call':
         await this.redis.publish(
           channel,

@@ -180,6 +180,28 @@ export class TemplatesService {
   }
 
   /**
+   * Set or clear the template's defaultStyleId. Pre-validation of the
+   * style id (built-in shape + custom ownership) is the caller's
+   * responsibility — TemplatesService stays decoupled from
+   * ConversationStylesService to keep this module narrow.
+   *
+   * System templates are immutable to end-users; rejecting here matches
+   * the policy in `update()`.
+   */
+  async setDefaultStyle(
+    userId: string,
+    templateId: string,
+    styleId: string | null,
+  ): Promise<Template> {
+    const target = await this.findOneForUser(userId, templateId);
+    if (!this.canModify(target, userId)) {
+      throw new ForbiddenException('System templates cannot be modified');
+    }
+    target.defaultStyleId = styleId;
+    return this.repo.save(target);
+  }
+
+  /**
    * Used by the call-start flow when the user has no explicit templateId.
    * Resolution order: user's isDefault → system default in user's language →
    * system default in any language → null.

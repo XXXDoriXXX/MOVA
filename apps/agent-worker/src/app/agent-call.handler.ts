@@ -188,6 +188,26 @@ export class AgentCallHandler {
     }
   }
 
+  /**
+   * Mid-call conversation style swap. Cheap: just rewires the field that
+   * SuggestionsService reads on the next turn. No audio is interrupted.
+   *
+   * We do NOT verify the styleId here — that's the resolver's job. If the
+   * caller (realtime-service → Redis) passes a malformed id, the resolver
+   * falls back to a built-in and logs.
+   *
+   * Emits a `call.config.changed` event so all subscribed clients (multiple
+   * devices on the same call) converge on the new active selection.
+   */
+  async setActiveStyle(styleId: string): Promise<void> {
+    this.userContext.activeStyleId = styleId;
+    this.logger.log(`[Style] active style → ${styleId}`);
+    this.emitTyped({
+      type: 'call.config.changed',
+      data: { styleId },
+    });
+  }
+
   /** Forced end of the call from the user side. */
   async stop(): Promise<void> {
     this.emitTyped({
@@ -295,6 +315,9 @@ export class AgentCallHandler {
         // Forward userId so SuggestionsService can adapt to the user's style.
         // Optional — null userContext.userId disables style mimicry.
         userId: this.userContext.userId,
+        // Forward the current style — mutated mid-call by setActiveStyle().
+        // Resolver inside SuggestionsService handles missing / malformed.
+        styleId: this.userContext.activeStyleId,
       });
     }
   }

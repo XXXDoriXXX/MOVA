@@ -15,6 +15,8 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser, type AuthenticatedUser } from '@mova-back/shared-auth';
 import type { Template } from '@mova-back/shared-database';
 
+import { ConversationStylesService } from '../users/conversation-styles.service';
+import { SetPreferredStyleDto } from '../users/dto/conversation-styles.schemas';
 import { UsersService } from '../users/users.service';
 import { CreateTemplateDto, UpdateTemplateDto } from './dto/template.schemas';
 import { TemplatesService } from './templates.service';
@@ -32,6 +34,7 @@ export class TemplatesController {
   constructor(
     private readonly templatesService: TemplatesService,
     private readonly usersService: UsersService,
+    private readonly stylesService: ConversationStylesService,
   ) {}
 
   @Get()
@@ -99,5 +102,23 @@ export class TemplatesController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<Template> {
     return this.templatesService.setDefault(user.id, id);
+  }
+
+  @Patch(':id/default-style')
+  @ApiOperation({
+    summary:
+      'Set or clear the template default conversation style. Pass {styleId: null} to clear.',
+  })
+  async setDefaultStyle(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetPreferredStyleDto,
+  ): Promise<Template> {
+    // Validate id shape + ownership (for custom) BEFORE writing — invalid
+    // values would only surface later at call-start time as silent fallbacks.
+    if (dto.styleId !== null) {
+      await this.stylesService.assertValidForUser(user.id, dto.styleId);
+    }
+    return this.templatesService.setDefaultStyle(user.id, id, dto.styleId);
   }
 }

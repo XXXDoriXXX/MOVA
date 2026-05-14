@@ -83,6 +83,14 @@ export class User {
   @Column({ type: 'varchar', length: 50, nullable: true })
   preferredTtsProvider!: string | null;
 
+  /**
+   * Global default conversation style — wins over a template's defaultStyleId.
+   * Opaque ID — `builtin:<key>` or `custom:<uuid>`. Null falls through to the
+   * template's default → built-in PERSONAL → FRIENDLY.
+   */
+  @Column({ type: 'varchar', length: 80, nullable: true })
+  preferredStyleId!: string | null;
+
   @Column({
     type: 'enum',
     enum: UserRole,

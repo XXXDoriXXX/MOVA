@@ -6,6 +6,7 @@ import { Conversation } from './lib/entities/conversation.entity';
 import { Message } from './lib/entities/message.entity';
 import { PaymentEvent } from './lib/entities/payment-event.entity';
 import { Plan } from './lib/entities/plan.entity';
+import { ProviderIncident } from './lib/entities/provider-incident.entity';
 import { RefreshToken } from './lib/entities/refresh-token.entity';
 import { Subscription } from './lib/entities/subscription.entity';
 import { Suggestion } from './lib/entities/suggestion.entity';
@@ -45,6 +46,7 @@ export const AppDataSource = new DataSource({
     Conversation,
     Message,
     Suggestion,
+    ProviderIncident,
   ],
   migrations: ['libs/shared-database/src/lib/migrations/*.{ts,js}'],
   migrationsTableName: 'migrations',

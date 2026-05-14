@@ -1,0 +1,38 @@
+import { createOpenAI, type OpenAIProvider } from '@ai-sdk/openai';
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { LanguageModel } from 'ai';
+
+import { LlmProviderEnum } from '@mova-back/shared-agent';
+import type { AppEnv } from '@mova-back/shared-config';
+
+import { AiSdkLlmAdapter } from './ai-sdk-llm.adapter';
+
+/**
+ * OpenAI — primary LLM provider for MVP.
+ *
+ * Model selection:
+ *   - default: gpt-4o-mini (cheap, ~600ms TTFT, good Ukrainian).
+ *   - can be overridden per call via options.model.
+ *
+ * Configuration is bound at construction; we instantiate one OpenAIProvider
+ * client for the lifetime of the process. The SDK pools connections.
+ */
+@Injectable()
+export class OpenAiLlmProvider extends AiSdkLlmAdapter {
+  readonly id = LlmProviderEnum.OPENAI;
+  readonly defaultModel = 'gpt-4o-mini';
+
+  private readonly client: OpenAIProvider;
+
+  constructor(config: ConfigService<AppEnv, true>) {
+    super();
+    this.client = createOpenAI({
+      apiKey: config.get('OPENAI_API_KEY', { infer: true }),
+    });
+  }
+
+  protected resolveModel(modelId: string): LanguageModel {
+    return this.client(modelId);
+  }
+}

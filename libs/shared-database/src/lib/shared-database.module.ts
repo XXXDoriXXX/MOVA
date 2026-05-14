@@ -6,6 +6,7 @@ import { Conversation } from './entities/conversation.entity';
 import { Message } from './entities/message.entity';
 import { PaymentEvent } from './entities/payment-event.entity';
 import { Plan } from './entities/plan.entity';
+import { ProviderIncident } from './entities/provider-incident.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { Subscription } from './entities/subscription.entity';
 import { Suggestion } from './entities/suggestion.entity';
@@ -25,6 +26,7 @@ const ENTITIES = [
   Conversation,
   Message,
   Suggestion,
+  ProviderIncident,
 ];
 
 /**

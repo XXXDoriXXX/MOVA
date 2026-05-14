@@ -5,15 +5,29 @@ import { AuthGuard } from '@nestjs/passport';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 
 /**
- * Global JWT auth guard with `@Public()` opt-out.
+ * Path prefixes that bypass JWT regardless of @Public() — needed for
+ * controllers we don't own (Prometheus scrape endpoint, NestJS internal
+ * health checkers) where decorating is impractical.
  *
- * Apply globally in your AppModule:
+ * Keep this list short and infra-only. Anything user-facing must use
+ * @Public() explicitly.
+ */
+const UNAUTHENTICATED_PATH_PREFIXES: ReadonlyArray<string> = [
+  '/metrics',
+  '/v1/metrics',
+];
+
+/**
+ * Global JWT auth guard with two opt-out paths:
+ *   1. `@Public()` decorator on the handler / class — preferred.
+ *   2. Path prefix in UNAUTHENTICATED_PATH_PREFIXES — for third-party
+ *      controllers we don't own (Prometheus).
+ *
+ * Apply globally in AppModule:
  *
  *   providers: [{ provide: APP_GUARD, useClass: JwtAuthGuard }]
  *
- * Then any route NOT marked @Public() requires a valid JWT.
- *
- * NOTE: The actual JWT validation logic lives in the app's `JwtStrategy`
+ * NOTE: actual JWT validation logic lives in the app's `JwtStrategy`
  * (which knows how to load the user from the DB).
  */
 @Injectable()
@@ -30,6 +44,14 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     if (isPublic) {
       return true;
     }
+
+    // Path-based opt-out for third-party controllers (Prometheus, etc.)
+    const request = context.switchToHttp().getRequest<{ url?: string }>();
+    const url = request.url ?? '';
+    if (UNAUTHENTICATED_PATH_PREFIXES.some((prefix) => url.startsWith(prefix))) {
+      return true;
+    }
+
     return super.canActivate(context);
   }
 }

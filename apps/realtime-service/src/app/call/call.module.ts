@@ -6,6 +6,7 @@ import type { AppEnv } from '@mova-back/shared-config';
 
 import { CallGateway } from './call.gateway';
 import { ConversationAccessService } from './conversation-access.service';
+import { HeartbeatWatchdog } from './heartbeat-watchdog.service';
 import { RealtimeBridgeService } from './realtime-bridge.service';
 
 @Module({
@@ -17,7 +18,12 @@ import { RealtimeBridgeService } from './realtime-bridge.service';
       }),
     }),
   ],
-  providers: [CallGateway, ConversationAccessService, RealtimeBridgeService],
+  providers: [
+    CallGateway,
+    ConversationAccessService,
+    RealtimeBridgeService,
+    HeartbeatWatchdog,
+  ],
   exports: [RealtimeBridgeService],
 })
 export class CallModule {}

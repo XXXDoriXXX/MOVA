@@ -56,7 +56,9 @@ async function bootstrap(): Promise<void> {
   app.useGlobalPipes(new ZodValidationPipe());
 
   // ── API prefix + versioning ──
-  app.setGlobalPrefix('v1');
+  // /health and /metrics live at the root for ops convention (Prometheus
+  // scrape, K8s probes don't expect /v1/ prefixes).
+  app.setGlobalPrefix('v1', { exclude: ['/health', '/health/live', '/health/ready', '/metrics'] });
 
   // ── Swagger / OpenAPI ──
   const swaggerConfig = new DocumentBuilder()

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AuditLog } from './entities/audit-log.entity';
+import { UserStyleProfile } from './entities/user-style-profile.entity';
 import { Conversation } from './entities/conversation.entity';
 import { Message } from './entities/message.entity';
 import { PaymentEvent } from './entities/payment-event.entity';
@@ -29,6 +30,7 @@ const ENTITIES = [
   Suggestion,
   ProviderIncident,
   AuditLog,
+  UserStyleProfile,
 ];
 
 /**

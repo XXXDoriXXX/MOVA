@@ -7,6 +7,7 @@ import {
 
 import { ProviderRegistry } from '../providers/provider-registry.service';
 import { SuggestionsService } from './suggestions.service';
+import { UserStyleReaderService } from './user-style-reader.service';
 
 const CONV_ID = '00000000-0000-4000-8000-000000000001';
 const PARENT_ID = '00000000-0000-4000-8000-000000000010';
@@ -40,6 +41,15 @@ function makeRedis(): jest.Mocked<Redis> {
   } as unknown as jest.Mocked<Redis>;
 }
 
+/** Style-reader stub. Defaults to "no addendum" — matches cold-start. */
+function makeStyleReader(
+  addendum: string | null = null,
+): jest.Mocked<UserStyleReaderService> {
+  return {
+    buildPromptAddendum: jest.fn().mockResolvedValue(addendum),
+  } as unknown as jest.Mocked<UserStyleReaderService>;
+}
+
 function baseRequest() {
   return {
     conversationId: CONV_ID,
@@ -58,7 +68,7 @@ describe('SuggestionsService.generate', () => {
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: ['За 5 хвилин', 'Вже їду', 'Чекайте біля під\'їзду'] }),
     );
-    const svc = new SuggestionsService(registry, makeRedis());
+    const svc = new SuggestionsService(registry, makeRedis(), makeStyleReader());
     const result = await svc.generate(baseRequest());
     expect(result).toEqual(['За 5 хвилин', 'Вже їду', 'Чекайте біля під\'їзду']);
   });
@@ -67,14 +77,14 @@ describe('SuggestionsService.generate', () => {
     const wrapped =
       '```json\n{"suggestions":["Так","Ні","Уточніть"]}\n```';
     const { registry } = makeRegistry(wrapped);
-    const svc = new SuggestionsService(registry, makeRedis());
+    const svc = new SuggestionsService(registry, makeRedis(), makeStyleReader());
     const result = await svc.generate(baseRequest());
     expect(result).toEqual(['Так', 'Ні', 'Уточніть']);
   });
 
   it('returns null on unparseable output (no throw)', async () => {
     const { registry } = makeRegistry('this is not JSON at all');
-    const svc = new SuggestionsService(registry, makeRedis());
+    const svc = new SuggestionsService(registry, makeRedis(), makeStyleReader());
     const result = await svc.generate(baseRequest());
     expect(result).toBeNull();
   });
@@ -83,7 +93,7 @@ describe('SuggestionsService.generate', () => {
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: ['Так', 'Ні'] }),
     );
-    const svc = new SuggestionsService(registry, makeRedis());
+    const svc = new SuggestionsService(registry, makeRedis(), makeStyleReader());
     const result = await svc.generate(baseRequest());
     expect(result).toBeNull();
   });
@@ -93,14 +103,14 @@ describe('SuggestionsService.generate', () => {
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: [longText, 'Ні', 'Уточніть'] }),
     );
-    const svc = new SuggestionsService(registry, makeRedis());
+    const svc = new SuggestionsService(registry, makeRedis(), makeStyleReader());
     const result = await svc.generate(baseRequest());
     expect(result).toBeNull();
   });
 
   it('returns null when LLM throws (registry already filed incident)', async () => {
     const { registry } = makeRegistry(new Error('timeout'));
-    const svc = new SuggestionsService(registry, makeRedis());
+    const svc = new SuggestionsService(registry, makeRedis(), makeStyleReader());
     const result = await svc.generate(baseRequest());
     expect(result).toBeNull();
   });
@@ -112,7 +122,7 @@ describe('SuggestionsService.generateAndEmit', () => {
       JSON.stringify({ suggestions: ['Так', 'Ні', 'Уточніть'] }),
     );
     const redis = makeRedis();
-    const svc = new SuggestionsService(registry, redis);
+    const svc = new SuggestionsService(registry, redis, makeStyleReader());
 
     await svc.generateAndEmit(baseRequest());
 
@@ -137,7 +147,7 @@ describe('SuggestionsService.generateAndEmit', () => {
   it('does not publish when generation fails', async () => {
     const { registry } = makeRegistry(new Error('boom'));
     const redis = makeRedis();
-    const svc = new SuggestionsService(registry, redis);
+    const svc = new SuggestionsService(registry, redis, makeStyleReader());
 
     await svc.generateAndEmit(baseRequest());
 
@@ -147,10 +157,68 @@ describe('SuggestionsService.generateAndEmit', () => {
   it('does not publish when output is unparseable', async () => {
     const { registry } = makeRegistry('garbage output');
     const redis = makeRedis();
-    const svc = new SuggestionsService(registry, redis);
+    const svc = new SuggestionsService(registry, redis, makeStyleReader());
 
     await svc.generateAndEmit(baseRequest());
 
     expect(redis.publish).not.toHaveBeenCalled();
+  });
+});
+
+describe('SuggestionsService — style addendum injection', () => {
+  it('queries the style reader with the request userId', async () => {
+    const { registry } = makeRegistry(
+      JSON.stringify({ suggestions: ['Так', 'Ні', 'Уточніть'] }),
+    );
+    const reader = makeStyleReader('--- style addendum here ---');
+    const svc = new SuggestionsService(registry, makeRedis(), reader);
+
+    await svc.generate({ ...baseRequest(), userId: 'user-42' });
+
+    expect(reader.buildPromptAddendum).toHaveBeenCalledWith('user-42');
+  });
+
+  it('passes the addendum into the LLM as part of the system prompt', async () => {
+    const { registry } = makeRegistry(
+      JSON.stringify({ suggestions: ['Так', 'Ні', 'Уточніть'] }),
+    );
+    const reader = makeStyleReader('--- USER STYLE: writes very casually ---');
+    const svc = new SuggestionsService(registry, makeRedis(), reader);
+
+    await svc.generate({ ...baseRequest(), userId: 'user-42' });
+
+    // runLlm received a callback; we re-invoke it with a probe provider
+    // to inspect the messages that would have gone to Groq.
+    const runLlmCall = (registry.runLlm as jest.Mock).mock.calls[0];
+    const callback = runLlmCall[1] as (
+      p: { generate: jest.Mock },
+    ) => Promise<unknown>;
+    const probe = { generate: jest.fn().mockResolvedValue('') };
+    await callback(probe);
+    const generateArgs = probe.generate.mock.calls[0][0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const system = generateArgs.messages.find((m) => m.role === 'system');
+    expect(system?.content).toContain('--- USER STYLE: writes very casually ---');
+  });
+
+  it('omits the addendum entirely when the reader returns null (cold-start)', async () => {
+    const { registry } = makeRegistry(
+      JSON.stringify({ suggestions: ['Так', 'Ні', 'Уточніть'] }),
+    );
+    const reader = makeStyleReader(null);
+    const svc = new SuggestionsService(registry, makeRedis(), reader);
+
+    await svc.generate({ ...baseRequest(), userId: 'user-42' });
+
+    const callback = (registry.runLlm as jest.Mock).mock.calls[0][1] as (
+      p: { generate: jest.Mock },
+    ) => Promise<unknown>;
+    const probe = { generate: jest.fn().mockResolvedValue('') };
+    await callback(probe);
+    const system = (probe.generate.mock.calls[0][0] as {
+      messages: Array<{ role: string; content: string }>;
+    }).messages.find((m) => m.role === 'system');
+    expect(system?.content).not.toContain("User's writing style");
   });
 });

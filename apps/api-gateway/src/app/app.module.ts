@@ -17,6 +17,7 @@ import { REDIS_CLIENT, SharedRedisModule } from '@mova-back/shared-redis';
 import { AuthModule } from './auth/auth.module';
 import { BillingModule } from './billing/billing.module';
 import { CallModule } from './call/call.module';
+import { ConversationsModule } from './conversations/conversations.module';
 import { HealthModule } from './health/health.module';
 import { TemplatesModule } from './templates/templates.module';
 import { UsersModule } from './users/users.module';
@@ -115,6 +116,7 @@ import { UsersModule } from './users/users.module';
     UsersModule,
     TemplatesModule,
     BillingModule,
+    ConversationsModule,
     CallModule,
   ],
   providers: [

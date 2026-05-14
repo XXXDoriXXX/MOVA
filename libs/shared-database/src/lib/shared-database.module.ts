@@ -2,13 +2,30 @@ import { Global, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
+import { Conversation } from './entities/conversation.entity';
+import { Message } from './entities/message.entity';
 import { PaymentEvent } from './entities/payment-event.entity';
 import { Plan } from './entities/plan.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { Subscription } from './entities/subscription.entity';
+import { Suggestion } from './entities/suggestion.entity';
 import { Template } from './entities/template.entity';
 import { UsageRecord } from './entities/usage-record.entity';
 import { User } from './entities/user.entity';
+
+/** Single source of truth for the entity list (used twice below). */
+const ENTITIES = [
+  User,
+  RefreshToken,
+  Template,
+  Plan,
+  Subscription,
+  UsageRecord,
+  PaymentEvent,
+  Conversation,
+  Message,
+  Suggestion,
+];
 
 /**
  * Global database module — single Postgres connection per process.
@@ -42,7 +59,7 @@ import { User } from './entities/user.entity';
           ssl: config.get<boolean>('DATABASE_SSL')
             ? { rejectUnauthorized: false }
             : false,
-          entities: [User, RefreshToken, Template, Plan, Subscription, UsageRecord, PaymentEvent],
+          entities: ENTITIES,
           synchronize: !isProduction,
           migrationsRun: false,
           autoLoadEntities: false,
@@ -55,15 +72,7 @@ import { User } from './entities/user.entity';
         };
       },
     }),
-    TypeOrmModule.forFeature([
-      User,
-      RefreshToken,
-      Template,
-      Plan,
-      Subscription,
-      UsageRecord,
-      PaymentEvent,
-    ]),
+    TypeOrmModule.forFeature(ENTITIES),
   ],
   exports: [TypeOrmModule],
 })

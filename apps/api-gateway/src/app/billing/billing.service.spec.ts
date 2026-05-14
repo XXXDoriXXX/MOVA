@@ -1,4 +1,4 @@
-import { Repository } from 'typeorm';
+import { QueryFailedError, Repository } from 'typeorm';
 
 import {
   PaymentEvent,
@@ -331,12 +331,111 @@ describe('BillingService', () => {
       const result = await svc.fakeTopup(USER_ID, 500);
 
       expect(result.balanceCents).toBe(500);
+      expect(result.reused).toBe(false);
       // The transaction's tx.save was called with PaymentEvent
       // (we just check the result paymentEvent has the expected fields).
       expect(result.paymentEvent).toMatchObject({
         userId: USER_ID,
         amountCents: 500,
         status: 'success',
+      });
+    });
+
+    describe('idempotency-key', () => {
+      it('returns the original PaymentEvent on retry — does NOT charge twice', async () => {
+        const existing: Partial<PaymentEvent> = {
+          id: 'pay-existing',
+          userId: USER_ID,
+          amountCents: 500,
+          idempotencyKey: 'client-key-abc',
+        };
+        // Fast-path lookup hits.
+        payments.findOne.mockResolvedValueOnce(existing as PaymentEvent);
+        // loadSubscription for the balance refresh.
+        subs.findOne.mockResolvedValue(makeSub({ balanceCents: 500 }));
+
+        const result = await svc.fakeTopup(USER_ID, 500, 'client-key-abc');
+        expect(result.reused).toBe(true);
+        expect(result.paymentEvent).toBe(existing);
+        expect(result.balanceCents).toBe(500);
+        // No transaction was started — `manager` is not even wired on the
+        // mocked repo because we never went down the write path.
+        const txFn = (subs.manager as unknown as { transaction?: jest.Mock } | undefined)
+          ?.transaction;
+        expect(txFn).toBeUndefined();
+      });
+
+      it('persists idempotencyKey on the new PaymentEvent when no prior row exists', async () => {
+        // Fast-path lookup misses.
+        payments.findOne.mockResolvedValueOnce(null);
+        subs.findOne.mockResolvedValue(makeSub({ balanceCents: 0 }));
+        wireTransactionUpdate(500, {});
+
+        const result = await svc.fakeTopup(USER_ID, 500, 'client-key-new');
+        expect(result.reused).toBe(false);
+        expect(result.paymentEvent).toMatchObject({
+          idempotencyKey: 'client-key-new',
+        });
+      });
+
+      it('treats whitespace-only / empty key as no key', async () => {
+        subs.findOne.mockResolvedValue(makeSub({ balanceCents: 0 }));
+        wireTransactionUpdate(500, {});
+
+        const result = await svc.fakeTopup(USER_ID, 500, '   ');
+        // Fast-path was NOT invoked → idempotencyKey is null on the row.
+        expect(payments.findOne).not.toHaveBeenCalled();
+        expect(result.paymentEvent).toMatchObject({ idempotencyKey: null });
+      });
+
+      it('rejects keys longer than 64 chars', async () => {
+        subs.findOne.mockResolvedValue(makeSub());
+        const longKey = 'k'.repeat(65);
+        await expect(svc.fakeTopup(USER_ID, 500, longKey)).rejects.toThrow(
+          /exceeds 64/,
+        );
+      });
+
+      it('recovers from a unique_violation race by returning the winner row', async () => {
+        // Lookup misses (both retries pass this).
+        payments.findOne.mockResolvedValueOnce(null);
+        subs.findOne.mockResolvedValue(makeSub({ balanceCents: 500 }));
+
+        // Transaction throws 23505 — the loser side of the race.
+        const uniqueViolation = new QueryFailedError(
+          'INSERT',
+          [],
+          new Error('dup'),
+        ) as QueryFailedError & { code?: string };
+        uniqueViolation.code = '23505';
+        (subs.manager as unknown as { transaction: jest.Mock }) = {
+          transaction: jest.fn().mockRejectedValue(uniqueViolation),
+        };
+
+        // After the throw, the recovery lookup finds the winner row.
+        const winner: Partial<PaymentEvent> = {
+          id: 'pay-winner',
+          userId: USER_ID,
+          idempotencyKey: 'race-key',
+        };
+        payments.findOne.mockResolvedValueOnce(winner as PaymentEvent);
+
+        const result = await svc.fakeTopup(USER_ID, 500, 'race-key');
+        expect(result.reused).toBe(true);
+        expect(result.paymentEvent).toBe(winner);
+      });
+
+      it('bubbles non-23505 errors as-is', async () => {
+        payments.findOne.mockResolvedValueOnce(null);
+        subs.findOne.mockResolvedValue(makeSub());
+
+        (subs.manager as unknown as { transaction: jest.Mock }) = {
+          transaction: jest.fn().mockRejectedValue(new Error('connection lost')),
+        };
+
+        await expect(svc.fakeTopup(USER_ID, 500, 'some-key')).rejects.toThrow(
+          /connection lost/,
+        );
       });
     });
   });

@@ -6,12 +6,16 @@ import {
   ParseUUIDPipe,
   Patch,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { Request } from 'express';
 
-import { Roles, RolesGuard } from '@mova-back/shared-auth';
+import { CurrentUser, Roles, RolesGuard, type AuthenticatedUser } from '@mova-back/shared-auth';
 import {
+  AuditAction,
+  AuditTargetType,
   ConversationStatus,
   UserRole,
   type Conversation,
@@ -24,6 +28,10 @@ import {
   type AdminUserSummary,
   type CursorPage,
 } from './admin.service';
+import {
+  AuditLogService,
+  type AuditPage,
+} from './audit-log.service';
 import { BlockUserDto } from './dto/admin.schemas';
 
 /**
@@ -38,9 +46,11 @@ import { BlockUserDto } from './dto/admin.schemas';
  *     load-balancer level.
  *
  * Audit:
- *   - Block / unblock log via Logger today; a proper AuditLog table lands
- *     in Phase 9 follow-up. The pino logs are JSON + structured so they
- *     survive log-aggregation queries until then.
+ *   - Block / unblock + future admin mutations write a row to `audit_logs`
+ *     via AuditLogService. The row carries actor snapshot (id, email, role
+ *     at time of action), target, action enum, request metadata (ip / UA),
+ *     and a JSONB metadata blob with action-specific context.
+ *   - GET /admin/audit-log surfaces the trail with cursor pagination + filters.
  */
 @ApiTags('admin')
 @ApiBearerAuth()
@@ -48,7 +58,40 @@ import { BlockUserDto } from './dto/admin.schemas';
 @Roles(UserRole.ADMIN)
 @Controller('admin')
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(
+    private readonly admin: AdminService,
+    private readonly auditLog: AuditLogService,
+  ) {}
+
+  /**
+   * Pull a thin actor + request context for AuditLogService. Lives on the
+   * controller (not the service) because Req is an HTTP concern and we want
+   * the service callable from non-HTTP contexts later (cron / queue handlers).
+   */
+  private auditContext(
+    user: AuthenticatedUser,
+    req: Request,
+  ): {
+    actor: { id: string; email: string; role: UserRole };
+    request: { ip: string | null; userAgent: string | null };
+  } {
+    const ip = this.firstForwardedIp(req) ?? req.ip ?? null;
+    const uaHeader = req.headers['user-agent'];
+    const userAgent = typeof uaHeader === 'string' ? uaHeader : null;
+    return {
+      actor: { id: user.id, email: user.email, role: user.role },
+      request: { ip, userAgent },
+    };
+  }
+
+  /** Extracts the client IP from X-Forwarded-For if our reverse proxy sets it. */
+  private firstForwardedIp(req: Request): string | null {
+    const header = req.headers['x-forwarded-for'];
+    const raw = Array.isArray(header) ? header[0] : header;
+    if (!raw) return null;
+    const first = raw.split(',')[0]?.trim();
+    return first ? first : null;
+  }
 
   // ── Users ─────────────────────────────────────────
 
@@ -79,14 +122,22 @@ export class AdminController {
   blockUser(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: BlockUserDto,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Req() req: Request,
   ): Promise<AdminUserSummary> {
-    return this.admin.blockUser(id, dto.reason);
+    const ctx = this.auditContext(actor, req);
+    return this.admin.blockUser(id, dto.reason, ctx.actor, ctx.request);
   }
 
   @Patch('users/:id/unblock')
   @ApiOperation({ summary: 'Unblock a user — does NOT issue new tokens' })
-  unblockUser(@Param('id', ParseUUIDPipe) id: string): Promise<AdminUserSummary> {
-    return this.admin.unblockUser(id);
+  unblockUser(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Req() req: Request,
+  ): Promise<AdminUserSummary> {
+    const ctx = this.auditContext(actor, req);
+    return this.admin.unblockUser(id, ctx.actor, ctx.request);
   }
 
   // ── Conversations ─────────────────────────────────
@@ -137,5 +188,47 @@ export class AdminController {
         to: to ? new Date(to) : undefined,
       })
       .then((items) => ({ items }));
+  }
+
+  // ── Audit trail ──────────────────────────────────
+
+  @Get('audit-log')
+  @ApiOperation({
+    summary:
+      'List audit-log entries (newest first). Filter by actor/target/action/range.',
+  })
+  listAuditLog(
+    @Query('cursor') cursor?: string,
+    @Query('limit') limit?: string,
+    @Query('actorId') actorId?: string,
+    @Query('action') action?: AuditAction,
+    @Query('targetType') targetType?: AuditTargetType,
+    @Query('targetId') targetId?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ): Promise<AuditPage> {
+    return this.auditLog.list({
+      cursor,
+      limit: limit ? Number(limit) : undefined,
+      actorId,
+      action,
+      targetType,
+      targetId,
+      from: from ? new Date(from) : undefined,
+      to: to ? new Date(to) : undefined,
+    });
+  }
+
+  @Get('audit-log/users/:id')
+  @ApiOperation({ summary: 'Audit-log entries targeting a specific user.' })
+  listAuditLogForUser(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('limit') limit?: string,
+  ): Promise<AuditPage> {
+    return this.auditLog.listByTarget(
+      AuditTargetType.USER,
+      id,
+      limit ? Number(limit) : undefined,
+    );
   }
 }

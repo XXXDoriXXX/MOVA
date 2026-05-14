@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, MoreThan, Repository } from 'typeorm';
 
 import {
+  AuditAction,
   Conversation,
   ConversationStatus,
   ProviderIncident,
@@ -12,6 +13,7 @@ import {
 } from '@mova-back/shared-database';
 
 import { RefreshTokenService } from '../auth/refresh-token.service';
+import { AuditLogService, type AuditActor } from './audit-log.service';
 
 export interface ListUsersQuery {
   cursor?: string;
@@ -83,6 +85,7 @@ export class AdminService {
     @InjectRepository(ProviderIncident)
     private readonly incidents: Repository<ProviderIncident>,
     private readonly refreshTokens: RefreshTokenService,
+    private readonly auditLog: AuditLogService,
   ) {}
 
   // ── Users ──────────────────────────────────────────
@@ -126,26 +129,64 @@ export class AdminService {
    *      after the current one expires (≤15 min).
    *   3. The JwtStrategy checks isBlocked on every authenticated request,
    *      so the user is effectively logged out within the next call.
+   *   4. AuditLog row written with reason + previous state. Failure to write
+   *      the audit row does NOT roll back the block — see AuditLogService.
    */
-  async blockUser(id: string, reason: string): Promise<AdminUserSummary> {
+  async blockUser(
+    id: string,
+    reason: string,
+    actor: AuditActor | null,
+    request?: { ip?: string | null; userAgent?: string | null },
+  ): Promise<AdminUserSummary> {
     const user = await this.users.findOne({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
 
+    const truncatedReason = reason.slice(0, 280);
     await this.users.update(
       { id },
-      { isBlocked: true, blockedReason: reason.slice(0, 280) },
+      { isBlocked: true, blockedReason: truncatedReason },
     );
     await this.refreshTokens.revokeAllForUser(id);
     this.logger.warn(`Admin blocked user ${id}: ${reason}`);
+
+    await this.auditLog.recordUserAction(
+      actor,
+      AuditAction.USER_BLOCKED,
+      id,
+      {
+        reason: truncatedReason,
+        previouslyBlocked: user.isBlocked,
+        previousReason: user.blockedReason,
+        targetEmail: user.email,
+      },
+      request,
+    );
+
     return this.getUser(id);
   }
 
-  async unblockUser(id: string): Promise<AdminUserSummary> {
+  async unblockUser(
+    id: string,
+    actor: AuditActor | null,
+    request?: { ip?: string | null; userAgent?: string | null },
+  ): Promise<AdminUserSummary> {
     const user = await this.users.findOne({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
 
     await this.users.update({ id }, { isBlocked: false, blockedReason: null });
     this.logger.log(`Admin unblocked user ${id}`);
+
+    await this.auditLog.recordUserAction(
+      actor,
+      AuditAction.USER_UNBLOCKED,
+      id,
+      {
+        previousReason: user.blockedReason,
+        targetEmail: user.email,
+      },
+      request,
+    );
+
     return this.getUser(id);
   }
 

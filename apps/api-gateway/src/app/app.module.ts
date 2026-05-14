@@ -19,6 +19,8 @@ import { BillingModule } from './billing/billing.module';
 import { CallModule } from './call/call.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { HealthModule } from './health/health.module';
+import { MetricsModule } from './metrics/metrics.module';
+import { ScheduledModule } from './scheduled/scheduled.module';
 import { TemplatesModule } from './templates/templates.module';
 import { UsersModule } from './users/users.module';
 
@@ -110,6 +112,7 @@ import { UsersModule } from './users/users.module';
     }),
 
     HealthModule,
+    MetricsModule,
 
     // Feature modules
     AuthModule,
@@ -118,6 +121,7 @@ import { UsersModule } from './users/users.module';
     BillingModule,
     ConversationsModule,
     CallModule,
+    ScheduledModule,
   ],
   providers: [
     // Sentry error filter — must be first to capture before NestJS default filter

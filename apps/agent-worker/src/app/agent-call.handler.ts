@@ -52,6 +52,10 @@ export class AgentCallHandler {
   }> = [];
   private static readonly RECENT_BUFFER_MAX = 10;
 
+  /** Heartbeat tick — realtime-service's watchdog declares AGENT_LOST after silence. */
+  private heartbeatInterval: NodeJS.Timeout | null = null;
+  private static readonly HEARTBEAT_INTERVAL_MS = 5_000;
+
   constructor(
     private readonly roomName: string,
     public readonly userContext: AgentContext,
@@ -104,6 +108,12 @@ export class AgentCallHandler {
       this.logger.log(`✅ [WebRTC] Agent joined room`);
 
       this.emitTyped({ type: 'call.connected', data: {} });
+
+      // Start the heartbeat AFTER we've successfully joined the room. The
+      // realtime-service watchdog tolerates ~15s gaps, so a 5s tick gives
+      // us 3 misses before it declares AGENT_LOST — plenty of margin for
+      // a single GC pause or Redis blip.
+      this.startHeartbeat();
 
       this.session = await this.agentFactory.createSession(this.vadModel, this.userContext);
       const agent = this.agentFactory.createAgent(this.userContext);
@@ -190,6 +200,7 @@ export class AgentCallHandler {
   // ─── internals ─────────────────────────────────────
 
   private cleanup(): void {
+    this.stopHeartbeat();
     if (this.session) {
       try {
         this.session.close();
@@ -320,6 +331,36 @@ export class AgentCallHandler {
       occurredAt: new Date().toISOString(),
     } as InternalCallEvent;
     void this.publisher.publish(event);
+  }
+
+  /**
+   * Start emitting a heartbeat every 5s to `heartbeat:{conversationId}`.
+   * realtime-service subscribes to this pattern; absence > ~15s triggers
+   * AGENT_LOST in the watchdog there. We use a separate Redis channel
+   * (not the event publisher) to keep this off the typed-event hot path —
+   * heartbeat volume is irrelevant for persistence but constant for
+   * presence detection.
+   */
+  private startHeartbeat(): void {
+    if (!this.conversationId) return;
+    const channel = `heartbeat:${this.conversationId}`;
+    const tick = (): void => {
+      this.redis
+        .publish(channel, JSON.stringify({ ts: Date.now() }))
+        .catch((err: Error) =>
+          this.logger.debug(`Heartbeat publish failed: ${err.message}`),
+        );
+    };
+    // Fire immediately so the watchdog sees us within 5s of room join.
+    tick();
+    this.heartbeatInterval = setInterval(tick, AgentCallHandler.HEARTBEAT_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
   }
 
   /** Rolling buffer for suggestions context. */

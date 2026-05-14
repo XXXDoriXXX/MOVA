@@ -14,15 +14,13 @@ export class CallController {
 
   @Post('start')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Start a SIP call session' })
-  async startCall(
+  @ApiOperation({ summary: 'Start a SIP outbound call' })
+  startCall(
     @Body() dto: StartCallDto,
     @CurrentUser() user: AuthenticatedUser,
   ): Promise<unknown> {
-    // TODO(MOVA-Phase-3): pre-call eligibility check using user.id
-    //   (balance / concurrent calls limit / blocked check is handled in JwtStrategy)
-    // TODO(MOVA-Phase-4): create Conversation row, pass conversationId to service
-    void user; // currently unused at the service boundary, retained for upcoming phases
-    return this.callService.initiateCall(dto);
+    // Eligibility, template resolution, Conversation creation, SIP dispatch,
+    // and Redis pub/sub all happen inside the service.
+    return this.callService.initiateCall({ userId: user.id, dto });
   }
 }

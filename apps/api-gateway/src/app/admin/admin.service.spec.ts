@@ -2,6 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import { Repository } from 'typeorm';
 
 import {
+  AuditAction,
   Conversation,
   ConversationStatus,
   ProviderIncident,
@@ -13,9 +14,16 @@ import {
 
 import { RefreshTokenService } from '../auth/refresh-token.service';
 import { AdminService } from './admin.service';
+import type { AuditActor, AuditLogService } from './audit-log.service';
 
 const ADMIN_ID = '00000000-0000-4000-8000-000000000001';
 const TARGET_USER_ID = '00000000-0000-4000-8000-000000000002';
+const ADMIN_ACTOR: AuditActor = {
+  id: ADMIN_ID,
+  email: 'admin@example.com',
+  role: UserRole.ADMIN,
+};
+const REQ_CTX = { ip: '127.0.0.1', userAgent: 'jest' };
 
 function makeRepo<T>(): jest.Mocked<Repository<T>> {
   return {
@@ -56,6 +64,7 @@ describe('AdminService', () => {
   let convs: jest.Mocked<Repository<Conversation>>;
   let incidents: jest.Mocked<Repository<ProviderIncident>>;
   let refreshTokens: jest.Mocked<RefreshTokenService>;
+  let auditLog: jest.Mocked<AuditLogService>;
   let svc: AdminService;
 
   beforeEach(() => {
@@ -66,7 +75,21 @@ describe('AdminService', () => {
     refreshTokens = {
       revokeAllForUser: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<RefreshTokenService>;
-    svc = new AdminService(users, subs, convs, incidents, refreshTokens);
+    auditLog = {
+      record: jest.fn().mockResolvedValue(undefined),
+      recordUserAction: jest.fn().mockResolvedValue(undefined),
+      list: jest.fn(),
+      listByActor: jest.fn(),
+      listByTarget: jest.fn(),
+    } as unknown as jest.Mocked<AuditLogService>;
+    svc = new AdminService(
+      users,
+      subs,
+      convs,
+      incidents,
+      refreshTokens,
+      auditLog,
+    );
   });
 
   describe('getUser', () => {
@@ -84,49 +107,77 @@ describe('AdminService', () => {
   });
 
   describe('blockUser', () => {
-    it('flips isBlocked + revokes all refresh tokens', async () => {
+    it('flips isBlocked + revokes all refresh tokens + writes audit row', async () => {
       users.findOne
         .mockResolvedValueOnce(makeUser())
         .mockResolvedValueOnce(makeUser({ isBlocked: true, blockedReason: 'spam' }));
 
-      const result = await svc.blockUser(TARGET_USER_ID, 'spam');
+      const result = await svc.blockUser(TARGET_USER_ID, 'spam', ADMIN_ACTOR, REQ_CTX);
 
       expect(users.update).toHaveBeenCalledWith(
         { id: TARGET_USER_ID },
         expect.objectContaining({ isBlocked: true, blockedReason: 'spam' }),
       );
       expect(refreshTokens.revokeAllForUser).toHaveBeenCalledWith(TARGET_USER_ID);
+      expect(auditLog.recordUserAction).toHaveBeenCalledWith(
+        ADMIN_ACTOR,
+        AuditAction.USER_BLOCKED,
+        TARGET_USER_ID,
+        expect.objectContaining({
+          reason: 'spam',
+          previouslyBlocked: false,
+          targetEmail: 'user@example.com',
+        }),
+        REQ_CTX,
+      );
       expect(result.isBlocked).toBe(true);
     });
 
-    it('truncates reason to 280 chars', async () => {
+    it('truncates reason to 280 chars + writes truncated reason to audit', async () => {
       users.findOne
         .mockResolvedValueOnce(makeUser())
         .mockResolvedValueOnce(makeUser({ isBlocked: true }));
       const longReason = 'a'.repeat(500);
-      await svc.blockUser(TARGET_USER_ID, longReason);
+      await svc.blockUser(TARGET_USER_ID, longReason, ADMIN_ACTOR, REQ_CTX);
       expect(users.update).toHaveBeenCalledWith(
         { id: TARGET_USER_ID },
         expect.objectContaining({ blockedReason: 'a'.repeat(280) }),
       );
+      expect(auditLog.recordUserAction).toHaveBeenCalledWith(
+        ADMIN_ACTOR,
+        AuditAction.USER_BLOCKED,
+        TARGET_USER_ID,
+        expect.objectContaining({ reason: 'a'.repeat(280) }),
+        REQ_CTX,
+      );
     });
 
-    it('throws 404 when user is missing', async () => {
+    it('throws 404 when user is missing + does NOT write audit', async () => {
       users.findOne.mockResolvedValue(null);
-      await expect(svc.blockUser(TARGET_USER_ID, 'spam')).rejects.toThrow(NotFoundException);
+      await expect(
+        svc.blockUser(TARGET_USER_ID, 'spam', ADMIN_ACTOR, REQ_CTX),
+      ).rejects.toThrow(NotFoundException);
+      expect(auditLog.recordUserAction).not.toHaveBeenCalled();
     });
   });
 
   describe('unblockUser', () => {
-    it('clears block flags', async () => {
+    it('clears block flags + writes audit row', async () => {
       users.findOne
         .mockResolvedValueOnce(makeUser({ isBlocked: true, blockedReason: 'x' }))
         .mockResolvedValueOnce(makeUser({ isBlocked: false, blockedReason: null }));
 
-      const result = await svc.unblockUser(TARGET_USER_ID);
+      const result = await svc.unblockUser(TARGET_USER_ID, ADMIN_ACTOR, REQ_CTX);
       expect(users.update).toHaveBeenCalledWith(
         { id: TARGET_USER_ID },
         { isBlocked: false, blockedReason: null },
+      );
+      expect(auditLog.recordUserAction).toHaveBeenCalledWith(
+        ADMIN_ACTOR,
+        AuditAction.USER_UNBLOCKED,
+        TARGET_USER_ID,
+        expect.objectContaining({ previousReason: 'x', targetEmail: 'user@example.com' }),
+        REQ_CTX,
       );
       expect(result.isBlocked).toBe(false);
     });

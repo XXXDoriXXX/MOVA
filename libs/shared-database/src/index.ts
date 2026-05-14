@@ -10,3 +10,4 @@ export * from './lib/entities/conversation.entity';
 export * from './lib/entities/message.entity';
 export * from './lib/entities/suggestion.entity';
 export * from './lib/entities/provider-incident.entity';
+export * from './lib/entities/audit-log.entity';

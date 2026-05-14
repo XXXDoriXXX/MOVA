@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
+import { AuditLog } from './entities/audit-log.entity';
 import { Conversation } from './entities/conversation.entity';
 import { Message } from './entities/message.entity';
 import { PaymentEvent } from './entities/payment-event.entity';
@@ -27,6 +28,7 @@ const ENTITIES = [
   Message,
   Suggestion,
   ProviderIncident,
+  AuditLog,
 ];
 
 /**

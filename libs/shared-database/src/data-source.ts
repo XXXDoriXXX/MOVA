@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { config as loadDotenv } from 'dotenv';
 import { DataSource } from 'typeorm';
 
+import { AuditLog } from './lib/entities/audit-log.entity';
 import { Conversation } from './lib/entities/conversation.entity';
 import { Message } from './lib/entities/message.entity';
 import { PaymentEvent } from './lib/entities/payment-event.entity';
@@ -47,6 +48,7 @@ export const AppDataSource = new DataSource({
     Message,
     Suggestion,
     ProviderIncident,
+    AuditLog,
   ],
   migrations: ['libs/shared-database/src/lib/migrations/*.{ts,js}'],
   migrationsTableName: 'migrations',

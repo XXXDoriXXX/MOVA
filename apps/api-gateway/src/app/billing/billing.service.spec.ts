@@ -1,6 +1,7 @@
 import { Repository } from 'typeorm';
 
 import {
+  PaymentEvent,
   Plan,
   PlanCode,
   Subscription,
@@ -9,8 +10,17 @@ import {
   UsageSource,
 } from '@mova-back/shared-database';
 
-import { InsufficientBalanceError, SubscriptionNotFoundError } from './billing.errors';
-import { BillingService, nextMonthBoundary } from './billing.service';
+import {
+  InsufficientBalanceError,
+  PlanNotFoundError,
+  SubscriptionNotFoundError,
+} from './billing.errors';
+import {
+  BillingService,
+  MAX_TOPUP_CENTS,
+  MIN_TOPUP_CENTS,
+  nextMonthBoundary,
+} from './billing.service';
 
 const USER_ID = '00000000-0000-4000-8000-000000000001';
 
@@ -62,13 +72,15 @@ describe('BillingService', () => {
   let plans: jest.Mocked<Repository<Plan>>;
   let subs: jest.Mocked<Repository<Subscription>>;
   let usage: jest.Mocked<Repository<UsageRecord>>;
+  let payments: jest.Mocked<Repository<PaymentEvent>>;
   let svc: BillingService;
 
   beforeEach(() => {
     plans = makeRepo<Plan>();
     subs = makeRepo<Subscription>();
     usage = makeRepo<UsageRecord>();
-    svc = new BillingService(plans, subs, usage);
+    payments = makeRepo<PaymentEvent>();
+    svc = new BillingService(plans, subs, usage, payments);
   });
 
   describe('nextMonthBoundary', () => {
@@ -264,6 +276,115 @@ describe('BillingService', () => {
           source: UsageSource.PAID,
         }),
       ).rejects.toThrow(InsufficientBalanceError);
+    });
+  });
+
+  describe('fakeTopup', () => {
+    /** Wire the subscriptions repo's transaction + raw UPDATE machinery. */
+    function wireTransactionUpdate(
+      finalBalance: number,
+      paymentRow: Partial<PaymentEvent>,
+    ): void {
+      const txSave = jest.fn(async (_entity: unknown, value: unknown) => ({
+        id: 'payment-1',
+        ...(value as object),
+      }));
+      const updateBuilder = {
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        setParameters: jest.fn().mockReturnThis(),
+        returning: jest.fn().mockReturnThis(),
+        execute: jest
+          .fn()
+          .mockResolvedValue({ raw: [{ ...makeSub(), balanceCents: finalBalance }] }),
+      };
+      const txBuilder = { update: jest.fn().mockReturnValue(updateBuilder) };
+      const tx = {
+        save: txSave,
+        createQueryBuilder: jest.fn().mockReturnValue(txBuilder),
+      };
+      (subs.manager as unknown as { transaction: jest.Mock }) = {
+        transaction: jest.fn(async (cb: (tx: unknown) => Promise<unknown>) => cb(tx)),
+      };
+      void paymentRow;
+    }
+
+    it('rejects amounts below MIN_TOPUP_CENTS', async () => {
+      subs.findOne.mockResolvedValue(makeSub());
+      await expect(svc.fakeTopup(USER_ID, MIN_TOPUP_CENTS - 1)).rejects.toThrow(/below min/);
+    });
+
+    it('rejects amounts above MAX_TOPUP_CENTS', async () => {
+      subs.findOne.mockResolvedValue(makeSub());
+      await expect(svc.fakeTopup(USER_ID, MAX_TOPUP_CENTS + 1)).rejects.toThrow(/above max/);
+    });
+
+    it('rejects non-integer amounts', async () => {
+      subs.findOne.mockResolvedValue(makeSub());
+      await expect(svc.fakeTopup(USER_ID, 100.5)).rejects.toThrow(/below min|Topup amount/);
+    });
+
+    it('credits balance and persists a PaymentEvent', async () => {
+      subs.findOne.mockResolvedValue(makeSub({ balanceCents: 0 }));
+      wireTransactionUpdate(500, {});
+
+      const result = await svc.fakeTopup(USER_ID, 500);
+
+      expect(result.balanceCents).toBe(500);
+      // The transaction's tx.save was called with PaymentEvent
+      // (we just check the result paymentEvent has the expected fields).
+      expect(result.paymentEvent).toMatchObject({
+        userId: USER_ID,
+        amountCents: 500,
+        status: 'success',
+      });
+    });
+  });
+
+  describe('switchPlan', () => {
+    it('no-ops when user is already on the target plan', async () => {
+      const sub = makeSub();
+      plans.findOne.mockResolvedValue(sub.plan);
+      subs.findOne.mockResolvedValue(sub);
+
+      const summary = await svc.switchPlan(USER_ID, PlanCode.FREE);
+      expect(summary.plan.code).toBe(PlanCode.FREE);
+      // No UPDATE issued because the planId already matches.
+      expect(subs.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('switches to a new active plan', async () => {
+      const paidPlan = makePlan({
+        id: 'plan-paid',
+        code: PlanCode.PAID,
+        pricePerSecondCents: 1,
+        freeSecondsPerMonth: 0,
+      });
+      plans.findOne.mockResolvedValue(paidPlan);
+      // First findOne: sub on FREE plan. Second findOne (re-read after switch):
+      // sub on PAID plan.
+      subs.findOne
+        .mockResolvedValueOnce(makeSub())
+        .mockResolvedValueOnce(makeSub({ planId: paidPlan.id, plan: paidPlan }));
+
+      // Wire the UPDATE chain.
+      const updateBuilder = {
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      };
+      (subs.createQueryBuilder as jest.Mock).mockReturnValue({
+        update: jest.fn().mockReturnValue(updateBuilder),
+      });
+
+      const summary = await svc.switchPlan(USER_ID, PlanCode.PAID);
+      expect(summary.plan.code).toBe(PlanCode.PAID);
+      expect(updateBuilder.execute).toHaveBeenCalled();
+    });
+
+    it('throws PlanNotFoundError when target plan is missing / inactive', async () => {
+      plans.findOne.mockResolvedValue(null);
+      await expect(svc.switchPlan(USER_ID, PlanCode.PAID)).rejects.toThrow(PlanNotFoundError);
     });
   });
 });

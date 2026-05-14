@@ -8,6 +8,7 @@ import { CallGateway } from './call.gateway';
 import { ConversationAccessService } from './conversation-access.service';
 import { HeartbeatWatchdog } from './heartbeat-watchdog.service';
 import { RealtimeBridgeService } from './realtime-bridge.service';
+import { ReplayService } from './replay.service';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { RealtimeBridgeService } from './realtime-bridge.service';
     CallGateway,
     ConversationAccessService,
     RealtimeBridgeService,
+    ReplayService,
     HeartbeatWatchdog,
   ],
   exports: [RealtimeBridgeService],

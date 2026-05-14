@@ -20,6 +20,16 @@ const baseEvent = z.object({
   conversationId: z.string().uuid(),
   /** ISO 8601 UTC. Source of truth for time across services. */
   occurredAt: z.string().datetime(),
+  /**
+   * Redis Stream entry id assigned at XADD time (e.g. "1715954400000-0").
+   * Optional in the schema because:
+   *   1. legacy producers may not include it yet,
+   *   2. it's a metadata field, not part of the domain event shape.
+   * When present, downstream consumers use it as the canonical event id
+   * (WS protocol `ServerEvent.id`) AND as the reconnect cursor in
+   * `?lastStreamId=`. Monotonically increasing per conversation.
+   */
+  streamId: z.string().optional(),
 });
 
 export const TranscriptFinalEvent = baseEvent.extend({

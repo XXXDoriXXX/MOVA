@@ -18,6 +18,7 @@ import {
 
 import { ConversationAccessService } from './conversation-access.service';
 import { RealtimeBridgeService } from './realtime-bridge.service';
+import { ReplayService } from './replay.service';
 
 /**
  * Per-socket state attached to `socket.data`. Socket.IO types `data` as a
@@ -31,6 +32,8 @@ interface SocketData {
   unsubscribeBridge: () => void;
   /** Heartbeat watchdog — kills the socket if no `ping` for too long. */
   heartbeatTimer: NodeJS.Timeout;
+  /** Replay cursor (XADD stream id) from handshake; null on first connect. */
+  lastStreamId: string | null;
 }
 
 function sockData(socket: Socket): SocketData {
@@ -87,6 +90,7 @@ export class CallGateway implements OnModuleDestroy {
     private readonly config: ConfigService<AppEnv, true>,
     private readonly access: ConversationAccessService,
     private readonly bridge: RealtimeBridgeService,
+    private readonly replay: ReplayService,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
   ) {}
 
@@ -103,26 +107,63 @@ export class CallGateway implements OnModuleDestroy {
 
   async handleConnection(socket: Socket): Promise<void> {
     const data = sockData(socket);
-    const { userId, conversationId } = data;
+    const { userId, conversationId, lastStreamId } = data;
 
-    // Subscribe to events for this conversation; forward → this socket.
+    // Subscribe to live events FIRST — buffer them locally until replay is
+    // finished, then flush in order. This closes the race window where an
+    // event arrives between XRANGE completion and pub/sub attach.
+    const liveBuffer: ServerEvent[] = [];
+    let liveOpen = false;
     const unsubscribe = this.bridge.attach(conversationId, (event: ServerEvent) => {
-      socket.emit('event', event);
+      if (liveOpen) {
+        socket.emit('event', event);
+      } else {
+        liveBuffer.push(event);
+      }
     });
 
-    // Heartbeat watchdog — terminates idle sockets.
     const heartbeatTimer = this.startHeartbeat(socket);
 
     data.unsubscribeBridge = unsubscribe;
     data.heartbeatTimer = heartbeatTimer;
 
     this.logger.log(
-      `WS connect user=${userId} conversation=${conversationId} sid=${socket.id}`,
+      `WS connect user=${userId} conversation=${conversationId} sid=${socket.id}` +
+        (lastStreamId ? ` lastStreamId=${lastStreamId}` : ''),
     );
 
-    // Inform the client we're ready (this mirrors the agent-worker's
-    // call.connected event, but we emit it on WS connect too so the mobile
-    // UI can render "online" instantly without waiting for agent join).
+    // Replay missed events on reconnect, BEFORE we emit the call.connected
+    // greeting — keeps the client's view monotonic. Replay errors are
+    // swallowed (we don't want a Redis blip to fail the WS connect).
+    if (lastStreamId) {
+      try {
+        const replayed = await this.replay.replayMissed(conversationId, lastStreamId);
+        for (const event of replayed) {
+          socket.emit('event', event);
+        }
+        if (replayed.length > 0) {
+          this.logger.log(
+            `Replayed ${replayed.length} events to sid=${socket.id} from ${lastStreamId}`,
+          );
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Replay failed for sid=${socket.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    // Flush any live events that arrived during replay, then open the firehose.
+    for (const event of liveBuffer) {
+      socket.emit('event', event);
+    }
+    liveBuffer.length = 0;
+    liveOpen = true;
+
+    // Greet — mobile UI can render "online" instantly without waiting for
+    // agent join. Emitted AFTER replay so the client knows reconnect drained.
     socket.emit('event', {
       type: 'call.connected',
       id: socket.id, // good-enough unique within this socket
@@ -273,7 +314,7 @@ export class CallGateway implements OnModuleDestroy {
   // ── Auth handshake ─────────────────────────────────
 
   private async authenticate(socket: Socket): Promise<void> {
-    const { token, conversationId } = this.extractAuthFromSocket(socket);
+    const { token, conversationId, lastStreamId } = this.extractAuthFromSocket(socket);
     if (!token || !conversationId) {
       throw new Error('Missing token or conversationId');
     }
@@ -300,6 +341,7 @@ export class CallGateway implements OnModuleDestroy {
       conversationId,
       unsubscribeBridge: () => undefined,
       heartbeatTimer: setTimeout(() => undefined, 1),
+      lastStreamId,
     };
     (socket as Socket & { data: SocketData }).data = data;
     // Wire the `command` event handler now that we know the socket is trusted.
@@ -309,6 +351,7 @@ export class CallGateway implements OnModuleDestroy {
   private extractAuthFromSocket(socket: Socket): {
     token: string | null;
     conversationId: string | null;
+    lastStreamId: string | null;
   } {
     const handshake = socket.handshake;
     const token =
@@ -320,7 +363,19 @@ export class CallGateway implements OnModuleDestroy {
       (handshake.auth?.['conversationId'] as string | undefined) ??
       (handshake.query['conversationId'] as string | undefined) ??
       null;
-    return { token, conversationId };
+    // Replay cursor: mobile client persists the last `ServerEvent.id` it saw
+    // (which equals the Redis Stream entry id) and replays missed events on
+    // reconnect. Absent on first connect.
+    const rawCursor =
+      (handshake.auth?.['lastStreamId'] as string | undefined) ??
+      (handshake.query['lastStreamId'] as string | undefined) ??
+      null;
+    // Sanity-check shape: "<ms>-<seq>" with digits only. Reject anything else
+    // to avoid passing junk into XRANGE (Redis would error and we'd swallow it,
+    // but better to fail fast on bad client input).
+    const lastStreamId =
+      rawCursor && /^\d+-\d+$/.test(rawCursor) ? rawCursor : null;
+    return { token, conversationId, lastStreamId };
   }
 
   private bearerFromHeader(header: string | undefined): string | null {

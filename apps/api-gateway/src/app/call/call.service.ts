@@ -6,7 +6,9 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SipClient } from 'livekit-server-sdk';
+import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import { Redis } from 'ioredis';
+import type { Counter } from 'prom-client';
 import { v4 as uuidv4 } from 'uuid';
 
 import type { AppEnv } from '@mova-back/shared-config';
@@ -61,6 +63,8 @@ export class CallService {
     private readonly billing: BillingService,
     private readonly templates: TemplatesService,
     private readonly users: UsersService,
+    @InjectMetric('mova_calls_started_total')
+    private readonly callsStartedCounter: Counter<string>,
   ) {
     const wssUrl = this.config.get('LIVEKIT_URL', { infer: true });
     const apiUrl = wssUrl.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://');
@@ -181,6 +185,11 @@ export class CallService {
       RedisChannels.callDispatch,
       JSON.stringify({ roomName, conversationId: conversation.id }),
     );
+
+    // Metric: bump AFTER SIP dial + dispatch succeed. We count "started"
+    // calls — failed-to-dispatch ones are counted via markFailed branch's
+    // error metrics (Phase 8 follow-up wires the failure counter).
+    this.callsStartedCounter.inc({ plan: eligibility.summary.plan.code });
 
     return {
       conversationId: conversation.id,

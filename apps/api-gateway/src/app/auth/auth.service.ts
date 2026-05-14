@@ -5,7 +5,9 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
+import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import * as bcrypt from 'bcrypt';
+import type { Counter } from 'prom-client';
 
 import { PasswordBreachService, type JwtPayload } from '@mova-back/shared-auth';
 import { User } from '@mova-back/shared-database';
@@ -62,6 +64,8 @@ export class AuthService {
     private readonly refreshTokens: RefreshTokenService,
     private readonly passwordBreach: PasswordBreachService,
     private readonly events: EventEmitter2,
+    @InjectMetric('mova_signups_total')
+    private readonly signupsCounter: Counter<string>,
   ) {}
 
   async register(dto: RegisterDto, ctx: ClientContext): Promise<AuthResponse> {
@@ -85,6 +89,10 @@ export class AuthService {
       registeredAt: user.createdAt.toISOString(),
     };
     await this.events.emitAsync(USER_REGISTERED_EVENT, event);
+
+    // Metric: bump AFTER subscription creation succeeded, so the count
+    // reflects fully-onboarded users rather than half-baked ones.
+    this.signupsCounter.inc();
 
     return this.buildAuthResponse(user, ctx);
   }

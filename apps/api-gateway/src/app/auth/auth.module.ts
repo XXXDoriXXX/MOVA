@@ -8,6 +8,7 @@ import { PasswordBreachService } from '@mova-back/shared-auth';
 import type { AppEnv } from '@mova-back/shared-config';
 import { RefreshToken } from '@mova-back/shared-database';
 
+import { MetricsModule } from '../metrics/metrics.module';
 import { UsersModule } from '../users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -18,6 +19,7 @@ import { RefreshTokenService } from './refresh-token.service';
   imports: [
     UsersModule,
     PassportModule,
+    MetricsModule,
     TypeOrmModule.forFeature([RefreshToken]),
     JwtModule.registerAsync({
       inject: [ConfigService],

@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { InjectMetric } from '@willsoto/nestjs-prometheus';
+import type { Counter, Histogram } from 'prom-client';
 import { Repository } from 'typeorm';
 
 import {
@@ -70,6 +72,12 @@ export class ConversationLifecycleService {
     private readonly conversationsRepo: Repository<Conversation>,
     private readonly conversations: ConversationsService,
     private readonly billing: BillingService,
+    @InjectMetric('mova_call_duration_seconds')
+    private readonly callDurationHistogram: Histogram<string>,
+    @InjectMetric('mova_billable_seconds_total')
+    private readonly billableSecondsCounter: Counter<string>,
+    @InjectMetric('mova_call_errors_total')
+    private readonly callErrorsCounter: Counter<string>,
   ) {}
 
   async endCall(input: EndCallInput): Promise<EndCallResult> {
@@ -147,6 +155,28 @@ export class ConversationLifecycleService {
             }`,
         );
       }
+    }
+
+    // Metrics — fire AFTER persistence is done so reads on /metrics reflect
+    // committed state. Histogram observes duration in seconds; counter
+    // accumulates billable seconds tagged by plan source.
+    this.callDurationHistogram.observe(secondsBilled);
+    if (secondsBilled > 0) {
+      this.billableSecondsCounter.inc(
+        { plan: source === UsageSource.FREE ? PlanCode.FREE : PlanCode.PAID },
+        secondsBilled,
+      );
+    }
+    // If the call ended in a non-clean state, count it as a call error so
+    // alerts can fire on a spike. ErrorCode is mirrored from the row.
+    if (
+      input.reason === ConversationEndReason.FATAL_ERROR ||
+      input.reason === ConversationEndReason.TIMEOUT ||
+      input.reason === ConversationEndReason.BALANCE
+    ) {
+      this.callErrorsCounter.inc({
+        code: input.errorCode ?? input.reason,
+      });
     }
 
     return {

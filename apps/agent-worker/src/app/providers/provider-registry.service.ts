@@ -6,7 +6,9 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import CircuitBreaker from 'opossum';
+import type { Gauge, Histogram } from 'prom-client';
 import { Repository } from 'typeorm';
 
 import {
@@ -96,6 +98,10 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
     @Inject(OpenAiLlmProvider) openai: OpenAiLlmProvider,
     @Inject(AnthropicLlmProvider) anthropic: AnthropicLlmProvider,
     @Inject(GroqLlmProvider) groq: GroqLlmProvider,
+    @InjectMetric('mova_provider_latency_seconds')
+    private readonly latencyHistogram: Histogram<string>,
+    @InjectMetric('mova_provider_health')
+    private readonly healthGauge: Gauge<string>,
   ) {
     this.registerLlm(openai);
     this.registerLlm(anthropic);
@@ -164,6 +170,17 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
       throw new ProviderError('breaker_open', providerId, 'Provider not registered');
     }
 
+    // Histogram timer — covers both success and failure paths so we see
+    // latency-of-failure (e.g. timeouts) alongside latency-of-success.
+    // model label uses provider.defaultModel — runtime callers MAY pass a
+    // different model in op(); for histograms that level of granularity is
+    // typically not worth the cardinality blow-up.
+    const endTimer = this.latencyHistogram.startTimer({
+      type: 'llm',
+      provider: providerId,
+      model: provider.defaultModel,
+    });
+
     try {
       const result = (await breaker.fire(provider, op)) as T;
       this.onSuccess(providerId);
@@ -172,6 +189,8 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
       const wrapped = this.normalizeError(err, providerId);
       await this.onFailure(providerId, wrapped, context);
       throw wrapped;
+    } finally {
+      endTimer();
     }
   }
 
@@ -189,6 +208,9 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
   private registerLlm(provider: ILlmProvider): void {
     this.llmProviders.set(provider.id as LlmProviderEnum, provider);
     this.llmHealth.set(provider.id as LlmProviderEnum, { score: 100 });
+    // Seed the gauge so the metric appears immediately at scrape time —
+    // dashboards prefer "we know it's healthy" over "we have no data".
+    this.healthGauge.set({ type: 'llm', provider: provider.id }, 100);
     // The breaker wraps `op(provider)` so user-supplied async functions run
     // through it. Opossum types are loose; we accept that and rely on our
     // typed `runLlm` wrapper above.
@@ -230,6 +252,7 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
     const h = this.llmHealth.get(id);
     if (!h) return;
     h.score = Math.min(100, h.score + 20);
+    this.healthGauge.set({ type: 'llm', provider: id }, h.score);
     if (h.incidentId) {
       // Mark the incident as recovered (fire-and-forget; failure here is OK).
       const { incidentId } = h;
@@ -250,6 +273,7 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
     const penalty = this.penaltyFor(err.code);
     h.score = err.code === 'auth' ? 0 : Math.max(0, h.score - penalty);
     h.lastError = { code: err.code, at: new Date() };
+    this.healthGauge.set({ type: 'llm', provider: id }, h.score);
 
     // Only file an incident if one isn't already open (avoid spamming the
     // table during a sustained outage).

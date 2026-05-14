@@ -1,160 +1,258 @@
-import { Injectable, OnApplicationBootstrap, OnApplicationShutdown, Logger, Inject } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+  OnApplicationShutdown,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as silero from '@livekit/agents-plugin-silero';
 import { initializeLogger } from '@livekit/agents';
-import { AgentFactory, AgentContext } from './agent/agent.factory';
-import { REDIS_CLIENT } from '@mova-back/shared-redis';
 import { Redis } from 'ioredis';
-import { AgentCallHandler } from './agent-call.handler';
 
+import { REDIS_CLIENT } from '@mova-back/shared-redis';
+import { CallControlAction } from '@mova-back/shared-realtime';
+
+import { AgentFactory, AgentContext } from './agent/agent.factory';
+import { AgentCallHandler } from './agent-call.handler';
+import { CallEventPublisher } from './events/call-event.publisher';
+import { SuggestionsService } from './suggestions/suggestions.service';
+
+interface ActiveSession {
+  handler: AgentCallHandler;
+  conversationId: string | null;
+}
+
+interface CallControlMessage {
+  action: CallControlAction | string;
+  initiatedBy?: string;
+  text?: string;
+  voice?: string;
+  provider?: string;
+  providerType?: string;
+  model?: string;
+  suggestionId?: string;
+  reason?: string;
+  /** Legacy shape support — old api-gateway code path. */
+  roomName?: string;
+}
+
+/**
+ * Top-level worker bootstrap + Redis routing.
+ *
+ * Channels listened to:
+ *   - `call-dispatch` (legacy single-channel) — api-gateway publishes here
+ *     when a new call should be picked up.
+ *   - `call-controls`  (legacy single-channel) — old `interrupt_and_speak`
+ *     control format. Kept for back-compat.
+ *   - `call-controls:*` (pattern) — Phase 5 typed control commands from
+ *     realtime-service. Each message is per-conversationId.
+ *
+ * Per-conversation routing: we maintain `conversationIndex` so pattern
+ * subscribers can locate the active local session in O(1). Calls handled
+ * by other agent-worker pods produce a debug log + drop on this node.
+ */
 @Injectable()
-export class AgentRunnerService implements OnApplicationBootstrap, OnApplicationShutdown {
+export class AgentRunnerService
+  implements OnApplicationBootstrap, OnApplicationShutdown
+{
   private readonly logger = new Logger(AgentRunnerService.name);
-  private vadModel: silero.VAD;
+  private vadModel!: silero.VAD;
   private subscriber: Redis;
 
-  private activeSessions = new Map<string, AgentCallHandler>();
+  private readonly activeSessions = new Map<string, ActiveSession>();
+  private readonly conversationIndex = new Map<string, string>();
 
   constructor(
     private readonly config: ConfigService,
     private readonly agentFactory: AgentFactory,
+    private readonly publisher: CallEventPublisher,
+    private readonly suggestions: SuggestionsService,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
   ) {
-    this.logger.debug('🛠 [Init] Duplicating Redis client for SUB connection...');
     this.subscriber = this.redis.duplicate();
   }
 
-  async onApplicationBootstrap() {
-    if (process.env.NODE_ENV === 'test') {
-      this.logger.warn('⚠️ [Bootstrap] Test environment detected. Skipping worker initialization.');
+  async onApplicationBootstrap(): Promise<void> {
+    if (process.env['NODE_ENV'] === 'test') {
+      this.logger.warn('Test environment — skipping worker bootstrap');
       return;
     }
 
-    this.logger.log('🚀 [Bootstrap] Starting Embedded LiveKit Worker initialization process...');
+    this.logger.log('🚀 [Bootstrap] Starting embedded LiveKit worker...');
 
     try {
-      this.logger.debug('🛠 [Init] Initializing LiveKit internal logger...');
       initializeLogger({ level: 'debug', pretty: true });
-
-      this.logger.debug('🧠 [VAD] Pre-warming Silero VAD model...');
-      const vadStartTime = Date.now();
-
-      // Memory management: singleton instance is maintained here
       this.vadModel = await silero.VAD.load();
+      this.logger.log('✅ [VAD] Silero loaded');
 
-      this.logger.log(`✅ [VAD] Silero VAD loaded into memory in ${Date.now() - vadStartTime}ms`);
+      await this.subscriber.subscribe('call-dispatch', 'call-controls');
+      await this.subscriber.psubscribe('call-controls:*');
 
-      this.logger.debug('📡 [Redis] Subscribing to "call-dispatch" and "call-controls" channels...');
-      this.subscriber.subscribe('call-dispatch', 'call-controls', (err) => {
-        if (err) {
-          this.logger.error(`❌ [Redis] Failed to subscribe to channels: ${err.message}`, err.stack);
-        } else {
-          this.logger.log('🎧 [Redis] Successfully subscribed. Listening for new calls and controls from API Gateway...');
-        }
+      this.subscriber.on('message', (channel, raw) => {
+        this.routeMessage(channel, raw).catch((err) =>
+          this.logger.error(`Subscriber error on ${channel}: ${(err as Error).message}`),
+        );
+      });
+      this.subscriber.on('pmessage', (_pattern, channel, raw) => {
+        this.routePatternMessage(channel, raw).catch((err) =>
+          this.logger.error(`Pattern subscriber error on ${channel}: ${(err as Error).message}`),
+        );
       });
 
-      this.subscriber.on('message', async (channel, message) => {
-        try {
-          const payload = JSON.parse(message);
-
-          if (channel === 'call-dispatch') {
-            this.handleCallDispatch(payload);
-          } else if (channel === 'call-controls') {
-            this.handleCallControls(payload);
-          }
-        } catch (parseError) {
-          const err = parseError as Error;
-          this.logger.error(`❌ [Payload] Failed to parse Redis message on ${channel}: ${message}`, err.stack);
-        }
-      });
-
-    } catch (bootstrapError) {
-      const err = bootstrapError as Error;
-      this.logger.error(`🚨 [Bootstrap] Critical failure during initialization`, err.stack);
-    }
-  }
-
-  async onApplicationShutdown(signal?: string) {
-    this.logger.log(`🛑 [Shutdown] Received OS signal: ${signal}. Initiating Graceful Shutdown sequence...`);
-
-    if (this.subscriber) {
-      await this.subscriber.unsubscribe('call-dispatch', 'call-controls');
-      this.logger.log('🛑 [Shutdown] Unsubscribed from Redis. Stopped accepting new events.');
-    }
-
-    // Close all active sessions
-    if (this.activeSessions.size > 0) {
-      this.logger.log(`⏳ [Shutdown] Draining ${this.activeSessions.size} active sessions...`);
-
-      const disconnectPromises = Array.from(this.activeSessions.values()).map(handler => handler.stop());
-      await Promise.all(disconnectPromises);
-
-      this.activeSessions.clear();
-      this.logger.log('✅ [Shutdown] All active sessions safely stopped.');
-    }
-
-    // Close redis connections
-    if (this.subscriber) {
-      this.subscriber.quit();
-      this.logger.log('✅ [Shutdown] Redis connections closed.');
-    }
-
-    this.logger.log('👋 [Shutdown] Graceful Shutdown complete. Process will exit safely.');
-  }
-
-  private async handleCallDispatch(payload: Record<string, any>) {
-    const roomName = payload.roomName as string | undefined;
-    if (!roomName) {
-      this.logger.warn(`⚠️ [Payload] Received dispatch payload without roomName`);
-      return;
-    }
-
-    if (this.activeSessions.has(roomName)) {
-      this.logger.warn(`⚠️ [Concurrency] Session for room "${roomName}" is already active or connecting. Ignoring duplicate dispatch event.`);
-      return;
-    }
-
-    this.logger.log(`⚡ [Event] Triggering direct call handler for room: ${roomName}`);
-
-    // Non-blocking execution
-    this.initiateCall(roomName).catch((err: Error) =>
-      this.logger.error(`🚨 [Fatal] Unhandled error in call loop for room ${roomName}`, err.stack)
-    );
-  }
-
-  private handleCallControls(payload: Record<string, any>) {
-    const roomName = payload.roomName as string | undefined;
-    if (!roomName) {
-      this.logger.warn(`⚠️ [Payload] Received control payload without roomName`);
-      return;
-    }
-
-    const handler = this.activeSessions.get(roomName);
-    if (!handler) {
-      this.logger.debug(`ℹ️ [Control] Received control for room ${roomName}, but no active session found locally. (Maybe on another node)`);
-      return;
-    }
-
-    if (payload.action === 'interrupt_and_speak') {
-      handler.interruptAndSpeak(payload.text).catch((err: Error) =>
-        this.logger.error(`❌ [Control] Interrupt failed for ${roomName}`, err.stack)
+      this.logger.log('🎧 [Redis] Subscribed: call-dispatch, call-controls, call-controls:*');
+    } catch (err) {
+      this.logger.error(
+        `🚨 [Bootstrap] Critical failure: ${(err as Error).message}`,
+        (err as Error).stack,
       );
     }
   }
 
-  private async initiateCall(roomName: string) {
+  async onApplicationShutdown(signal?: string): Promise<void> {
+    this.logger.log(`🛑 [Shutdown] signal=${signal}; draining ${this.activeSessions.size} sessions`);
     try {
-      const redisKey = `call:${roomName}:context`;
-      this.logger.debug(`🔍 [Context] Fetching user context from Redis key: ${redisKey}`);
-      const contextRaw = await this.redis.get(redisKey);
+      await this.subscriber.punsubscribe('call-controls:*');
+      await this.subscriber.unsubscribe('call-dispatch', 'call-controls');
+    } catch {
+      // best-effort
+    }
 
-      if (!contextRaw) {
-        this.logger.warn(`🛑 [Context] Missing context for room ${roomName}. Aborting connection.`);
+    await Promise.all([...this.activeSessions.values()].map((s) => s.handler.stop()));
+    this.activeSessions.clear();
+    this.conversationIndex.clear();
+
+    try {
+      await this.subscriber.quit();
+    } catch {
+      // best-effort
+    }
+    this.logger.log('👋 [Shutdown] complete');
+  }
+
+  // ── Message routing ────────────────────────────────
+
+  private async routeMessage(channel: string, raw: string): Promise<void> {
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(raw) as Record<string, unknown>;
+    } catch (err) {
+      this.logger.warn(`Bad JSON on ${channel}: ${(err as Error).message}`);
+      return;
+    }
+
+    if (channel === 'call-dispatch') {
+      const roomName = payload['roomName'] as string | undefined;
+      if (!roomName) {
+        this.logger.warn('call-dispatch without roomName');
         return;
       }
+      if (this.activeSessions.has(roomName)) {
+        this.logger.warn(`Duplicate dispatch for ${roomName} — ignored`);
+        return;
+      }
+      void this.initiateCall(roomName);
+      return;
+    }
 
-      this.logger.debug(`✅ [Context] Successfully retrieved raw context for ${roomName}`);
-      const userContext: AgentContext = JSON.parse(contextRaw) as AgentContext;
+    if (channel === 'call-controls') {
+      const roomName = payload['roomName'] as string | undefined;
+      const action = payload['action'] as string | undefined;
+      const text = payload['text'] as string | undefined;
+      if (!roomName) return;
+      const session = this.activeSessions.get(roomName);
+      if (!session) return;
+      if (action === 'interrupt_and_speak' && text) {
+        await session.handler.interruptAndSpeak(text);
+      }
+    }
+  }
+
+  private async routePatternMessage(channel: string, raw: string): Promise<void> {
+    const conversationId = channel.slice('call-controls:'.length);
+    if (!conversationId) return;
+
+    const roomName = this.conversationIndex.get(conversationId);
+    if (!roomName) {
+      this.logger.debug(
+        `Control for conversation=${conversationId} but no active local session (likely on another node)`,
+      );
+      return;
+    }
+    const session = this.activeSessions.get(roomName);
+    if (!session) return;
+
+    let msg: CallControlMessage;
+    try {
+      msg = JSON.parse(raw) as CallControlMessage;
+    } catch {
+      this.logger.warn(`Bad control JSON on ${channel}`);
+      return;
+    }
+
+    await this.dispatchControl(session.handler, msg);
+  }
+
+  private async dispatchControl(
+    handler: AgentCallHandler,
+    msg: CallControlMessage,
+  ): Promise<void> {
+    switch (msg.action) {
+      case CallControlAction.SPEAK:
+        if (msg.text) await handler.interruptAndSpeak(msg.text);
+        return;
+
+      case CallControlAction.ACCEPT_SUGGESTION:
+        // The mobile client sends `accept_suggestion { suggestionId }` and
+        // the api-gateway consumer marks the row `wasChosen=true`. The text
+        // ride into TTS uses the same SPEAK code path — realtime-service
+        // sends both SPEAK (with the chosen text) and ACCEPT_SUGGESTION
+        // (audit) together. For MVP we no-op here; the audit-only message
+        // lands on api-gateway anyway.
+        this.logger.debug(`accept_suggestion received (id=${msg.suggestionId}); audit-only`);
+        return;
+
+      case CallControlAction.STOP_TTS:
+        await handler.stopTts();
+        return;
+
+      case CallControlAction.END:
+        await handler.stop();
+        return;
+
+      case CallControlAction.CHANGE_VOICE:
+        // LiveKit Agents binds TTS at session creation; mid-call swap would
+        // recreate the session and cut audio. The preference is persisted
+        // by api-gateway (user profile) and applies on the NEXT call. A
+        // future custom pipeline replacing LiveKit Agents unlocks real-time
+        // swap.
+        this.logger.log(
+          `change_voice voice=${msg.voice} — applies next call`,
+        );
+        return;
+
+      case CallControlAction.CHANGE_MODEL:
+        this.logger.log(
+          `change_model type=${msg.providerType} provider=${msg.provider} model=${msg.model} — applies next call`,
+        );
+        return;
+
+      default:
+        this.logger.warn(`Unknown control action: ${msg.action}`);
+    }
+  }
+
+  // ── Call bootstrap ─────────────────────────────────
+
+  private async initiateCall(roomName: string): Promise<void> {
+    try {
+      const ctx = await this.redis.get(`call:${roomName}:context`);
+      if (!ctx) {
+        this.logger.warn(`Context missing for ${roomName}`);
+        return;
+      }
+      const userContext = JSON.parse(ctx) as AgentContext;
+      const conversationId = userContext.conversationId ?? null;
 
       const handler = new AgentCallHandler(
         roomName,
@@ -163,20 +261,26 @@ export class AgentRunnerService implements OnApplicationBootstrap, OnApplication
         this.agentFactory,
         this.vadModel,
         this.redis,
+        this.publisher,
+        this.suggestions,
         (closedRoomName: string) => {
+          const session = this.activeSessions.get(closedRoomName);
+          if (session?.conversationId) {
+            this.conversationIndex.delete(session.conversationId);
+          }
           this.activeSessions.delete(closedRoomName);
-        }
+        },
       );
 
-      // Lock the room
-      this.activeSessions.set(roomName, handler);
+      this.activeSessions.set(roomName, { handler, conversationId });
+      if (conversationId) {
+        this.conversationIndex.set(conversationId, roomName);
+      }
 
-      // Await start sequence
       await handler.start();
-
-    } catch (error) {
-      const err = error as Error;
-      this.logger.error(`❌ [Call Lifecycle] Fatal error initiating call for room ${roomName}: ${err.message}`, err.stack);
+    } catch (err) {
+      const e = err as Error;
+      this.logger.error(`Failed to initiate ${roomName}: ${e.message}`, e.stack);
       this.activeSessions.delete(roomName);
     }
   }

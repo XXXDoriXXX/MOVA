@@ -7,6 +7,21 @@ import { LlmFactory } from './factories/llm.factory';
 import { TtsFactory } from './factories/tts.factory';
 
 export interface AgentContext {
+  /** Phase 4+: populated by api-gateway on /calls/start. */
+  conversationId?: string;
+  /** Phase 4+: who initiated the call. Used for per-conversation publish. */
+  userId?: string;
+  /** Phase 4+: snapshot of the active Template (system prompt + provider hints). */
+  template?: {
+    id: string;
+    systemPrompt: string;
+    language: string;
+    defaultLlmProvider: string | null;
+    defaultLlmModel: string | null;
+    defaultTtsProvider: string | null;
+    defaultVoice: string | null;
+  } | null;
+  /** Legacy fields kept for back-compat with the existing LiveKit Agents pipeline. */
   userName: string;
   userRole: string;
   callReason: string;

@@ -154,9 +154,16 @@ export const ServerEvent = {
   callEnded: envelope.extend({
     type: z.literal('call.ended'),
     data: z.object({
-      reason: z.enum(['user', 'interlocutor', 'balance', 'fatal_error', 'timeout']),
+      reason: z.enum([
+        'user',
+        'interlocutor',
+        'balance',
+        'fatal_error',
+        'timeout',
+        'admin',
+      ]),
       durationSeconds: z.number().int().nonnegative(),
-      endedBy: z.enum(['user', 'system', 'interlocutor']),
+      endedBy: z.enum(['user', 'system', 'interlocutor', 'admin']),
     }),
   }),
 

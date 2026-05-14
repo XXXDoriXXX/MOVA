@@ -2,9 +2,12 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
+  Post,
   Query,
   Req,
   UseGuards,
@@ -34,7 +37,11 @@ import {
   AuditLogService,
   type AuditPage,
 } from './audit-log.service';
-import { BlockUserDto } from './dto/admin.schemas';
+import {
+  BlockUserDto,
+  ForceEndConversationDto,
+  ResolveIncidentDto,
+} from './dto/admin.schemas';
 
 /**
  * Admin REST surface (Phase 10 MVP slice).
@@ -159,6 +166,22 @@ export class AdminController {
     );
   }
 
+  @Post('conversations/:id/force-end')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Admin force-end a call — signals LiveKit teardown + marks the conversation ENDED with reason=admin',
+  })
+  forceEndConversation(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ForceEndConversationDto,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Req() req: Request,
+  ): Promise<Conversation> {
+    const ctx = this.auditContext(actor, req);
+    return this.admin.forceEndConversation(id, dto.reason, ctx.actor, ctx.request);
+  }
+
   @Get('conversations/:id/messages')
   @ApiOperation({
     summary:
@@ -221,6 +244,22 @@ export class AdminController {
         to: to ? new Date(to) : undefined,
       })
       .then((items) => ({ items }));
+  }
+
+  @Post('incidents/:id/resolve')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Manually mark a provider incident as recovered — idempotent (no-op if already resolved)',
+  })
+  resolveIncident(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ResolveIncidentDto,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Req() req: Request,
+  ): Promise<ProviderIncident> {
+    const ctx = this.auditContext(actor, req);
+    return this.admin.resolveIncident(id, dto.note, ctx.actor, ctx.request);
   }
 
   // ── Audit trail ──────────────────────────────────

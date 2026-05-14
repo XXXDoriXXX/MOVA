@@ -15,6 +15,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { HealthModule } from './health/health.module';
 import { ProvidersModule } from './providers/providers.module';
+import { SuggestionsModule } from './suggestions/suggestions.module';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { ProvidersModule } from './providers/providers.module';
     HealthModule,
     AgentModule,
     ProvidersModule,
+    SuggestionsModule,
   ],
   controllers: [AppController],
   providers: [AppService, AgentRunnerService, { provide: APP_FILTER, useClass: SentryGlobalFilter }],

@@ -6,8 +6,8 @@ import {
 } from '@mova-back/shared-agent';
 
 import { ProviderRegistry } from '../providers/provider-registry.service';
+import { StyleResolverService } from './style-resolver.service';
 import { SuggestionsService } from './suggestions.service';
-import { UserStyleReaderService } from './user-style-reader.service';
 
 const CONV_ID = '00000000-0000-4000-8000-000000000001';
 const PARENT_ID = '00000000-0000-4000-8000-000000000010';
@@ -41,13 +41,13 @@ function makeRedis(): jest.Mocked<Redis> {
   } as unknown as jest.Mocked<Redis>;
 }
 
-/** Style-reader stub. Defaults to "no addendum" — matches cold-start. */
-function makeStyleReader(
+/** Style-resolver stub. Defaults to "no addendum" — matches cold-start. */
+function makeStyleResolver(
   addendum: string | null = null,
-): jest.Mocked<UserStyleReaderService> {
+): jest.Mocked<StyleResolverService> {
   return {
-    buildPromptAddendum: jest.fn().mockResolvedValue(addendum),
-  } as unknown as jest.Mocked<UserStyleReaderService>;
+    resolve: jest.fn().mockResolvedValue(addendum),
+  } as unknown as jest.Mocked<StyleResolverService>;
 }
 
 function baseRequest() {
@@ -68,7 +68,7 @@ describe('SuggestionsService.generate', () => {
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: ['За 5 хвилин', 'Вже їду', 'Чекайте біля під\'їзду'] }),
     );
-    const svc = new SuggestionsService(registry, makeRedis(), makeStyleReader());
+    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
     const result = await svc.generate(baseRequest());
     expect(result).toEqual(['За 5 хвилин', 'Вже їду', 'Чекайте біля під\'їзду']);
   });
@@ -77,14 +77,14 @@ describe('SuggestionsService.generate', () => {
     const wrapped =
       '```json\n{"suggestions":["Так","Ні","Уточніть"]}\n```';
     const { registry } = makeRegistry(wrapped);
-    const svc = new SuggestionsService(registry, makeRedis(), makeStyleReader());
+    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
     const result = await svc.generate(baseRequest());
     expect(result).toEqual(['Так', 'Ні', 'Уточніть']);
   });
 
   it('returns null on unparseable output (no throw)', async () => {
     const { registry } = makeRegistry('this is not JSON at all');
-    const svc = new SuggestionsService(registry, makeRedis(), makeStyleReader());
+    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
     const result = await svc.generate(baseRequest());
     expect(result).toBeNull();
   });
@@ -93,7 +93,7 @@ describe('SuggestionsService.generate', () => {
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: ['Так', 'Ні'] }),
     );
-    const svc = new SuggestionsService(registry, makeRedis(), makeStyleReader());
+    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
     const result = await svc.generate(baseRequest());
     expect(result).toBeNull();
   });
@@ -103,14 +103,14 @@ describe('SuggestionsService.generate', () => {
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: [longText, 'Ні', 'Уточніть'] }),
     );
-    const svc = new SuggestionsService(registry, makeRedis(), makeStyleReader());
+    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
     const result = await svc.generate(baseRequest());
     expect(result).toBeNull();
   });
 
   it('returns null when LLM throws (registry already filed incident)', async () => {
     const { registry } = makeRegistry(new Error('timeout'));
-    const svc = new SuggestionsService(registry, makeRedis(), makeStyleReader());
+    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
     const result = await svc.generate(baseRequest());
     expect(result).toBeNull();
   });
@@ -122,7 +122,7 @@ describe('SuggestionsService.generateAndEmit', () => {
       JSON.stringify({ suggestions: ['Так', 'Ні', 'Уточніть'] }),
     );
     const redis = makeRedis();
-    const svc = new SuggestionsService(registry, redis, makeStyleReader());
+    const svc = new SuggestionsService(registry, redis, makeStyleResolver());
 
     await svc.generateAndEmit(baseRequest());
 
@@ -147,7 +147,7 @@ describe('SuggestionsService.generateAndEmit', () => {
   it('does not publish when generation fails', async () => {
     const { registry } = makeRegistry(new Error('boom'));
     const redis = makeRedis();
-    const svc = new SuggestionsService(registry, redis, makeStyleReader());
+    const svc = new SuggestionsService(registry, redis, makeStyleResolver());
 
     await svc.generateAndEmit(baseRequest());
 
@@ -157,7 +157,7 @@ describe('SuggestionsService.generateAndEmit', () => {
   it('does not publish when output is unparseable', async () => {
     const { registry } = makeRegistry('garbage output');
     const redis = makeRedis();
-    const svc = new SuggestionsService(registry, redis, makeStyleReader());
+    const svc = new SuggestionsService(registry, redis, makeStyleResolver());
 
     await svc.generateAndEmit(baseRequest());
 
@@ -166,26 +166,34 @@ describe('SuggestionsService.generateAndEmit', () => {
 });
 
 describe('SuggestionsService — style addendum injection', () => {
-  it('queries the style reader with the request userId', async () => {
+  it('queries the style resolver with userId AND styleId from the request', async () => {
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: ['Так', 'Ні', 'Уточніть'] }),
     );
-    const reader = makeStyleReader('--- style addendum here ---');
-    const svc = new SuggestionsService(registry, makeRedis(), reader);
+    const resolver = makeStyleResolver('--- official style block ---');
+    const svc = new SuggestionsService(registry, makeRedis(), resolver);
 
-    await svc.generate({ ...baseRequest(), userId: 'user-42' });
+    await svc.generate({
+      ...baseRequest(),
+      userId: 'user-42',
+      styleId: 'builtin:official',
+    });
 
-    expect(reader.buildPromptAddendum).toHaveBeenCalledWith('user-42');
+    expect(resolver.resolve).toHaveBeenCalledWith('user-42', 'builtin:official');
   });
 
-  it('passes the addendum into the LLM as part of the system prompt', async () => {
+  it('passes the resolved addendum into the LLM as part of the system prompt', async () => {
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: ['Так', 'Ні', 'Уточніть'] }),
     );
-    const reader = makeStyleReader('--- USER STYLE: writes very casually ---');
-    const svc = new SuggestionsService(registry, makeRedis(), reader);
+    const resolver = makeStyleResolver('--- Conversation style: OFFICIAL ---');
+    const svc = new SuggestionsService(registry, makeRedis(), resolver);
 
-    await svc.generate({ ...baseRequest(), userId: 'user-42' });
+    await svc.generate({
+      ...baseRequest(),
+      userId: 'user-42',
+      styleId: 'builtin:official',
+    });
 
     // runLlm received a callback; we re-invoke it with a probe provider
     // to inspect the messages that would have gone to Groq.
@@ -199,15 +207,15 @@ describe('SuggestionsService — style addendum injection', () => {
       messages: Array<{ role: string; content: string }>;
     };
     const system = generateArgs.messages.find((m) => m.role === 'system');
-    expect(system?.content).toContain('--- USER STYLE: writes very casually ---');
+    expect(system?.content).toContain('--- Conversation style: OFFICIAL ---');
   });
 
-  it('omits the addendum entirely when the reader returns null (cold-start)', async () => {
+  it('omits the addendum entirely when the resolver returns null', async () => {
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: ['Так', 'Ні', 'Уточніть'] }),
     );
-    const reader = makeStyleReader(null);
-    const svc = new SuggestionsService(registry, makeRedis(), reader);
+    const resolver = makeStyleResolver(null);
+    const svc = new SuggestionsService(registry, makeRedis(), resolver);
 
     await svc.generate({ ...baseRequest(), userId: 'user-42' });
 
@@ -219,6 +227,18 @@ describe('SuggestionsService — style addendum injection', () => {
     const system = (probe.generate.mock.calls[0][0] as {
       messages: Array<{ role: string; content: string }>;
     }).messages.find((m) => m.role === 'system');
-    expect(system?.content).not.toContain("User's writing style");
+    expect(system?.content).not.toContain('Conversation style:');
+  });
+
+  it('forwards an undefined styleId — resolver decides the default', async () => {
+    const { registry } = makeRegistry(
+      JSON.stringify({ suggestions: ['Так', 'Ні', 'Уточніть'] }),
+    );
+    const resolver = makeStyleResolver(null);
+    const svc = new SuggestionsService(registry, makeRedis(), resolver);
+
+    await svc.generate({ ...baseRequest(), userId: 'user-42' });
+
+    expect(resolver.resolve).toHaveBeenCalledWith('user-42', undefined);
   });
 });

@@ -13,7 +13,11 @@ import { v4 as uuidv4 } from 'uuid';
 
 import type { AppEnv } from '@mova-back/shared-config';
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
-import { RedisChannels, RedisKeys } from '@mova-back/shared-realtime';
+import {
+  DEFAULT_STYLE_ID,
+  RedisChannels,
+  RedisKeys,
+} from '@mova-back/shared-realtime';
 import type { Conversation } from '@mova-back/shared-database';
 import { ConversationEndReason, UserLanguage } from '@mova-back/shared-database';
 
@@ -116,6 +120,19 @@ export class CallService {
     //    up the call-dispatch event. TTL covers the maximum call duration so
     //    a stuck agent still has context.
     const contextKey = RedisKeys.callContext(roomName);
+    // Resolve the active conversation style with this precedence:
+    //   1. user.preferredStyleId       (user-wide override)
+    //   2. template.defaultStyleId     (template's preference)
+    //   3. DEFAULT_STYLE_ID            (built-in PERSONAL → falls back to FRIENDLY
+    //                                   inside agent-worker when user has no profile)
+    // We do NOT validate the ID server-side here — that's the job of the
+    // PATCH endpoints. If a referenced custom style was deleted, agent-worker's
+    // StyleResolverService falls back to a built-in. Keep this path simple.
+    const activeStyleId =
+      user?.preferredStyleId ??
+      template?.defaultStyleId ??
+      DEFAULT_STYLE_ID;
+
     const agentContext = {
       conversationId: conversation.id,
       userId,
@@ -132,6 +149,7 @@ export class CallService {
             defaultVoice: template.defaultVoice,
           }
         : null,
+      activeStyleId,
       // Legacy fields, retained until agent-worker is fully migrated to Template.
       userName: dto.userName ?? user?.name ?? null,
       userRole: dto.userRole ?? null,

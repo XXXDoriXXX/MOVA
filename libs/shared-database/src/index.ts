@@ -12,3 +12,4 @@ export * from './lib/entities/suggestion.entity';
 export * from './lib/entities/provider-incident.entity';
 export * from './lib/entities/audit-log.entity';
 export * from './lib/entities/user-style-profile.entity';
+export * from './lib/entities/conversation-style.entity';

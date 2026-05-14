@@ -1,95 +1,218 @@
-version: '3.8'
+# ============================================================================
+# Mova Backend — Production-shaped Compose Stack
+# ============================================================================
+#
+# What runs:
+#   postgres         Postgres 16 (schema lives here)
+#   redis            Redis Stack (pub/sub + streams + cache)
+#   migrations       One-shot — applies TypeORM migrations, then exits
+#   api-gateway      REST API on :3000
+#   realtime-service WS gateway on :3002
+#   agent-worker     LiveKit agent (no exposed HTTP, only Redis I/O)
+#
+# Start order is enforced via depends_on + healthchecks:
+#   postgres + redis → migrations → api-gateway / realtime-service / agent-worker
+#
+# Development overrides live in docker-compose.override.yml. Compose auto-merges
+# both files. To run the production-shaped stack ignoring dev overrides:
+#   docker compose -f docker-compose.yml up -d --build
+# ============================================================================
 
 services:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Postgres — schema authority
+  # ──────────────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: mova_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: mova_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - mova_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mova_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # Redis Stack — pub/sub + streams + caches
+  # ──────────────────────────────────────────────────────────────────────────
   redis:
     image: redis/redis-stack:latest
     container_name: mova_redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
-      - "8001:8001"
+      - "8001:8001" # RedisInsight UI
     environment:
-      REDIS_ARGS: "--requirepass fish-potato-table"
+      # MUST match REDIS_PASSWORD in .env (default: mova-dev-redis-pw)
+      REDIS_ARGS: "--requirepass mova-dev-redis-pw"
     volumes:
       - redis_data:/data
     networks:
       - mova_network
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "fish-potato-table", "ping"]
+      test: ["CMD", "redis-cli", "-a", "mova-dev-redis-pw", "--no-auth-warning", "ping"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 10
+      start_period: 5s
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # One-shot: apply TypeORM migrations, then exit.
+  # api-gateway / realtime-service / agent-worker all depend_on this finishing
+  # so they never serve traffic / dispatch against a stale schema.
+  # ──────────────────────────────────────────────────────────────────────────
+  migrations:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: base
+    container_name: mova_migrations
+    command: ["npx", "typeorm-ts-node-commonjs", "migration:run", "-d", "libs/shared-database/src/data-source.ts"]
+    env_file:
+      - .env
+    environment:
+      # Inside the network postgres resolves by service name. Override the
+      # .env DATABASE_URL so host-side npm scripts can also keep using
+      # localhost without conflict.
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/mova_dev
+      DATABASE_SSL: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mova_network
+    restart: "no"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # api-gateway — REST + persistence consumer + admin
+  # ──────────────────────────────────────────────────────────────────────────
   api-gateway:
     build:
       context: .
       dockerfile: Dockerfile
       args:
         APP_NAME: api-gateway
-    container_name: mova_gateway
-    restart: always
+    container_name: mova_api_gateway
+    restart: unless-stopped
     ports:
       - "3000:3000"
     env_file:
-      - .env # Injects LIVEKIT_*, OPENAI_API_KEY, etc.
+      - .env
     environment:
       NODE_ENV: production
       PORT: 3000
-      # Internal Docker networking variables override .env
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/mova_dev
+      DATABASE_SSL: "false"
       REDIS_HOST: redis
       REDIS_PORT: 6379
       AGENT_SERVICE_URL: http://agent-worker:3001
+      REALTIME_PUBLIC_URL: http://realtime-service:3002
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
-      agent-worker:
-        condition: service_started
+      migrations:
+        condition: service_completed_successfully
     networks:
       - mova_network
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # realtime-service — Socket.IO gateway for live calls
+  # ──────────────────────────────────────────────────────────────────────────
+  realtime-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_NAME: realtime-service
+    container_name: mova_realtime_service
+    restart: unless-stopped
+    ports:
+      - "3002:3002"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3002
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/mova_dev
+      DATABASE_SSL: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    networks:
+      - mova_network
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3002/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # agent-worker — LiveKit agent (no HTTP, only Redis pub/sub)
+  # ──────────────────────────────────────────────────────────────────────────
   agent-worker:
-      build:
-        context: .
-        dockerfile: Dockerfile
-        args:
-          APP_NAME: agent-worker
-      container_name: mova_agent_worker
-      restart: always
-      ports:
-        - "3001:3001"
-      dns:
-        - 8.8.8.8
-        - 8.8.4.4
-      env_file:
-        - .env # Injects LIVEKIT_*, OPENAI_API_KEY, etc.
-      environment:
-        NODE_ENV: production
-        PORT: 3001
-        RUN_MODE: start
-        REDIS_HOST: redis
-        REDIS_PORT: 6379
-      depends_on:
-        redis:
-          condition: service_healthy
-      networks:
-        - mova_network
-
-  # 3. Приклад ще одного сервісу (на майбутнє)
-  # auth-service:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #     args:
-  #       APP_NAME: auth-service
-  #   container_name: mova_auth
-  #   environment:
-  #     REDIS_HOST: redis
-  #   networks:
-  #     - mova_network
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_NAME: agent-worker
+    container_name: mova_agent_worker
+    restart: unless-stopped
+    # No published ports — talks to LiveKit cloud + Redis only.
+    dns:
+      # LiveKit's WebRTC handshake is sensitive to DNS — pin Google's DNS
+      # to avoid container-default DNS quirks on some hosts.
+      - 8.8.8.8
+      - 8.8.4.4
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      RUN_MODE: start
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/mova_dev
+      DATABASE_SSL: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    networks:
+      - mova_network
 
 networks:
   mova_network:
     driver: bridge
 
 volumes:
+  postgres_data:
   redis_data:

@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import {
   AuditLog,
   Conversation,
+  Message,
   ProviderIncident,
   Subscription,
   User,
@@ -28,6 +29,7 @@ import { AuditLogService } from './audit-log.service';
       User,
       Subscription,
       Conversation,
+      Message,
       ProviderIncident,
       AuditLog,
     ]),

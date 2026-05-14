@@ -104,10 +104,17 @@ export const CallConnectedEvent = baseEvent.extend({
 export const CallEndedEvent = baseEvent.extend({
   type: z.literal('call.ended'),
   data: z.object({
-    /** Who hung up. */
-    endedBy: z.enum(['user', 'interlocutor', 'system']),
+    /** Who hung up. `admin` is moderation/force-end by an operator. */
+    endedBy: z.enum(['user', 'interlocutor', 'system', 'admin']),
     /** Why. */
-    reason: z.enum(['user', 'interlocutor', 'balance', 'fatal_error', 'timeout']),
+    reason: z.enum([
+      'user',
+      'interlocutor',
+      'balance',
+      'fatal_error',
+      'timeout',
+      'admin',
+    ]),
     /** Optional error code (mirrors CallErrorCode) when reason=fatal_error. */
     errorCode: z.string().optional(),
   }),

@@ -57,14 +57,20 @@ services:
       - "6379:6379"
       - "8001:8001" # RedisInsight UI
     environment:
-      # MUST match REDIS_PASSWORD in .env (default: mova-dev-redis-pw)
-      REDIS_ARGS: "--requirepass mova-dev-redis-pw"
+      # Pulls from the `REDIS_PASSWORD` value in your .env (falls back
+      # to the dev default if unset). Both `redis-server --requirepass`
+      # and the healthcheck below read the same variable, so they stay
+      # in sync no matter what you put in .env.
+      REDIS_ARGS: "--requirepass ${REDIS_PASSWORD:-mova-dev-redis-pw}"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-mova-dev-redis-pw}"
     volumes:
       - redis_data:/data
     networks:
       - mova_network
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "mova-dev-redis-pw", "--no-auth-warning", "ping"]
+      # $$REDIS_PASSWORD escapes to $REDIS_PASSWORD inside the container
+      # so the shell expands it at runtime — same source as REDIS_ARGS.
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping"]
       interval: 5s
       timeout: 3s
       retries: 10

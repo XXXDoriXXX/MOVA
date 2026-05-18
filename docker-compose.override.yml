@@ -23,10 +23,15 @@
 
 services:
   # ──────────────────────────────────────────────────────────────────────────
-  # migrations — needs the safety-net (no nx, just typeorm CLI)
+  # migrations — needs the safety-net + build shared-database first.
+  # TypeORM 0.3's CLI loads the data source via native `await import()`,
+  # which goes through Node's ESM resolver and won't find .ts files even
+  # with typeorm-ts-node-commonjs. We compile shared-database with Nx tsc
+  # and point typeorm at the JS bundle in dist/. Same fix is applied to
+  # host-side `npm run migration:*` scripts.
   # ──────────────────────────────────────────────────────────────────────────
   migrations:
-    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; npx typeorm-ts-node-commonjs migration:run -d libs/shared-database/src/data-source.ts"]
+    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; npx nx build shared-database && npx typeorm migration:run -d dist/libs/shared-database/src/data-source.js"]
     volumes:
       - .:/app
       - /app/node_modules

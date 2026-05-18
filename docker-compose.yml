@@ -81,7 +81,9 @@ services:
       dockerfile: Dockerfile
       target: base
     container_name: mova_migrations
-    command: ["npx", "typeorm-ts-node-commonjs", "migration:run", "-d", "libs/shared-database/src/data-source.ts"]
+    # Build shared-database first, then run typeorm against compiled JS.
+    # See docker-compose.override.yml::migrations for the why.
+    command: ["sh", "-c", "npx nx build shared-database && npx typeorm migration:run -d dist/libs/shared-database/src/data-source.js"]
     env_file:
       - .env
     environment:

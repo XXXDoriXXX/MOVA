@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import * as path from 'path';
 import { config as loadDotenv } from 'dotenv';
 import { DataSource } from 'typeorm';
 
@@ -57,7 +58,9 @@ export const AppDataSource = new DataSource({
     UserStyleProfile,
     ConversationStyle,
   ],
-  migrations: ['libs/shared-database/src/lib/migrations/*.{ts,js}'],
+  // Resolved relative to the file (not cwd) so the same data-source works
+  // whether executed from source (ts-node) OR from compiled JS in dist/.
+  migrations: [path.join(__dirname, 'lib/migrations/*.{ts,js}')],
   migrationsTableName: 'migrations',
   ssl: process.env['DATABASE_SSL'] === 'true' ? { rejectUnauthorized: false } : false,
 });

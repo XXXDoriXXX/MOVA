@@ -25,8 +25,11 @@ import { User } from './lib/entities/user.entity';
  *
  * Env loading: we look at `process.env` first (CI/prod), then optional `.env`.
  * The CLI is run by a human/agent, so we tolerate a missing .env in CI.
+ *
+ * Note: dotenv@17 removed the `quiet` option — calling loadDotenv() without
+ * args is the supported way. A missing .env is silently ignored.
  */
-loadDotenv({ quiet: true });
+loadDotenv();
 
 const databaseUrl =
   process.env['DATABASE_URL'] ??

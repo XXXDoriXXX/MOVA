@@ -7,26 +7,29 @@
 #   - dist + .nx folders are kept INSIDE the container (anonymous volumes)
 #     to prevent Windows ↔ Linux path-separator cross-OS cache poisoning.
 #   - Runtime safety-net: each service checks `node_modules/typeorm` (proxy
-#     for "deps are installed") and falls back to `npm ci --legacy-peer-deps`
+#     for "deps installed") and falls back to `npm ci --legacy-peer-deps`
 #     if the anonymous volume came up empty (known Docker-Desktop-on-Windows
 #     behaviour with anon volumes overlaying image-built paths).
+#
+# YAML note: shell commands are written as single-line plain scalars (no
+# `>-` folding). Folded scalars preserve indentation as newlines when
+# continuation lines are deeper than the parent — sh then sees `||` as
+# the first token of a new line and bails with a syntax error. One line,
+# no surprises.
 #
 # To run prod-shaped stack (without these overrides):
 #   docker compose -f docker-compose.yml up -d --build
 # ============================================================================
 
-# Shared shell prelude — repeats the same install safety-net before nx serve.
-# YAML anchors below avoid hand-syncing three identical commands.
-x-dev-command: &dev-command >-
-  sh -c "test -d /app/node_modules/typeorm
-         || (echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)';
-             npm ci --legacy-peer-deps);
-         exec $$NX_SERVE_CMD"
-
 services:
   # ──────────────────────────────────────────────────────────────────────────
-  # Migrations — same in dev as prod (one-shot). No override needed.
+  # migrations — needs the safety-net (no nx, just typeorm CLI)
   # ──────────────────────────────────────────────────────────────────────────
+  migrations:
+    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; npx typeorm-ts-node-commonjs migration:run -d libs/shared-database/src/data-source.ts"]
+    volumes:
+      - .:/app
+      - /app/node_modules
 
   # ──────────────────────────────────────────────────────────────────────────
   # api-gateway — nx serve with hot reload
@@ -36,7 +39,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: base
-    command: *dev-command
+    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; exec npx nx serve api-gateway --host 0.0.0.0 --skip-nx-cache"]
     volumes:
       - .:/app
       - /app/node_modules # anonymous — keep container's npm ci output
@@ -46,7 +49,6 @@ services:
       NODE_ENV: development
       NPM_CONFIG_CACHE: /tmp/.npm
       NX_DAEMON: "false"  # daemon is unreliable inside containers; disable
-      NX_SERVE_CMD: "npx nx serve api-gateway --host 0.0.0.0 --skip-nx-cache"
 
   # ──────────────────────────────────────────────────────────────────────────
   # realtime-service — same dev pattern
@@ -56,7 +58,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: base
-    command: *dev-command
+    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; exec npx nx serve realtime-service --host 0.0.0.0 --skip-nx-cache"]
     volumes:
       - .:/app
       - /app/node_modules
@@ -66,7 +68,6 @@ services:
       NODE_ENV: development
       NPM_CONFIG_CACHE: /tmp/.npm
       NX_DAEMON: "false"
-      NX_SERVE_CMD: "npx nx serve realtime-service --host 0.0.0.0 --skip-nx-cache"
 
   # ──────────────────────────────────────────────────────────────────────────
   # agent-worker — same dev pattern
@@ -76,7 +77,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: base
-    command: *dev-command
+    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; exec npx nx serve agent-worker --host 0.0.0.0 --skip-nx-cache"]
     volumes:
       - .:/app
       - /app/node_modules
@@ -87,17 +88,3 @@ services:
       NPM_CONFIG_CACHE: /tmp/.npm
       NX_DAEMON: "false"
       NX_SKIP_NX_CACHE: "true"
-      NX_SERVE_CMD: "npx nx serve agent-worker --host 0.0.0.0 --skip-nx-cache"
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # migrations — also needs the safety-net (no nx, just typeorm CLI)
-  # ──────────────────────────────────────────────────────────────────────────
-  migrations:
-    command: >-
-      sh -c "test -d /app/node_modules/typeorm
-             || (echo '⚠️  node_modules missing in volume — installing now';
-                 npm ci --legacy-peer-deps);
-             npx typeorm-ts-node-commonjs migration:run -d libs/shared-database/src/data-source.ts"
-    volumes:
-      - .:/app
-      - /app/node_modules

@@ -53,7 +53,7 @@ When `make ps` shows all services as `healthy`, browse to:
 
 | Service | Port | Role |
 |---------|------|------|
-| **postgres** | 5432 | Schema authority — all persistent data |
+| **postgres** | 5433 (host) → 5432 (container) | Schema authority — all persistent data |
 | **redis** | 6379 / 8001 | pub/sub + streams + caches; 8001 is RedisInsight UI |
 | **migrations** | — | One-shot — applies TypeORM migrations, then exits |
 | **api-gateway** | 3000 | REST API + admin + persistence consumer |

@@ -90,8 +90,8 @@ sh-agent: ## Open a shell inside agent-worker
 sh-realtime: ## Open a shell inside realtime-service
 	$(COMPOSE) exec realtime-service sh
 
-sh-redis: ## Open redis-cli (uses dev password)
-	$(COMPOSE) exec redis redis-cli -a mova-dev-redis-pw
+sh-redis: ## Open redis-cli (auth via $REDIS_PASSWORD inside container)
+	$(COMPOSE) exec redis sh -c 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning'
 
 sh-pg: ## Open psql against the dev DB
 	$(COMPOSE) exec postgres psql -U postgres -d mova_dev

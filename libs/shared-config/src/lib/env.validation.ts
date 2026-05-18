@@ -15,6 +15,30 @@ import { z } from 'zod';
  * IMPORTANT: never read `process.env` directly elsewhere. Always inject
  * `ConfigService<AppEnv, true>` from `@nestjs/config`.
  */
+/**
+ * `.env`-friendly boolean parser. `z.coerce.boolean()` is a footgun for env
+ * vars: it does `Boolean(value)` which makes the literal string `"false"`
+ * (any non-empty string) coerce to TRUE. With this helper, only the canonical
+ * strings "true"/"false" (case-insensitive) AND real booleans are accepted.
+ *
+ * Output is always a JavaScript boolean.
+ */
+const envBool = (defaultValue: boolean) =>
+  z
+    .union([z.boolean(), z.string()])
+    .default(defaultValue)
+    .transform((value, ctx) => {
+      if (typeof value === 'boolean') return value;
+      const lower = value.trim().toLowerCase();
+      if (lower === 'true') return true;
+      if (lower === 'false' || lower === '') return false;
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Expected "true" or "false" (case-insensitive), got "${value}"`,
+      });
+      return z.NEVER;
+    });
+
 export const envSchema = z.object({
   // ── App ────────────────────────────────────────────
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -28,7 +52,7 @@ export const envSchema = z.object({
     .string()
     .url({ message: 'DATABASE_URL must be a valid postgres:// URL' })
     .default('postgresql://postgres:postgres@localhost:5432/mova_dev'),
-  DATABASE_SSL: z.coerce.boolean().default(false),
+  DATABASE_SSL: envBool(false),
   DATABASE_POOL_SIZE: z.coerce.number().int().positive().default(20),
 
   // ── Redis ──────────────────────────────────────────
@@ -66,7 +90,7 @@ export const envSchema = z.object({
   // ── LLM safety (Lakera Guard, Phase 2/4) ───────────
   LAKERA_API_KEY: z.string().optional(),
   LAKERA_API_URL: z.string().url().default('https://api.lakera.ai/v2/guard'),
-  LAKERA_FAIL_OPEN: z.coerce.boolean().default(true),
+  LAKERA_FAIL_OPEN: envBool(true),
   LAKERA_TIMEOUT_MS: z.coerce.number().int().positive().default(1500),
 
   // ── Error tracking (Sentry) ────────────────────────
@@ -76,7 +100,7 @@ export const envSchema = z.object({
   SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0.1),
 
   // ── Password breach check (HaveIBeenPwned) ─────────
-  HIBP_ENABLED: z.coerce.boolean().default(true),
+  HIBP_ENABLED: envBool(true),
   HIBP_API_URL: z.string().url().default('https://api.pwnedpasswords.com'),
   HIBP_TIMEOUT_MS: z.coerce.number().int().positive().default(2000),
 

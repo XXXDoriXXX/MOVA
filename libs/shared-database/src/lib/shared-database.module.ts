@@ -60,7 +60,22 @@ const ENTITIES = [
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
-        const isProduction = config.get<string>('NODE_ENV') === 'production';
+        // synchronize=true is an anti-pattern when migrations exist:
+        // TypeORM tries to align the running schema with @Entity() class
+        // shapes on every boot. With migrations already applying the
+        // canonical schema, sync's recreate-enums / drop-old-types logic
+        // collides with the migrated state and fails the app with
+        // "cannot drop type X_old because other objects depend on it".
+        //
+        // Fixed answer: NEVER auto-synchronize. The schema source of truth
+        // is `libs/shared-database/src/lib/migrations/*.ts`. If a developer
+        // genuinely needs ad-hoc dev sync (scaffolding a brand-new entity
+        // without writing a migration yet), they can flip the explicit
+        // opt-in env `DATABASE_SYNCHRONIZE=true` — but production code
+        // paths should ALWAYS leave it off.
+        const synchronize =
+          String(config.get<string>('DATABASE_SYNCHRONIZE') ?? 'false')
+            .toLowerCase() === 'true';
         return {
           type: 'postgres',
           url: config.get<string>('DATABASE_URL'),
@@ -68,7 +83,7 @@ const ENTITIES = [
             ? { rejectUnauthorized: false }
             : false,
           entities: ENTITIES,
-          synchronize: !isProduction,
+          synchronize,
           migrationsRun: false,
           autoLoadEntities: false,
           poolSize: config.get<number>('DATABASE_POOL_SIZE') ?? 20,

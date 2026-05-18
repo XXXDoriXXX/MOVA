@@ -26,7 +26,13 @@ cp .env.example .env
 #    Everything else has sensible defaults.
 
 # 3. Boot the whole stack
-make up           # or:  docker compose up -d --build
+#
+# Linux / macOS / Git Bash:
+make up
+# Windows PowerShell / cmd:
+npm run docker:up
+# Or in any shell, the long form:
+docker compose up -d --build
 ```
 
 That's it. First boot takes 1–3 minutes (npm install + nx build inside containers).
@@ -87,30 +93,39 @@ inline comments. Schema source of truth:
 
 ## 🛠 Common operations
 
-`make help` lists everything. Highlights:
+Three equivalent ways depending on your shell. Pick one.
 
+### Linux / macOS / Git Bash on Windows
 ```bash
-make up              # start the stack (dev mode, hot reload)
-make down            # stop without wiping volumes
-make logs            # tail all logs
-make logs-api        # tail one service
-make ps              # status
-
-make migrate         # run pending migrations
-make migrate-show    # see executed + pending
-make migrate-revert  # rollback the most recent
-
-make sh-api          # shell into api-gateway
-make sh-pg           # psql session
-make sh-redis        # redis-cli
-
-make lint            # host-side lint (faster than via container)
-make test            # host-side unit tests
-
-make nuke            # ⚠️ wipe volumes + caches (full reset)
+make up | down | logs | ps | migrate | nuke | help
 ```
 
-If you don't use Make: the long forms are in `Makefile` next to each target.
+### Windows PowerShell / cmd (or anywhere npm is available)
+```powershell
+npm run docker:up           # start the stack
+npm run docker:down         # stop
+npm run docker:logs         # tail all
+npm run docker:logs:api     # tail one service
+npm run docker:ps           # status
+npm run docker:migrate      # run pending migrations
+npm run docker:migrate:show # what's executed / pending
+npm run docker:sh:pg        # psql session
+npm run docker:sh:redis     # redis-cli
+npm run docker:nuke         # ⚠️ wipe volumes (full reset)
+npm run docker:rebuild      # no-cache image rebuild
+```
+
+### Raw docker compose (works everywhere, just verbose)
+```bash
+docker compose up -d --build
+docker compose logs -f
+docker compose ps
+docker compose down
+docker compose down -v       # nuke
+```
+
+`make help` (Linux/macOS) lists every Make target; `npm run` (any
+platform) auto-prints the script list.
 
 ---
 
@@ -140,9 +155,30 @@ automatic restart.
 ### "Waiting for ... in another nx process"
 Cross-platform Nx cache got poisoned. Fix:
 ```bash
-make nuke
-make up
+# Linux/macOS:  make nuke && make up
+# Windows:      npm run docker:nuke; npm run docker:up
 ```
+
+### "Cannot find module 'typeorm' / @nestjs/typeorm" on first run
+Known Docker-Desktop-on-Windows behaviour: anonymous volumes for
+`/app/node_modules` come up empty on first mount instead of inheriting
+from the image. The `docker-compose.override.yml` has a runtime
+safety-net that detects this and runs `npm ci --legacy-peer-deps`
+inside the container — but on a stale stack you may need a clean reset:
+
+```powershell
+# Windows
+npm run docker:nuke
+npm run docker:up
+```
+
+```bash
+# Linux / macOS
+make nuke && make up
+```
+
+First boot after `nuke` takes 3–5 minutes (npm install runs once inside
+the volume); subsequent boots are fast.
 
 ### Service stuck on "starting" / unhealthy
 Check what failed:

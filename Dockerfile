@@ -12,7 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # --- Stage 2: Dependencies ---
 FROM os-base AS base
 COPY package.json package-lock.json ./
-RUN npm ci
+# `--legacy-peer-deps` is required by the keyv / reflect-metadata peer-dep
+# tangle in this monorepo. npm@10's strict ci would refuse the install
+# otherwise. Same flag is enforced in CI.
+RUN npm ci --legacy-peer-deps
 
 # --- Stage 3: Builder ---
 FROM base AS builder
@@ -29,7 +32,7 @@ ARG APP_NAME
 ENV NODE_ENV=production
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --legacy-peer-deps && npm cache clean --force
 
 # Копіюємо ВМІСТ папки додатку прямо в папку /dist, роблячи структуру "пласкою" (flattened)
 COPY --from=builder /app/dist/apps/${APP_NAME} ./dist

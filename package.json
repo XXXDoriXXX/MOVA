@@ -23,7 +23,7 @@
     "docker:migrate:revert": "docker compose run --rm --entrypoint \"\" migrations sh -c \"npx nx build shared-database && npx typeorm migration:revert -d dist/libs/shared-database/src/data-source.js\"",
     "docker:sh:api": "docker compose exec api-gateway sh",
     "docker:sh:pg": "docker compose exec postgres psql -U postgres -d mova_dev",
-    "docker:sh:redis": "docker compose exec redis redis-cli -a mova-dev-redis-pw"
+    "docker:sh:redis": "docker compose exec redis sh -c \"redis-cli -a \\\"$REDIS_PASSWORD\\\" --no-auth-warning\""
   },
   "private": true,
   "dependencies": {

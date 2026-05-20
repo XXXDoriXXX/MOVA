@@ -81,7 +81,12 @@ export const envSchema = z.object({
   SIP_TRUNK_ID: z.string().optional(),
 
   // ── AI providers ───────────────────────────────────
-  OPENAI_API_KEY: z.string().min(1),
+  // OpenAI is optional now that the live-call agent supports Gemini /
+  // Anthropic / Groq via the LiveKit Inference Gateway (see
+  // apps/agent-worker/.../llm.factory.ts). Set `LLM_PROVIDER=gemini` and the
+  // OpenAI key can be left blank. Required only if you actually pick OpenAI
+  // for LLM or TTS.
+  OPENAI_API_KEY: z.string().optional(),
   DEEPGRAM_API_KEY: z.string().min(1),
   ELEVENLABS_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(), // Fallback LLM

@@ -86,6 +86,7 @@ export const envSchema = z.object({
   ELEVENLABS_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(), // Fallback LLM
   GROQ_API_KEY: z.string().optional(), // Fast LLM for suggestions
+  GOOGLE_GENERATIVE_AI_API_KEY: z.string().optional(), // Gemini LLM
 
   // ── LLM safety (Lakera Guard, Phase 2/4) ───────────
   LAKERA_API_KEY: z.string().optional(),

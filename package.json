@@ -28,6 +28,7 @@
   "private": true,
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.77",
+    "@ai-sdk/google": "^3.0.75",
     "@ai-sdk/groq": "^3.0.39",
     "@ai-sdk/openai": "^3.0.63",
     "@keyv/redis": "^5.1.6",

@@ -37,6 +37,7 @@ describe('ProviderRegistry', () => {
   let openai: ILlmProvider;
   let anthropic: ILlmProvider;
   let groq: ILlmProvider;
+  let gemini: ILlmProvider;
   let registry: ProviderRegistry;
 
   beforeEach(() => {
@@ -44,6 +45,7 @@ describe('ProviderRegistry', () => {
     openai = makeProvider(LlmProviderEnum.OPENAI);
     anthropic = makeProvider(LlmProviderEnum.ANTHROPIC);
     groq = makeProvider(LlmProviderEnum.GROQ);
+    gemini = makeProvider(LlmProviderEnum.GEMINI);
     // Stub histograms + gauges — Prom-client objects are heavy; we just
     // need the call surface for the registry to invoke without errors.
     const stubHistogram = {
@@ -60,6 +62,7 @@ describe('ProviderRegistry', () => {
       openai as never,
       anthropic as never,
       groq as never,
+      gemini as never,
       stubHistogram,
       stubGauge,
     );

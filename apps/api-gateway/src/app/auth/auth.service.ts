@@ -53,6 +53,13 @@ export interface PublicUser {
   preferredLlmProvider: string | null;
   preferredLlmModel: string | null;
   preferredTtsProvider: string | null;
+  /**
+   * Wire id of the user's preferred conversation style — "builtin:<key>" or
+   * "custom:<uuid>", or null when not set. Exposed so mobile clients can
+   * pre-select the default chip without an extra round-trip; the matching
+   * writer lives at PATCH /v1/users/me/preferences/style.
+   */
+  preferredStyleId: string | null;
   createdAt: string;
 }
 
@@ -222,6 +229,7 @@ export class AuthService {
       preferredLlmProvider: user.preferredLlmProvider,
       preferredLlmModel: user.preferredLlmModel,
       preferredTtsProvider: user.preferredTtsProvider,
+      preferredStyleId: user.preferredStyleId ?? null,
       createdAt: user.createdAt.toISOString(),
     };
   }

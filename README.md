@@ -150,6 +150,44 @@ automatic restart.
 
 ---
 
+## ⏱ Build performance
+
+The Dockerfile uses BuildKit cache mounts (`/root/.npm` for npm tarballs,
+`.nx/cache` for incremental Nx output) and a `.dockerignore` that strips
+the build context to just the source tree. Practical effect:
+
+| Scenario | First run | Subsequent builds |
+|---|---|---|
+| Cold clone, no Docker cache | 5–15 min | — |
+| Code change in `apps/*/src` | — | 20–60 s |
+| `package.json` / lock change | — | 2–5 min |
+| `make rebuild` (force, no cache) | 5–15 min | 5–15 min |
+
+If you see the build sit on `RUN npm ci` for 20+ minutes, BuildKit isn't
+being used. Docker Compose v2 enables it by default, but if you're on an
+older stack:
+
+```bash
+# Linux/macOS
+export DOCKER_BUILDKIT=1
+export COMPOSE_DOCKER_CLI_BUILD=1
+make up
+```
+
+```powershell
+# Windows PowerShell
+$env:DOCKER_BUILDKIT=1; $env:COMPOSE_DOCKER_CLI_BUILD=1
+npm run docker:up
+```
+
+Want a clean, scrollable build log instead of the overlapping TTY view?
+
+```bash
+BUILDKIT_PROGRESS=plain npm run docker:up
+```
+
+---
+
 ## 🩺 Troubleshooting
 
 ### "Waiting for ... in another nx process"

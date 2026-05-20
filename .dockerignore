@@ -1,0 +1,84 @@
+# ============================================================================
+# Build context excludes — keep `docker compose build` fast.
+#
+# Without this file, Docker shovels the whole repo into the daemon on every
+# build, including `node_modules` (hundreds of MB), `.git`, `dist`, `.nx`
+# cache, logs, etc. On Windows + WSL2 this alone can dominate build time
+# because every file is round-tripped across the VM boundary.
+#
+# Anything listed here is INVISIBLE to `COPY` / `ADD` instructions — it's not
+# "removed from the image", it's never sent in the first place.
+# ============================================================================
+
+# Version control + GitHub
+.git
+.github
+.gitignore
+.gitattributes
+
+# IDE / OS noise
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Dependency caches that must be installed inside the image, not copied
+node_modules
+**/node_modules
+.npm
+.pnpm-store
+.yarn
+
+# Build artefacts — produced inside the builder stage, not consumed
+dist
+**/dist
+build
+**/build
+out
+**/out
+.nx
+.next
+.turbo
+
+# Test / lint outputs
+coverage
+**/coverage
+test-output
+**/test-output
+**/junit.xml
+
+# Logs
+*.log
+**/*.log
+logs
+
+# Env files: secrets live on the host (and compose mounts via `env_file:`).
+# Never bake them into the image — the runner deliberately reads from the
+# container env, not from a baked .env.
+.env
+.env.*
+!.env.example
+
+# Editor / linter / formatter configs that aren't needed at runtime
+.editorconfig
+.prettierignore
+.prettierrc
+.eslintcache
+
+# Docker-specific files — meta, not source
+Dockerfile
+Dockerfile.*
+.dockerignore
+docker-compose*.yml
+
+# Repo housekeeping
+README.md
+CHANGELOG.md
+LICENSE
+Makefile
+docs
+
+# Mobile sibling repo if someone clones it inside the backend tree by accident
+Mova-mobile

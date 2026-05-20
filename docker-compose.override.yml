@@ -76,6 +76,16 @@ services:
 
   # ──────────────────────────────────────────────────────────────────────────
   # agent-worker — same dev pattern
+  #
+  # `dns: []` clears the production hard-pin to 8.8.8.8 / 8.8.4.4. On
+  # Docker Desktop on Windows / WSL2 that pin frequently breaks outbound
+  # connectivity from the container — the WSL2 bridge can't always reach
+  # 8.8.8.8 directly, depending on router config. Letting Docker fall back
+  # to its embedded resolver (which forwards to the host's DNS) fixes the
+  # `failed to retrieve region info` LiveKit error on Windows dev setups.
+  # If you actually need the Google pin for prod, leave the base service
+  # alone — this override only applies when docker-compose.override.yml
+  # is auto-merged, i.e. in dev.
   # ──────────────────────────────────────────────────────────────────────────
   agent-worker:
     build:
@@ -83,6 +93,7 @@ services:
       dockerfile: Dockerfile
       target: base
     command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; exec npx nx serve agent-worker --host 0.0.0.0 --skip-nx-cache"]
+    dns: []
     volumes:
       - .:/app
       - /app/node_modules

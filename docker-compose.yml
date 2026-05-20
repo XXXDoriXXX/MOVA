@@ -112,6 +112,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runner
       args:
         APP_NAME: api-gateway
     container_name: mova_api_gateway
@@ -152,6 +153,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runner
       args:
         APP_NAME: realtime-service
     container_name: mova_realtime_service
@@ -190,6 +192,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runner
       args:
         APP_NAME: agent-worker
     container_name: mova_agent_worker

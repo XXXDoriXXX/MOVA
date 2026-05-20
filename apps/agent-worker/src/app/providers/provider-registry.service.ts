@@ -19,6 +19,7 @@ import {
 import { ProviderIncident, ProviderType } from '@mova-back/shared-database';
 
 import { AnthropicLlmProvider } from './llm/anthropic-llm.provider';
+import { GeminiLlmProvider } from './llm/gemini-llm.provider';
 import { GroqLlmProvider } from './llm/groq-llm.provider';
 import { OpenAiLlmProvider } from './llm/openai-llm.provider';
 
@@ -86,6 +87,7 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
   /** Default fallback order — adjusted at runtime by health scores. */
   private readonly defaultLlmOrder: LlmProviderEnum[] = [
     LlmProviderEnum.OPENAI,
+    LlmProviderEnum.GEMINI,
     LlmProviderEnum.ANTHROPIC,
     LlmProviderEnum.GROQ,
   ];
@@ -98,6 +100,7 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
     @Inject(OpenAiLlmProvider) openai: OpenAiLlmProvider,
     @Inject(AnthropicLlmProvider) anthropic: AnthropicLlmProvider,
     @Inject(GroqLlmProvider) groq: GroqLlmProvider,
+    @Inject(GeminiLlmProvider) gemini: GeminiLlmProvider,
     @InjectMetric('mova_provider_latency_seconds')
     private readonly latencyHistogram: Histogram<string>,
     @InjectMetric('mova_provider_health')
@@ -106,6 +109,7 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
     this.registerLlm(openai);
     this.registerLlm(anthropic);
     this.registerLlm(groq);
+    this.registerLlm(gemini);
   }
 
   async onModuleInit(): Promise<void> {

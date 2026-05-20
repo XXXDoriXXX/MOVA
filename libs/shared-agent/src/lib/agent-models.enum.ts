@@ -20,6 +20,8 @@ export enum LlmProviderEnum {
   ANTHROPIC = 'anthropic',
   /** Groq llama — fast model for parallel suggestion generation (Phase 7). */
   GROQ = 'groq',
+  /** Google Gemini — alternative primary LLM, strong multilingual. */
+  GEMINI = 'gemini',
 }
 
 export enum TtsProviderEnum {

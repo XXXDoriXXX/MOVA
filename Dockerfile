@@ -21,11 +21,24 @@
 # ============================================================================
 
 # ─── Stage 1: OS base ────────────────────────────────────────────────────────
-# Pure node:20-slim. NO `apt-get install` here so this layer is rebuilt only
-# when the base image tag itself changes. The runtime packages (curl,
-# openssl) live in the `runner` stage where they're actually needed.
+# Pure node:20-slim + ca-certificates. The `ca-certificates` package is
+# required by the `@livekit/rtc-node` native binary: its statically linked
+# Rust HTTP client uses `rustls-native-certs` and reads the system CA bundle
+# from /etc/ssl/certs/ca-certificates.crt. `node:20-bookworm-slim` does NOT
+# ship that file. Without it, any HTTPS request from the Rust side fails
+# instantly and call setup aborts with
+#   engine: signal failure: failed to retrieve region info:
+#   error sending request for url (https://<project>.livekit.cloud/settings/regions)
+# Node's own https stack ships its own root store and works fine, which is
+# why the failure only shows up the moment the Rust binding tries to talk
+# to LiveKit Cloud. Production previously got this for free as a transitive
+# dependency of `curl` in the runner stage; the dev `base` stage didn't,
+# which is why dev was broken on Windows while prod-shaped runs worked.
 FROM node:20-bookworm-slim AS os-base
 WORKDIR /app
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 # Globally enable npm offline-prefer + silence audit/fund chatter for every
 # `npm ci` below — knocks ~30s off each install.
 ENV NPM_CONFIG_PREFER_OFFLINE=true \
@@ -76,7 +89,9 @@ ARG APP_NAME
 ENV NODE_ENV=production
 
 # Runtime packages only — curl is needed by docker-compose healthcheck for
-# the HTTP services. ca-certificates + libssl are already in node:20-slim.
+# the HTTP services. `ca-certificates` is already installed in `os-base`
+# (required by @livekit/rtc-node's Rust HTTPS client) so it's inherited
+# here and not re-listed.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*

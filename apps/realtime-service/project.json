@@ -67,6 +67,31 @@
       "options": {
         "passWithNoTests": true
       }
+    },
+    "logs": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose logs -f --tail=200 realtime-service",
+        "color": true
+      }
+    },
+    "ps": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose ps realtime-service"
+      }
+    },
+    "restart": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose restart realtime-service"
+      }
+    },
+    "sh": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose exec realtime-service sh"
+      }
     }
   }
 }

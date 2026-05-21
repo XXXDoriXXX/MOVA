@@ -23,7 +23,24 @@
     "docker:migrate:revert": "docker compose run --rm --entrypoint \"\" migrations sh -c \"npx nx build shared-database && npx typeorm migration:revert -d dist/libs/shared-database/src/data-source.js\"",
     "docker:sh:api": "docker compose exec api-gateway sh",
     "docker:sh:pg": "docker compose exec postgres psql -U postgres -d mova_dev",
-    "docker:sh:redis": "docker compose exec redis sh -c \"redis-cli -a \\\"$REDIS_PASSWORD\\\" --no-auth-warning\""
+    "docker:sh:redis": "docker compose exec redis sh -c \"redis-cli -a \\\"$REDIS_PASSWORD\\\" --no-auth-warning\"",
+
+    "_devx": "// see tools/devx/project.json — these mirror common docker compose ops as Nx targets so they show up in nx graph and play nice with the TUI",
+    "status": "npx nx run devx:status",
+    "logs": "npx nx run devx:logs",
+    "logs:errors": "npx nx run devx:logs:errors",
+    "tail": "NX_TUI=true npx nx run devx:tail",
+    "logs:api": "npx nx run api-gateway:logs",
+    "logs:realtime": "npx nx run realtime-service:logs",
+    "logs:agent": "npx nx run agent-worker:logs",
+    "restart": "npx nx run devx:restart:all",
+    "restart:api": "npx nx run api-gateway:restart",
+    "restart:realtime": "npx nx run realtime-service:restart",
+    "restart:agent": "npx nx run agent-worker:restart",
+    "sh:api": "npx nx run api-gateway:sh",
+    "sh:realtime": "npx nx run realtime-service:sh",
+    "sh:agent": "npx nx run agent-worker:sh",
+    "graph": "npx nx graph"
   },
   "private": true,
   "dependencies": {

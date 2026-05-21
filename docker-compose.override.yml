@@ -155,7 +155,7 @@ services:
     image: node:20-alpine
     container_name: mova_admin
     working_dir: /app
-    command: ["sh", "-c", "test -d node_modules || npm install; npx vite --host 0.0.0.0 --port 5174"]
+    command: ["sh", "-c", "test -x node_modules/.bin/vite || npm install; npx vite --host 0.0.0.0 --port 5174"]
     ports:
       - "127.0.0.1:5174:5174"
     volumes:

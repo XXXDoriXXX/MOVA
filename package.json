@@ -41,7 +41,8 @@
     "sh:agent": "npx nx run agent-worker:sh",
     "graph": "npx nx graph",
     "logs:web": "node -e \"console.log('Dozzle: http://localhost:9999'); require('child_process').exec((process.platform==='win32'?'start ':process.platform==='darwin'?'open ':'xdg-open ')+'http://localhost:9999')\"",
-    "nx:reset": "npx nx reset"
+    "nx:reset": "npx nx reset",
+    "dev": "npm run nx:reset && npm run docker:up && npm run logs:web"
   },
   "private": true,
   "dependencies": {

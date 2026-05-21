@@ -11,6 +11,10 @@ you need during development as **Nx targets**. The point is two-fold:
 ## Cheatsheet
 
 ```sh
+# One-shot: reset any stuck Nx lock → boot the whole stack →
+# open browser logs. Use this 90% of the time.
+npm run dev
+
 # Workspace status (containers + cpu/mem)
 npm run status                  # → nx run devx:status
 

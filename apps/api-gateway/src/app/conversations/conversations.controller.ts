@@ -68,13 +68,13 @@ export class ConversationsController {
   listMessages(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,
-    @Query('after') after?: string,
+    @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
   ): Promise<CursorPage<Message>> {
     return this.conversations.listMessages(
       user.id,
       id,
-      after,
+      cursor,
       limit ? Number(limit) : undefined,
     );
   }

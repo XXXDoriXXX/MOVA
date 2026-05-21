@@ -56,6 +56,11 @@ export class AgentCallHandler {
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private static readonly HEARTBEAT_INTERVAL_MS = 5_000;
 
+  /** ms-since-epoch when the agent joined the LiveKit room. Stamped at
+   *  the start of `start()` and used to compute durationMs for every
+   *  `call.ended` emit so the post-call sheet shows a real number. */
+  private callStartTime: number | null = null;
+
   constructor(
     private readonly roomName: string,
     public readonly userContext: AgentContext,
@@ -77,6 +82,7 @@ export class AgentCallHandler {
 
   async start(): Promise<void> {
     const callStartTime = Date.now();
+    this.callStartTime = callStartTime;
     this.logger.log(`📞 [Call Lifecycle] Initiating connection sequence...`);
 
     try {
@@ -93,13 +99,13 @@ export class AgentCallHandler {
 
       this.room = new Room();
       this.room.on(RoomEvent.Disconnected, () => {
-        const duration = Date.now() - callStartTime;
-        this.logger.log(`🚪 [Call Lifecycle] Room disconnected after ${duration}ms.`);
+        const durationMs = Date.now() - callStartTime;
+        this.logger.log(`🚪 [Call Lifecycle] Room disconnected after ${durationMs}ms.`);
         // Reason is best-effort — distinguishing interlocutor-hangup from
         // network drop needs SIP-event introspection (Phase 8 work).
         this.emitTyped({
           type: 'call.ended',
-          data: { endedBy: 'interlocutor', reason: 'interlocutor' },
+          data: { endedBy: 'interlocutor', reason: 'interlocutor', durationMs },
         });
         this.cleanup();
       });
@@ -137,7 +143,12 @@ export class AgentCallHandler {
       );
       this.emitTyped({
         type: 'call.ended',
-        data: { endedBy: 'system', reason: 'fatal_error', errorCode: 'AGENT_LOST' },
+        data: {
+          endedBy: 'system',
+          reason: 'fatal_error',
+          errorCode: 'AGENT_LOST',
+          durationMs: Date.now() - callStartTime,
+        },
       });
       this.cleanup();
     }
@@ -210,9 +221,10 @@ export class AgentCallHandler {
 
   /** Forced end of the call from the user side. */
   async stop(): Promise<void> {
+    const durationMs = this.callStartTime ? Date.now() - this.callStartTime : 0;
     this.emitTyped({
       type: 'call.ended',
-      data: { endedBy: 'user', reason: 'user' },
+      data: { endedBy: 'user', reason: 'user', durationMs },
     });
     // `room.disconnect()` alone only drops the agent — the SIP participant
     // (the phone) stays in the room and the real call keeps ringing/talking.

@@ -10,6 +10,13 @@
 #     for "deps installed") and falls back to `npm ci --legacy-peer-deps`
 #     if the anonymous volume came up empty (known Docker-Desktop-on-Windows
 #     behaviour with anon volumes overlaying image-built paths).
+#   - Each container wipes its own `.nx/workspace-data` BEFORE `nx serve`.
+#     Nx 22 stores a per-task "in-progress" lock there; if the previous
+#     container died un-gracefully (Ctrl-C, docker restart, host sleep)
+#     the lock survives the restart and the next `nx serve` blocks
+#     forever waiting for the "still-running" task. Wiping the dir is
+#     idempotent and costs ~10 ms. Host-side `npm run nx:reset` covers
+#     the same case for nx invocations on the host.
 #
 # YAML note: shell commands are written as single-line plain scalars (no
 # `>-` folding). Folded scalars preserve indentation as newlines when
@@ -44,7 +51,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: base
-    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; exec npx nx serve api-gateway --host 0.0.0.0 --skip-nx-cache"]
+    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; rm -rf /app/.nx/workspace-data 2>/dev/null || true; exec npx nx serve api-gateway --host 0.0.0.0 --skip-nx-cache"]
     volumes:
       - .:/app
       - /app/node_modules # anonymous — keep container's npm ci output
@@ -63,7 +70,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: base
-    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; exec npx nx serve realtime-service --host 0.0.0.0 --skip-nx-cache"]
+    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; rm -rf /app/.nx/workspace-data 2>/dev/null || true; exec npx nx serve realtime-service --host 0.0.0.0 --skip-nx-cache"]
     volumes:
       - .:/app
       - /app/node_modules
@@ -92,7 +99,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: base
-    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; exec npx nx serve agent-worker --host 0.0.0.0 --skip-nx-cache"]
+    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; rm -rf /app/.nx/workspace-data 2>/dev/null || true; exec npx nx serve agent-worker --host 0.0.0.0 --skip-nx-cache"]
     dns: []
     volumes:
       - .:/app

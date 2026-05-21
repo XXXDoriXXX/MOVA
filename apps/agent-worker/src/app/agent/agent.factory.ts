@@ -90,32 +90,41 @@ export class AgentFactory {
   }
 
   getInitialGreeting(context: AgentContext): string {
-    return `Доброго дня. Це ${context.userName}. ${context.callReason}. Я використовую асистента, бо не чую.`;
+    const name = context.userName?.trim();
+    return name
+      ? `Доброго дня. Це ${name}. Я використовую асистента, бо не чую.`
+      : 'Доброго дня. Я використовую асистента, бо не чую.';
   }
 
   private createSystemPrompt(ctx: AgentContext): string {
-    return `
-    # IDENTITY & ROLE
-    Ти — цифровий голос користувача з порушенням слуху. Ти здійснюєш реальний телефонний дзвінок.
-    Твоє ім'я: ${ctx.userName}.
-    Твоя роль: ${ctx.userRole}.
-    Твоя мета: ${ctx.callReason}.
+    // Operational guard — appended to every prompt so the LLM can't be
+    // talked out of its conversational hygiene even if a user template
+    // forgets these rules (concise, no meta-talk, no markdown, UA only).
+    const guard = `
+# Operational rules for this voice call
+- Reply in 1–2 short sentences. Long pauses sound like a dropped line.
+- No meta-talk: never reveal you are an AI ("Я штучний інтелект", "Як ШІ-помічник", "Я передам це людині"). You are the person on the line.
+- No formatting: no lists, no bold, no italics, no emoji. Plain text only — it goes to TTS.
+- If you cannot answer, say: "Вибачте, я не знаю — передам це питання людині."
+- Language: Ukrainian only.`.trim();
 
-    # OPERATIONAL CONTEXT
-    - Ти виступаєш посередником між текстовим вводом користувача та голосовим каналом співрозмовника.
-    - Співрозмовник чує лише твій голос. Говори природно, як людина.
+    // Primary path — the user-authored Template provides identity, situation
+    // and intent. Templates are the contract users edit in /templates; the
+    // hard-coded fallback below only fires for callers that haven't migrated.
+    const fromTemplate = ctx.template?.systemPrompt?.trim();
+    if (fromTemplate) {
+      return `${fromTemplate}\n\n${guard}`;
+    }
 
-    # STRICT RULES & CONSTRAINTS
-    1. **Conciseness (Стислість):** Твої відповіді мають бути максимально короткими (1-2 речення). Довгі паузи в телефонії сприймаються як розрив зв'язку.
-    2. **No Meta-Talk:** Ніколи не кажи "Я штучний інтелект", "Як ШІ помічник" або "Я передам текст". Ти — людина на іншому кінці дроту.
-    3. **No Formatting:** Не використовуй списки, bold, італік або емодзі. Тільки чистий текст для коректної роботи TTS.
-    4. **Handling Uncertainty:** Якщо тобі ставлять питання, на яке немає відповіді в контексті — відповідай: "Вибачте, я не знаю відповіді на це питання" або "Я передам це питання людині, оскільки не знаю відповіді".
-
-    # INTERACTION PROTOCOL
-    - Якщо співрозмовник мовчить: ввічливо перепитай, чи тебе чути.
-    - Якщо співрозмовник перебиває: закінчи коротку фразу і слухай.
-    - Мова: Тільки Українська.
-  `.trim();
+    // Legacy fallback for old clients that still send userName/userRole/callReason.
+    const userName = ctx.userName?.trim() || 'абонент';
+    const userRole = ctx.userRole?.trim();
+    const callReason = ctx.callReason?.trim();
+    const identityLine = userRole
+      ? `Ти — голос ${userName}, ${userRole}. Не чуєш — користуєшся асистентом.`
+      : `Ти — голос ${userName}. Не чуєш — користуєшся асистентом.`;
+    const reasonLine = callReason ? `Мета дзвінка: ${callReason}.` : '';
+    return `# Identity\n${identityLine}\n${reasonLine}\n\n${guard}`.trim();
   }
 }
 

@@ -145,9 +145,11 @@ export function mapInternalToServer(event: InternalCallEvent): ServerEvent | nul
         timestamp,
         data: {
           reason: event.data.reason,
-          // durationSeconds is filled in by realtime-bridge from the
-          // persisted Conversation row right before forwarding.
-          durationSeconds: 0,
+          // Producer (agent-worker) stamps durationMs from its own
+          // call-start clock; absent for legacy producers → 0.
+          durationSeconds: event.data.durationMs
+            ? Math.floor(event.data.durationMs / 1000)
+            : 0,
           endedBy: event.data.endedBy,
         },
       };

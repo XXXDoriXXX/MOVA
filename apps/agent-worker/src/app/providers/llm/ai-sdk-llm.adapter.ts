@@ -1,4 +1,4 @@
-import { generateText, streamText, type LanguageModel } from 'ai';
+import { generateText, streamText, type LanguageModel, type ModelMessage } from 'ai';
 
 import {
   LlmProviderEnum,
@@ -16,6 +16,16 @@ import {
  *   - All three providers (OpenAI, Anthropic, Groq) share the same SDK API
  *     surface — only the model factory differs. Subclassing keeps adapter
  *     code DRY and the registry can treat them uniformly.
+ *
+ * System-message handling:
+ *   - Vercel AI SDK v6 emits a runtime warning ("System messages in the
+ *     prompt or messages fields can be a security risk") if the caller
+ *     puts a `{role: 'system'}` entry inside `messages`. The SDK wants
+ *     them promoted to the dedicated top-level `system:` option.
+ *   - Our ILlmProvider contract still accepts the role-in-messages shape
+ *     because chat-completion callers find it natural. Here we split
+ *     system messages out before handing off to the SDK — same behaviour,
+ *     no warning, no prompt-injection footgun.
  *
  * Health check strategy:
  *   - We do a 1-token completion (`maxTokens: 1`) with a short timeout
@@ -40,10 +50,12 @@ export abstract class AiSdkLlmAdapter implements ILlmProvider {
 
   async *stream(options: LlmGenerateOptions & { model?: string }): AsyncIterable<string> {
     const modelId = options.model ?? this.defaultModel;
+    const { system, messages } = splitSystemMessages(options.messages);
     try {
       const result = streamText({
         model: this.resolveModel(modelId),
-        messages: options.messages,
+        system,
+        messages,
         maxOutputTokens: options.maxTokens,
         temperature: options.temperature ?? 0.7,
         abortSignal: options.signal,
@@ -58,10 +70,12 @@ export abstract class AiSdkLlmAdapter implements ILlmProvider {
 
   async generate(options: LlmGenerateOptions & { model?: string }): Promise<string> {
     const modelId = options.model ?? this.defaultModel;
+    const { system, messages } = splitSystemMessages(options.messages);
     try {
       const result = await generateText({
         model: this.resolveModel(modelId),
-        messages: options.messages,
+        system,
+        messages,
         maxOutputTokens: options.maxTokens,
         temperature: options.temperature ?? 0.7,
         abortSignal: options.signal,
@@ -111,4 +125,31 @@ export abstract class AiSdkLlmAdapter implements ILlmProvider {
     }
     return new ProviderError('upstream', this.id, message, err);
   }
+}
+
+/**
+ * Promote any `{role: 'system'}` entries out of the messages array into
+ * a single concatenated `system:` string for the AI SDK call.
+ *
+ * Why concatenate vs. take the first: callers occasionally stack a base
+ * system prompt + a style addendum + a few-shot preamble, all as
+ * separate system messages. Joining with a blank line preserves all of
+ * them without surprising the caller into deduping themselves.
+ */
+function splitSystemMessages(
+  raw: LlmGenerateOptions['messages'],
+): { system: string | undefined; messages: ModelMessage[] } {
+  const systemParts: string[] = [];
+  const rest: ModelMessage[] = [];
+  for (const m of raw) {
+    if (m.role === 'system') {
+      systemParts.push(typeof m.content === 'string' ? m.content : '');
+    } else {
+      rest.push(m as ModelMessage);
+    }
+  }
+  return {
+    system: systemParts.length > 0 ? systemParts.join('\n\n') : undefined,
+    messages: rest,
+  };
 }

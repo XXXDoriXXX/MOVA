@@ -117,6 +117,11 @@ export const CallEndedEvent = baseEvent.extend({
     ]),
     /** Optional error code (mirrors CallErrorCode) when reason=fatal_error. */
     errorCode: z.string().optional(),
+    /** Wall-clock duration of the call in ms, measured by the agent from
+     *  the moment it joined the LiveKit room to the moment it left.
+     *  Optional for back-compat with older producers — consumers should
+     *  treat absence as 0 (the public ws-event then carries 0 too). */
+    durationMs: z.number().int().nonnegative().optional(),
   }),
 });
 

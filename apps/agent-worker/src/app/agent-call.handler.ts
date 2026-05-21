@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Room, RoomEvent } from '@livekit/rtc-node';
-import { AccessToken } from 'livekit-server-sdk';
+import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
 import { Redis } from 'ioredis';
 import * as silero from '@livekit/agents-plugin-silero';
 import { voice } from '@livekit/agents';
@@ -214,6 +214,28 @@ export class AgentCallHandler {
       type: 'call.ended',
       data: { endedBy: 'user', reason: 'user' },
     });
+    // `room.disconnect()` alone only drops the agent — the SIP participant
+    // (the phone) stays in the room and the real call keeps ringing/talking.
+    // Deleting the room kicks every participant, which terminates the SIP
+    // leg on the trunk side. Best-effort: if LiveKit is unreachable we still
+    // run local cleanup so we don't leak the session.
+    try {
+      const wssUrl = this.config.get<string>('LIVEKIT_URL');
+      const apiKey = this.config.get<string>('LIVEKIT_API_KEY');
+      const apiSecret = this.config.get<string>('LIVEKIT_API_SECRET');
+      if (wssUrl && apiKey && apiSecret) {
+        const httpUrl = wssUrl
+          .replace(/^wss:\/\//, 'https://')
+          .replace(/^ws:\/\//, 'http://');
+        const roomService = new RoomServiceClient(httpUrl, apiKey, apiSecret);
+        await roomService.deleteRoom(this.roomName);
+        this.logger.log(`📞 [Call Lifecycle] LiveKit room deleted — SIP leg hung up`);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Failed to deleteRoom ${this.roomName}: ${(err as Error).message}`,
+      );
+    }
     this.cleanup();
   }
 

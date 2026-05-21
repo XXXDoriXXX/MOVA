@@ -14,12 +14,18 @@ import { z } from 'zod';
  * optional because the existing agent-worker reads them from the dispatched
  * context. New flows should rely on `templateId` instead.
  */
+// Provider short codes (e.g. Zadarma's `101` voice-test, `100` voicemail).
+// Bare digits 2-6 long, optionally prefixed with `*` or `#`. Passed through
+// to the SIP trunk unchanged — libphonenumber would reject them.
+const SHORT_CODE = /^[*#]?\d{2,6}$/;
+
 const PhoneSchema = z
   .string()
   .trim()
-  .min(5)
+  .min(2)
   .max(20)
   .transform((raw, ctx) => {
+    if (SHORT_CODE.test(raw)) return raw;
     const parsed = parsePhoneNumberFromString(raw);
     if (!parsed?.isValid()) {
       ctx.addIssue({

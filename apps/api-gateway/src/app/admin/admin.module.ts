@@ -12,6 +12,7 @@ import {
 
 import { AuthModule } from '../auth/auth.module';
 import { ConversationsModule } from '../conversations/conversations.module';
+import { AdminAccessGuard } from './admin-access.guard';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { AuditLogService } from './audit-log.service';
@@ -38,7 +39,7 @@ import { AuditLogService } from './audit-log.service';
     ConversationsModule,
   ],
   controllers: [AdminController],
-  providers: [AdminService, AuditLogService],
+  providers: [AdminService, AuditLogService, AdminAccessGuard],
   exports: [AuditLogService],
 })
 export class AdminModule {}

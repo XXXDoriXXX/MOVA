@@ -93,9 +93,16 @@ export class AuditLogService {
         ? ctx.userAgent.slice(0, USER_AGENT_MAX)
         : null;
 
+      // The `actor_id` column is a strict uuid; the synthetic
+      // password-only admin uses the sentinel "admin-bypass" which is
+      // not a uuid and would explode the insert. Fall back to null in
+      // that case — the email column already carries "admin@local"
+      // so the row stays attributable.
+      const actorId = isUuid(ctx.actor?.id) ? ctx.actor!.id : null;
+
       await this.repo.save(
         this.repo.create({
-          actorId: ctx.actor?.id ?? null,
+          actorId,
           actorEmail: ctx.actor?.email ?? null,
           actorRole: ctx.actor?.role ?? null,
           action: ctx.action,
@@ -220,4 +227,11 @@ export class AuditLogService {
   // Re-export the role constant so import sites have one place for the type
   // boundary (avoids circular imports between admin internals).
   static readonly Roles = UserRole;
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string' && UUID_RE.test(value);
 }

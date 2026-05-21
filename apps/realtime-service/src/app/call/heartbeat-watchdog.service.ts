@@ -10,25 +10,56 @@ import { Redis } from 'ioredis';
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
 import { RedisChannels } from '@mova-back/shared-realtime';
 
-const HEARTBEAT_GRACE_MS = 15_000; // 3× the 5s agent tick — tolerates 2 misses.
+/** Tolerates 2 missed agent ticks (each is 5s). */
+const HEARTBEAT_GRACE_MS = 15_000;
+
+/**
+ * How long to wait after a call is dispatched before we declare the
+ * agent dead. Counts from the moment api-gateway publishes the
+ * dispatch event; reset by the first heartbeat from agent-worker.
+ *
+ * The frontend's own client-side watchdog fires at 25s — keep the
+ * server slightly tighter so the user sees a typed `call.ended`
+ * event rather than the generic "connect timeout" synthesised on
+ * the client. 22s leaves the client a 3s grace window.
+ */
+const FIRST_HEARTBEAT_GRACE_MS = 22_000;
 
 /**
  * Per-conversation heartbeat tracker. Detects dead agent-worker pods so
  * the user gets a clear "call ended due to agent loss" instead of staring
  * at a hung call.
  *
+ * Two arming triggers:
+ *
+ *   1. **First-heartbeat deadline** — `call-dispatch` event from
+ *      api-gateway arms a 22-second timer. If the agent-worker never
+ *      picks up the dispatch (crashed pod, queue back-pressure,
+ *      LiveKit refusing the room) the first heartbeat never arrives
+ *      and we fire AGENT_LOST. Without this, the call would just
+ *      hang at "connecting" until the client times out.
+ *
+ *   2. **Subsequent-heartbeat deadline** — each `heartbeat:{id}`
+ *      tick re-arms a 15s timer (3× the agent's 5s tick interval).
+ *      If the agent crashes mid-call the next tick won't arrive
+ *      and we fire AGENT_LOST.
+ *
+ * Both deadlines share the same `timers` map — they're conceptually
+ * "is this call making progress?" so the first heartbeat replacing
+ * the dispatch timer is the natural transition.
+ *
  * Wire:
- *   - agent-worker publishes `{"ts":...}` to `heartbeat:{conversationId}`
- *     every 5s while a call is active.
- *   - This service psubscribes to `heartbeat:*`. On each tick it bumps
- *     the conversation's `lastBeat` timestamp and arms a 15s timer.
- *   - If the timer fires before the next tick, we synthesize a typed
+ *   - api-gateway publishes `{ conversationId, roomName }` to
+ *     `call-dispatch` whenever a new call starts.
+ *   - agent-worker publishes `{"ts":...}` to `heartbeat:{id}` every
+ *     5s while a call is active.
+ *   - When either deadline fires, we synthesize a typed
  *     `call.ended { reason: 'fatal_error', errorCode: 'AGENT_LOST' }`
  *     event and publish it to `call-events:{conversationId}`. From there:
  *       * api-gateway consumer runs ConversationLifecycleService.endCall
  *         (marks conversation failed, no billing for the dropped part).
  *       * realtime-bridge forwards the event to all attached WS clients.
- *         Mobile renders a fatal modal.
+ *         Mobile renders a fatal modal with retry / close.
  *
  * Why publish over Redis vs. broadcast locally:
  *   - Multiple realtime-service pods serve different conversations. The
@@ -61,6 +92,7 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`Subscriber error: ${err.message}`);
     });
 
+    // Pattern subscribe for per-conversation heartbeats.
     await this.subscriber.psubscribe('heartbeat:*');
     this.subscriber.on('pmessage', (_pattern, channel) => {
       const conversationId = channel.slice('heartbeat:'.length);
@@ -69,12 +101,24 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
       }
     });
 
-    this.logger.log('Subscribed to heartbeat:*');
+    // Direct subscribe for the dispatch fan-out (single channel).
+    await this.subscriber.subscribe(RedisChannels.callDispatch);
+    this.subscriber.on('message', (channel, payload) => {
+      if (channel !== RedisChannels.callDispatch) return;
+      this.handleDispatch(payload);
+    });
+
+    this.logger.log(
+      `Subscribed to heartbeat:* + ${RedisChannels.callDispatch}`,
+    );
   }
 
   async onModuleDestroy(): Promise<void> {
     if (this.subscriber) {
       await this.subscriber.punsubscribe('heartbeat:*').catch(() => undefined);
+      await this.subscriber
+        .unsubscribe(RedisChannels.callDispatch)
+        .catch(() => undefined);
       this.subscriber.disconnect();
       this.subscriber = null;
     }
@@ -84,13 +128,42 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
     this.timers.clear();
   }
 
-  /** Reset the grace timer for a conversation. */
+  /**
+   * Arm a first-heartbeat timer for a newly-dispatched call. If the
+   * agent-worker boots, joins the LiveKit room and starts heart-beating
+   * within `FIRST_HEARTBEAT_GRACE_MS`, the first `markAlive` call will
+   * replace the deadline with the regular shorter one. Otherwise we
+   * declare AGENT_LOST.
+   */
+  private handleDispatch(payload: string): void {
+    let conversationId: string | undefined;
+    try {
+      const parsed = JSON.parse(payload) as { conversationId?: unknown };
+      if (typeof parsed.conversationId === 'string' && parsed.conversationId) {
+        conversationId = parsed.conversationId;
+      }
+    } catch {
+      // Malformed dispatch payload — ignore. agent-worker has its own
+      // schema validation; the watchdog is best-effort and shouldn't
+      // crash on garbage.
+      return;
+    }
+    if (!conversationId) return;
+
+    this.armTimer(conversationId, FIRST_HEARTBEAT_GRACE_MS);
+  }
+
+  /** Reset the grace timer for a conversation that just heart-beat. */
   private markAlive(conversationId: string): void {
+    this.armTimer(conversationId, HEARTBEAT_GRACE_MS);
+  }
+
+  private armTimer(conversationId: string, graceMs: number): void {
     const existing = this.timers.get(conversationId);
     if (existing) clearTimeout(existing);
     const timer = setTimeout(
       () => this.onAgentLost(conversationId).catch(() => undefined),
-      HEARTBEAT_GRACE_MS,
+      graceMs,
     );
     this.timers.set(conversationId, timer);
   }

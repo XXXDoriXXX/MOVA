@@ -23,8 +23,13 @@ export const WS_PROTOCOL_VERSION = '1' as const;
 // ─────────────────────────────────────────────────────
 
 const envelope = z.object({
-  /** Unique event id — used by clients to dedupe and as `lastEventId` on reconnect */
-  id: z.string().uuid(),
+  /**
+   * Opaque event id — used by clients as `lastStreamId` on reconnect for
+   * replay. Format is producer-defined: Redis Stream entries use `<ms>-<seq>`,
+   * synthetic events use a UUID, gateway-local ones use socket.id. The wire
+   * contract is just "non-empty string"; consumers must not assume a format.
+   */
+  id: z.string().min(1),
   /** ISO 8601 timestamp (UTC) of when the event was produced server-side */
   timestamp: z.string().datetime(),
 });
@@ -53,7 +58,10 @@ export const ServerEvent = {
   transcriptFinal: envelope.extend({
     type: z.literal('transcript.final'),
     data: z.object({
-      messageId: z.string().uuid(),
+      // Opaque — currently mirrors stream-id until agent-worker plumbs the
+      // persisted Message.id. Don't constrain to UUID; the wire reality is
+      // a Redis stream cursor (`<ms>-<seq>`).
+      messageId: z.string().min(1),
       text: z.string(),
     }),
   }),
@@ -76,7 +84,7 @@ export const ServerEvent = {
   aiTextFinal: envelope.extend({
     type: z.literal('ai.text.final'),
     data: z.object({
-      messageId: z.string().uuid(),
+      messageId: z.string().min(1),
       text: z.string(),
       source: z.object({
         provider: z.string(),
@@ -89,7 +97,7 @@ export const ServerEvent = {
   aiTtsStart: envelope.extend({
     type: z.literal('ai.tts.start'),
     data: z.object({
-      messageId: z.string().uuid(),
+      messageId: z.string().min(1),
       voice: z.string(),
     }),
   }),
@@ -98,7 +106,7 @@ export const ServerEvent = {
   aiTtsEnd: envelope.extend({
     type: z.literal('ai.tts.end'),
     data: z.object({
-      messageId: z.string().uuid(),
+      messageId: z.string().min(1),
       status: z.enum(['completed', 'interrupted', 'failed']),
     }),
   }),
@@ -107,11 +115,11 @@ export const ServerEvent = {
   suggestionsNew: envelope.extend({
     type: z.literal('suggestions.new'),
     data: z.object({
-      parentMessageId: z.string().uuid(),
+      parentMessageId: z.string().min(1),
       items: z
         .array(
           z.object({
-            id: z.string().uuid(),
+            id: z.string().min(1),
             text: z.string().min(1).max(120),
           }),
         )

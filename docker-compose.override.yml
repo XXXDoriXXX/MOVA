@@ -142,3 +142,31 @@ services:
       DOZZLE_NO_ANALYTICS: "true"
     networks:
       - mova_network
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # admin — Vite-powered React SPA for the admin panel (dev only).
+  #
+  # http://localhost:5174 — login with ADMIN_PASSWORD from .env.
+  # The vite dev server bind-mounts apps/admin source so HMR works against
+  # live edits; node_modules stays inside the container to avoid host/Linux
+  # binary mismatch.
+  # ──────────────────────────────────────────────────────────────────────────
+  admin:
+    image: node:20-alpine
+    container_name: mova_admin
+    working_dir: /app
+    command: ["sh", "-c", "test -d node_modules || npm install; npx vite --host 0.0.0.0 --port 5174"]
+    ports:
+      - "127.0.0.1:5174:5174"
+    volumes:
+      - ./apps/admin:/app
+      - /app/node_modules
+    environment:
+      # Point the SPA at the api-gateway container over the docker
+      # network. The vite proxy in vite.config.ts is for the host
+      # dev-run only; inside docker we hit the service by name.
+      VITE_API_BASE: "http://localhost:3000/v1"
+    depends_on:
+      - api-gateway
+    networks:
+      - mova_network

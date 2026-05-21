@@ -39,7 +39,9 @@
     "sh:api": "npx nx run api-gateway:sh",
     "sh:realtime": "npx nx run realtime-service:sh",
     "sh:agent": "npx nx run agent-worker:sh",
-    "graph": "npx nx graph"
+    "graph": "npx nx graph",
+    "logs:web": "node -e \"console.log('Dozzle: http://localhost:9999'); require('child_process').exec((process.platform==='win32'?'start ':process.platform==='darwin'?'open ':'xdg-open ')+'http://localhost:9999')\"",
+    "nx:reset": "npx nx reset"
   },
   "private": true,
   "dependencies": {

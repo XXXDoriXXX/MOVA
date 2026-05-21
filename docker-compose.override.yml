@@ -104,3 +104,34 @@ services:
       NPM_CONFIG_CACHE: /tmp/.npm
       NX_DAEMON: "false"
       NX_SKIP_NX_CACHE: "true"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # dozzle — web UI for docker container logs (dev only).
+  #
+  # Open http://localhost:9999 in a browser. Streams live logs from every
+  # container that's currently in this compose project; search, filter and
+  # split panes per container without juggling terminals.
+  #
+  # Read-only Docker-socket mount: dozzle never writes, only tails.
+  # `DOZZLE_FILTER` restricts the dashboard to OUR containers so unrelated
+  # Docker stuff on the host machine doesn't clutter the list.
+  #
+  # Auth is intentionally disabled — dev only, bound to localhost. Do NOT
+  # publish 9999 on a public interface.
+  # ──────────────────────────────────────────────────────────────────────────
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: mova_dozzle
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9999:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      # Only show our containers — name prefix matches the `mova_*` pattern
+      # used in container_name across docker-compose.yml.
+      DOZZLE_FILTER: "name=mova_"
+      DOZZLE_LEVEL: "info"
+      DOZZLE_NO_ANALYTICS: "true"
+    networks:
+      - mova_network

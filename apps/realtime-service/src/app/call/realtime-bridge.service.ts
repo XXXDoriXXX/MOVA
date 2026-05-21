@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { Redis } from 'ioredis';
 
+import { reportError } from '@mova-back/shared-config';
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
 import {
   parseInternalCallEvent,
@@ -142,9 +143,10 @@ export class RealtimeBridgeService implements OnModuleInit, OnModuleDestroy {
       try {
         handler(serverEvent);
       } catch (err) {
-        this.logger.error(
-          `Forward handler threw: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        reportError(this.logger, 'WS forward handler threw', err, {
+          conversationId,
+          eventType: serverEvent.type,
+        });
       }
     }
   }

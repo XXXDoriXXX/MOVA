@@ -63,6 +63,24 @@ export class AgentCallHandler {
    *  `call.ended` emit so the post-call sheet shows a real number. */
   private callStartTime: number | null = null;
 
+  /** Watchdog that fires a fallback utterance if the LLM never produces
+   *  an answer after the interlocutor finishes a turn. Without this, a
+   *  silent LLM/TTS failure leaves the caller listening to dead air —
+   *  the worst possible UX for a deaf-user proxy call. Armed on every
+   *  `onInterlocutorFinal`, cleared on every `onAiFinal`. */
+  private responseWatchdog: NodeJS.Timeout | null = null;
+  private static readonly RESPONSE_TIMEOUT_MS = 10_000;
+  /** Polite "I'm thinking" line we say when the watchdog fires. Kept
+   *  short so it doesn't drown the AI if it eventually comes through
+   *  late, and intentionally non-meta (never says "I'm an AI"). */
+  private static readonly FALLBACK_LINES_UA = [
+    'Перепрошую, можете повторити?',
+    'Вибачте, мене не дуже добре чути. Повторіть, будь ласка.',
+    'Дайте мені секунду.',
+  ];
+  /** Round-robin pointer so consecutive fallbacks don't repeat the same line. */
+  private fallbackCursor = 0;
+
   constructor(
     private readonly roomName: string,
     public readonly userContext: AgentContext,
@@ -305,6 +323,7 @@ export class AgentCallHandler {
 
   private cleanup(): void {
     this.stopHeartbeat();
+    this.clearResponseWatchdog();
     if (this.session) {
       try {
         this.session.close();
@@ -387,16 +406,102 @@ export class AgentCallHandler {
       if (innerError?.name === 'APIUserAbortError' || innerError?.message?.includes('aborted')) {
         return;
       }
-      this.logger.error(
-        `❌ [AgentSession] SDK Exception: ${innerError?.message}`,
-        innerError?.stack,
-      );
+      // Try to identify which plugin failed by inspecting the event's
+      // `source` field; fall back to 'llm' since that's the most common
+      // failure surface and the fallback line speaks the same regardless.
+      const source = (err as { source?: { constructor?: { name?: string } } } | null)
+        ?.source?.constructor?.name?.toLowerCase() ?? '';
+      const providerType: 'stt' | 'llm' | 'tts' =
+        source.includes('stt') ? 'stt' : source.includes('tts') ? 'tts' : 'llm';
+      reportError(this.logger, '[AgentSession] plugin error', innerError, {
+        conversationId: this.conversationId,
+        providerType,
+        sourceClass: source || 'unknown',
+      });
+      // Surface to the mobile client as a recoverable degradation banner.
+      this.emitTyped({
+        type: 'provider.failure',
+        data: {
+          providerType,
+          providerName: source || 'unknown',
+          errorCode: innerError?.name ?? 'PLUGIN_ERROR',
+          errorMessage: innerError?.message ?? 'Plugin failed',
+        },
+      });
+      // If we were waiting for an AI turn (watchdog armed), kick the
+      // fallback immediately instead of waiting out the full window.
+      if (this.responseWatchdog) {
+        void this.handleAiSilence('plugin_error');
+      }
     });
+  }
+
+  // ─── AI silence fallback ───────────────────────────────
+
+  private armResponseWatchdog(): void {
+    this.clearResponseWatchdog();
+    this.responseWatchdog = setTimeout(() => {
+      void this.handleAiSilence('timeout');
+    }, AgentCallHandler.RESPONSE_TIMEOUT_MS);
+  }
+
+  private clearResponseWatchdog(): void {
+    if (this.responseWatchdog) {
+      clearTimeout(this.responseWatchdog);
+      this.responseWatchdog = null;
+    }
+  }
+
+  /**
+   * Speak a generic fallback line when the LLM goes silent (timeout, plugin
+   * error, anything). The goal is "never let the called party listen to
+   * silence" — even a "give me a sec" beats a dead line. We rotate through
+   * a small set of phrases so back-to-back fallbacks don't sound stuck.
+   *
+   * Marked `allowInterruptions: true` so when the real reply finally lands
+   * (late LLM resolves after the watchdog fired) it cleanly overrides this
+   * placeholder instead of queueing behind it.
+   */
+  private async handleAiSilence(
+    reason: 'timeout' | 'plugin_error',
+  ): Promise<void> {
+    this.clearResponseWatchdog();
+    if (!this.session) return;
+    const lines = AgentCallHandler.FALLBACK_LINES_UA;
+    const line = lines[this.fallbackCursor % lines.length]!;
+    this.fallbackCursor += 1;
+    this.logger.warn(
+      `[AI fallback] AI silent (reason=${reason}); speaking: "${line}"`,
+    );
+    try {
+      await this.session.say(line, { allowInterruptions: true });
+      this.recordRecent('ai', line);
+      // Mirror to the chat so the user sees the placeholder too —
+      // otherwise they hear it but the transcript jumps from their
+      // last turn straight to the eventual real reply.
+      this.emitTyped({
+        type: 'ai.text.final',
+        data: {
+          text: line,
+          llmProvider: 'fallback',
+          llmModel: 'static',
+        },
+      });
+    } catch (err) {
+      reportError(this.logger, '[AI fallback] failed to speak fallback line', err, {
+        conversationId: this.conversationId,
+        reason,
+      });
+    }
   }
 
   private onInterlocutorFinal(text: string): void {
     const messageId = randomUUID();
     this.recordRecent('interlocutor', text);
+    // Interlocutor just finished — we now expect an AI reply within
+    // RESPONSE_TIMEOUT_MS. If none arrives, the watchdog speaks a
+    // fallback line so the line never goes mute.
+    this.armResponseWatchdog();
 
     this.emitTyped({
       type: 'transcript.final',
@@ -428,6 +533,8 @@ export class AgentCallHandler {
   }
 
   private onAiFinal(text: string): void {
+    // AI replied — silence watchdog can stand down.
+    this.clearResponseWatchdog();
     this.recordRecent('ai', text);
     const llmProvider =
       this.userContext.config?.llm?.provider ??

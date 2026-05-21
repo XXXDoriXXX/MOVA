@@ -294,15 +294,36 @@ export class AgentCallHandler {
 
     sessionEmitter.on('conversation_item_added', (ev: Record<string, unknown>) => {
       const item = ev['item'] as
-        | { role?: string; content?: string | Array<{ text?: string }> }
+        | {
+            role?: string;
+            content?: string | Array<unknown>;
+            textContent?: string;
+          }
         | undefined;
       if (!item || item.role !== 'assistant') return;
 
+      // ChatMessage.content is ChatContent[] where ChatContent =
+      // string | ImageContent | AudioContent. Plain text replies arrive as
+      // an array of strings (NOT { text }), so the previous indexing into
+      // `content[0].text` always returned undefined and the AI reply was
+      // never published. Prefer the SDK-provided `textContent` getter, then
+      // fall back to joining string parts of the content array, then to a
+      // raw string. AudioContent has an optional `transcript` we also pick
+      // up so realtime-API replies (audio-first) still surface as text.
       let text = '';
-      if (typeof item.content === 'string') {
+      if (typeof item.textContent === 'string' && item.textContent.length > 0) {
+        text = item.textContent;
+      } else if (typeof item.content === 'string') {
         text = item.content;
-      } else if (Array.isArray(item.content) && item.content.length > 0) {
-        text = item.content[0]?.text ?? '';
+      } else if (Array.isArray(item.content)) {
+        text = item.content
+          .map((part) => {
+            if (typeof part === 'string') return part;
+            const obj = part as { text?: string; transcript?: string } | null;
+            return obj?.text ?? obj?.transcript ?? '';
+          })
+          .filter((s) => s.length > 0)
+          .join('\n');
       }
       if (!text) return;
 

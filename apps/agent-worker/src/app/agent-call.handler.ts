@@ -167,8 +167,17 @@ export class AgentCallHandler {
 
       this.session.start({ room: this.room, agent });
 
+      // Greeting MUST be interruptible. LiveKit Agents JS keeps the
+      // non-interruptible SpeechHandle pinned as `_currentSpeech` and then
+      // refuses every subsequent `userTurnCompleted` with the warning
+      // "skipping user input, current speech generation cannot be
+      // interrupted" — i.e. the LLM is never triggered for any user
+      // reply for the rest of the call. The cost of allowing
+      // interruption is that an instantly-talking caller cuts the
+      // greeting short by half a word, which is acceptable. Hard-blocking
+      // the LLM is not.
       await this.session.say(this.agentFactory.getInitialGreeting(this.userContext), {
-        allowInterruptions: false,
+        allowInterruptions: true,
       });
 
       this.logger.log(
@@ -224,7 +233,12 @@ export class AgentCallHandler {
       }
     }
     try {
-      await this.session.say(text, { allowInterruptions: false, addToChatCtx: true });
+      // Same rule as for the greeting: this MUST be interruptible. A
+      // non-interruptible say() pins `_currentSpeech` and starves every
+      // future LLM turn ("skipping user input" warn). User-typed lines
+      // are short anyway; if the user types a second one in quick
+      // succession, interrupting the first is the right behavior.
+      await this.session.say(text, { allowInterruptions: true, addToChatCtx: true });
       this.recordRecent('user_typed', text);
       // user.spoke goes to api-gateway persistence so the typed message
       // shows up in chat history. source=typed; the control handler can

@@ -15,15 +15,19 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 
-import { CurrentUser, Roles, RolesGuard, type AuthenticatedUser } from '@mova-back/shared-auth';
+import {
+  CurrentUser,
+  Public,
+  type AuthenticatedUser,
+} from '@mova-back/shared-auth';
 import {
   AuditAction,
   AuditTargetType,
   ConversationStatus,
-  UserRole,
   type Conversation,
   type Message,
   type ProviderIncident,
+  type UserRole,
 } from '@mova-back/shared-database';
 
 import {
@@ -37,6 +41,7 @@ import {
   AuditLogService,
   type AuditPage,
 } from './audit-log.service';
+import { AdminAccessGuard } from './admin-access.guard';
 import {
   BlockUserDto,
   ForceEndConversationDto,
@@ -44,15 +49,17 @@ import {
 } from './dto/admin.schemas';
 
 /**
- * Admin REST surface (Phase 10 MVP slice).
+ * Admin REST surface.
  *
  * Security model:
- *   - Global JwtAuthGuard provides authentication for all routes.
- *   - @UseGuards(RolesGuard) + @Roles(UserRole.ADMIN) enforces authorization.
- *     Non-admin users hit a 403 BEFORE the handler runs.
- *   - All routes are under /v1/admin/ — Phase 16 will add a separate
- *     subdomain (admin.mova.app) so we can restrict by IP allowlist at the
- *     load-balancer level.
+ *   - All routes are marked @Public() so the global JwtAuthGuard skips
+ *     them (it would 401 the shared-password path otherwise). The
+ *     real auth is done by AdminAccessGuard — see its file for the
+ *     two accepted credentials (admin-role JWT OR ADMIN_PASSWORD
+ *     bearer). The guard injects `request.user`, so downstream
+ *     handlers + @CurrentUser() work unchanged.
+ *   - All routes are under /v1/admin/. Production should restrict by
+ *     IP allowlist or VPN at the load-balancer level.
  *
  * Audit:
  *   - Block / unblock + future admin mutations write a row to `audit_logs`
@@ -63,14 +70,33 @@ import {
  */
 @ApiTags('admin')
 @ApiBearerAuth()
-@UseGuards(RolesGuard)
-@Roles(UserRole.ADMIN)
+@Public()
+@UseGuards(AdminAccessGuard)
 @Controller('admin')
 export class AdminController {
   constructor(
     private readonly admin: AdminService,
     private readonly auditLog: AuditLogService,
   ) {}
+
+  /**
+   * Auth probe — the admin UI calls this on login to validate the
+   * password before storing it. Returns the actor identity so the UI
+   * can show "logged in as foo@bar" in the header (the synthetic
+   * password-only user reads as "admin@local").
+   *
+   * `200 OK` here means the guard let the request through; the body is
+   * just the snapshot. Failure paths (401 / 503) come from the guard.
+   */
+  @Get('whoami')
+  @ApiOperation({ summary: 'Verify admin credentials and return actor snapshot' })
+  whoami(@CurrentUser() user: AuthenticatedUser): {
+    id: string;
+    email: string;
+    role: UserRole;
+  } {
+    return { id: user.id, email: user.email, role: user.role };
+  }
 
   /**
    * Pull a thin actor + request context for AuditLogService. Lives on the

@@ -72,6 +72,15 @@ export const envSchema = z.object({
   JWT_ACCESS_TTL: z.string().default('15m'),
   JWT_REFRESH_TTL: z.string().default('30d'),
 
+  // ── Admin panel ───────────────────────────────────
+  // SECURITY: simple bearer-token auth for the admin UI. Set this in
+  // production. When empty (dev), the admin endpoints respond with 503
+  // and the UI shows a clear "set ADMIN_PASSWORD" hint. Authentication
+  // is intentionally bare-bones — for a single dev/operator tool,
+  // password-only is fine; for multi-admin teams, swap to JWT + DB
+  // role flags later.
+  ADMIN_PASSWORD: z.string().min(8).optional(),
+
   // ── LiveKit (SIP + WebRTC) ─────────────────────────
   LIVEKIT_URL: z
     .string()

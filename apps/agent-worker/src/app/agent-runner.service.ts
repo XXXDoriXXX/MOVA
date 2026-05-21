@@ -10,6 +10,7 @@ import * as silero from '@livekit/agents-plugin-silero';
 import { initializeLogger } from '@livekit/agents';
 import { Redis } from 'ioredis';
 
+import { reportError } from '@mova-back/shared-config';
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
 import { CallControlAction } from '@mova-back/shared-realtime';
 
@@ -93,21 +94,18 @@ export class AgentRunnerService
 
       this.subscriber.on('message', (channel, raw) => {
         this.routeMessage(channel, raw).catch((err) =>
-          this.logger.error(`Subscriber error on ${channel}: ${(err as Error).message}`),
+          reportError(this.logger, 'Redis subscriber error', err, { channel }),
         );
       });
       this.subscriber.on('pmessage', (_pattern, channel, raw) => {
         this.routePatternMessage(channel, raw).catch((err) =>
-          this.logger.error(`Pattern subscriber error on ${channel}: ${(err as Error).message}`),
+          reportError(this.logger, 'Redis pattern subscriber error', err, { channel }),
         );
       });
 
       this.logger.log('🎧 [Redis] Subscribed: call-dispatch, call-controls, call-controls:*');
     } catch (err) {
-      this.logger.error(
-        `🚨 [Bootstrap] Critical failure: ${(err as Error).message}`,
-        (err as Error).stack,
-      );
+      reportError(this.logger, '[Bootstrap] Critical failure subscribing to Redis', err);
     }
   }
 
@@ -289,7 +287,7 @@ export class AgentRunnerService
       await handler.start();
     } catch (err) {
       const e = err as Error;
-      this.logger.error(`Failed to initiate ${roomName}: ${e.message}`, e.stack);
+      reportError(this.logger, 'Failed to initiate call', e, { roomName });
       this.activeSessions.delete(roomName);
     }
   }

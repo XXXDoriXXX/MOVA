@@ -10,6 +10,7 @@ import * as silero from '@livekit/agents-plugin-silero';
 import { voice } from '@livekit/agents';
 import { EventEmitter } from 'events';
 
+import { reportError } from '@mova-back/shared-config';
 import type { InternalCallEvent } from '@mova-back/shared-realtime';
 
 import { AgentFactory, AgentContext } from './agent/agent.factory';
@@ -183,17 +184,33 @@ export class AgentCallHandler {
       this.logger.warn(`🛑 [Agent Control] Cannot speak — session not initialized.`);
       return;
     }
+    // The active SpeechHandle may have been created with `allowInterruptions:
+    // false` (we do this for the initial greeting so the call doesn't
+    // half-introduce itself if the user types instantly). Calling
+    // `interrupt()` on it throws `This generation handle does not allow
+    // interruptions` — which is not really an error in our flow: we just
+    // want the new utterance to queue after the current one finishes.
+    // Swallow that specific failure at warn level; surface any other.
     try {
       this.session.interrupt();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('does not allow interruptions')) {
+        this.logger.debug(
+          `[Agent Control] Skipped interrupt — current speech is non-interruptible; queueing new utterance.`,
+        );
+      } else {
+        reportError(this.logger, '[Agent Control] interrupt() threw', err, {
+          conversationId: this.conversationId,
+        });
+      }
+    }
+    try {
       await this.session.say(text, { allowInterruptions: false, addToChatCtx: true });
       this.recordRecent('user_typed', text);
-
-      // Typed user.spoke event — api-gateway persists it as a Message
-      // (role=user_typed) so chat history reflects what the user said.
-      // We mark source='typed' because the caller (the control handler) is
-      // the one who knows if it was a suggestion vs. raw text; this is the
-      // safe default. The control handler can override before publish if
-      // it needs to (Phase 7 follow-up).
+      // user.spoke goes to api-gateway persistence so the typed message
+      // shows up in chat history. source=typed; the control handler can
+      // override before publish if it knows it's actually a suggestion.
       this.emitTyped({
         type: 'user.spoke',
         data: {
@@ -205,7 +222,10 @@ export class AgentCallHandler {
       });
       this.publishLegacyFinal('user_manual', text);
     } catch (err) {
-      this.logger.error(`❌ [Agent Control] Override failed: ${(err as Error).message}`);
+      reportError(this.logger, '[Agent Control] Failed to say user text', err, {
+        conversationId: this.conversationId,
+        textLength: text.length,
+      });
     }
   }
 
@@ -215,7 +235,17 @@ export class AgentCallHandler {
     try {
       this.session.interrupt();
     } catch (err) {
-      this.logger.warn(`⚠️ [Agent Control] stopTts failed: ${(err as Error).message}`);
+      // Same expected-noise case as interruptAndSpeak.
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('does not allow interruptions')) {
+        this.logger.debug(
+          `[Agent Control] stopTts skipped — current speech is non-interruptible.`,
+        );
+        return;
+      }
+      reportError(this.logger, '[Agent Control] stopTts failed', err, {
+        conversationId: this.conversationId,
+      });
     }
   }
 

@@ -11,7 +11,7 @@ import { Redis } from 'ioredis';
 import type { Counter } from 'prom-client';
 import { v4 as uuidv4 } from 'uuid';
 
-import type { AppEnv } from '@mova-back/shared-config';
+import { reportError, type AppEnv } from '@mova-back/shared-config';
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
 import {
   DEFAULT_STYLE_ID,
@@ -190,7 +190,12 @@ export class CallService {
       this.logger.log(`Call initiated. roomName=${roomName} participant=${participantId}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`SIP dial failed: ${message}`);
+      reportError(this.logger, 'SIP dial failed', err, {
+        conversationId: conversation.id,
+        roomName,
+        targetPhone: dto.targetPhone,
+        userId,
+      });
       // Clean up the Redis context so a stale agent dispatch can't run
       // against a dead conversation.
       await this.redis.del(contextKey).catch(() => undefined);

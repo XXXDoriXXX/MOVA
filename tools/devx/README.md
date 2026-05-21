@@ -26,6 +26,9 @@ npm run tail                    # all three services in parallel, Nx TUI
 # Web log viewer (Dozzle) — opens http://localhost:9999
 npm run logs:web                # auto-opens browser
 
+# Admin panel — opens http://localhost:5174
+npm run admin                   # auto-opens browser; password = ADMIN_PASSWORD from .env
+
 # Single service in terminal
 npm run logs:api                # → nx run api-gateway:logs
 npm run logs:realtime           # → nx run realtime-service:logs

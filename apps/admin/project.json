@@ -1,0 +1,58 @@
+{
+  "name": "admin",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/admin/src",
+  "projectType": "application",
+  "tags": ["scope:tooling"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": ["{workspaceRoot}/dist/apps/admin"],
+      "options": {
+        "command": "npx vite build",
+        "cwd": "apps/admin"
+      }
+    },
+    "serve": {
+      "continuous": true,
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx vite --host 0.0.0.0 --port 5174",
+        "cwd": "apps/admin"
+      }
+    },
+    "preview": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx vite preview --host 0.0.0.0 --port 5174",
+        "cwd": "apps/admin"
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx tsc --noEmit",
+        "cwd": "apps/admin"
+      }
+    },
+    "logs": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose logs -f --tail=200 admin",
+        "color": true
+      }
+    },
+    "ps": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose ps admin"
+      }
+    },
+    "restart": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose restart admin"
+      }
+    }
+  }
+}

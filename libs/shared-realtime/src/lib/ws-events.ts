@@ -46,6 +46,20 @@ export const ServerEvent = {
     }),
   }),
 
+  /**
+   * Sent when the SIP participant joins the room — i.e. the called phone
+   * actually picked up. Mobile uses this to swap the ringing-loader for
+   * the chat UI. `call.connected` only signals "WS/agent ready" and fires
+   * within hundreds of ms; `call.answered` lands seconds later when the
+   * trunk reports the answer.
+   */
+  callAnswered: envelope.extend({
+    type: z.literal('call.answered'),
+    data: z.object({
+      participantIdentity: z.string().min(1),
+    }),
+  }),
+
   /** Partial STT result. May arrive multiple times before a final. */
   transcriptPartial: envelope.extend({
     type: z.literal('transcript.partial'),
@@ -191,6 +205,7 @@ export const ServerEvent = {
 /** Discriminated union of every server event. */
 export const ServerEventSchema = z.discriminatedUnion('type', [
   ServerEvent.callConnected,
+  ServerEvent.callAnswered,
   ServerEvent.transcriptPartial,
   ServerEvent.transcriptFinal,
   ServerEvent.aiThinking,

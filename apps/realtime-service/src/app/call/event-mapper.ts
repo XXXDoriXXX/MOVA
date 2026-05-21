@@ -40,6 +40,14 @@ export function mapInternalToServer(event: InternalCallEvent): ServerEvent | nul
         data: { conversationId: event.conversationId },
       };
 
+    case 'call.answered':
+      return {
+        type: 'call.answered',
+        id,
+        timestamp,
+        data: { participantIdentity: event.data.participantIdentity },
+      };
+
     case 'transcript.partial':
       return {
         type: 'transcript.partial',

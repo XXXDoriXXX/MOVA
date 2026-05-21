@@ -101,6 +101,20 @@ export const CallConnectedEvent = baseEvent.extend({
   data: z.object({}).strict(),
 });
 
+/**
+ * Fires the moment the SIP participant joins the LiveKit room — i.e. the
+ * physical phone on the other end actually picked up. Distinct from
+ * `call.connected` (agent ready / WS handshake done) so mobile can keep
+ * a ringing-loader on screen until there's a real interlocutor.
+ */
+export const CallAnsweredEvent = baseEvent.extend({
+  type: z.literal('call.answered'),
+  data: z.object({
+    /** SIP participant identity (we use `phone-<E.164>` in api-gateway). */
+    participantIdentity: z.string().min(1),
+  }),
+});
+
 export const CallEndedEvent = baseEvent.extend({
   type: z.literal('call.ended'),
   data: z.object({
@@ -170,6 +184,7 @@ export const InternalCallEventSchema = z.discriminatedUnion('type', [
   UserSpokeEvent,
   SuggestionsGeneratedEvent,
   CallConnectedEvent,
+  CallAnsweredEvent,
   CallEndedEvent,
   CallTickEvent,
   ProviderFailureEvent,
@@ -188,6 +203,7 @@ export type AiTtsEnd = z.infer<typeof AiTtsEndEvent>;
 export type UserSpoke = z.infer<typeof UserSpokeEvent>;
 export type SuggestionsGenerated = z.infer<typeof SuggestionsGeneratedEvent>;
 export type CallConnected = z.infer<typeof CallConnectedEvent>;
+export type CallAnswered = z.infer<typeof CallAnsweredEvent>;
 export type CallEnded = z.infer<typeof CallEndedEvent>;
 export type CallTick = z.infer<typeof CallTickEvent>;
 export type ProviderFailure = z.infer<typeof ProviderFailureEvent>;

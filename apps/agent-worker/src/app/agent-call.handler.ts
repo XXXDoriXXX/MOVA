@@ -2,7 +2,8 @@ import { randomUUID } from 'crypto';
 
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Room, RoomEvent } from '@livekit/rtc-node';
+import { Room, RoomEvent, type RemoteParticipant } from '@livekit/rtc-node';
+import { ParticipantKind } from '@livekit/rtc-ffi-bindings';
 import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
 import { Redis } from 'ioredis';
 import * as silero from '@livekit/agents-plugin-silero';
@@ -98,6 +99,25 @@ export class AgentCallHandler {
       const token = await at.toJwt();
 
       this.room = new Room();
+      // The SIP participant joins the room only after the trunk reports
+      // that the called phone actually picked up. Surfacing this as a
+      // separate event lets the mobile UI keep a ringing-loader on screen
+      // until there's a real interlocutor — instead of swapping to the
+      // chat the moment the agent is ready (which is hundreds of ms after
+      // dialing the trunk, with a long wait still ahead).
+      let answered = false;
+      this.room.on(RoomEvent.ParticipantConnected, (p: RemoteParticipant) => {
+        if (answered) return;
+        if (p.kind !== ParticipantKind.SIP) return;
+        answered = true;
+        this.logger.log(
+          `📞 [Call Lifecycle] Interlocutor answered (identity=${p.identity})`,
+        );
+        this.emitTyped({
+          type: 'call.answered',
+          data: { participantIdentity: p.identity },
+        });
+      });
       this.room.on(RoomEvent.Disconnected, () => {
         const durationMs = Date.now() - callStartTime;
         this.logger.log(`🚪 [Call Lifecycle] Room disconnected after ${durationMs}ms.`);

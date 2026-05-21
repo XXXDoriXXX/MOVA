@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 
+import { reportError } from '@mova-back/shared-config';
+
 import { BillingService } from './billing.service';
 import { USER_REGISTERED_EVENT, type UserRegisteredPayload } from './billing.events';
 
@@ -26,11 +28,11 @@ export class BillingListener {
       await this.billing.ensureSubscriptionForUser(payload.userId);
       this.logger.log(`Subscription ensured for user ${payload.userId}`);
     } catch (err) {
-      this.logger.error(
-        `Failed to ensure subscription for user ${payload.userId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      // OnEvent runs outside an HTTP request, so SentryGlobalFilter does
+      // NOT see this throw — capture explicitly before rethrowing.
+      reportError(this.logger, 'Failed to ensure subscription for user', err, {
+        userId: payload.userId,
+      });
       throw err;
     }
   }

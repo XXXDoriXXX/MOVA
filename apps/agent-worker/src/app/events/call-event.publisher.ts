@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Redis } from 'ioredis';
 
+import { reportError } from '@mova-back/shared-config';
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
 import {
   RedisChannels,
@@ -64,11 +65,10 @@ export class CallEventPublisher {
       );
       await this.redis.expire(streamKey, STREAM_TTL_SECONDS);
     } catch (err) {
-      this.logger.error(
-        `XADD failed for ${event.type} ${event.conversationId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      reportError(this.logger, 'Redis XADD failed', err, {
+        eventType: event.type,
+        conversationId: event.conversationId,
+      });
     }
 
     const livePayload = streamId
@@ -78,11 +78,11 @@ export class CallEventPublisher {
     try {
       await this.redis.publish(channel, livePayload);
     } catch (err) {
-      this.logger.error(
-        `PUBLISH failed for ${event.type} ${event.conversationId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      reportError(this.logger, 'Redis PUBLISH failed', err, {
+        eventType: event.type,
+        conversationId: event.conversationId,
+        channel,
+      });
     }
   }
 

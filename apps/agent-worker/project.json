@@ -86,6 +86,31 @@
       "options": {
         "passWithNoTests": true
       }
+    },
+    "logs": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose logs -f --tail=200 agent-worker",
+        "color": true
+      }
+    },
+    "ps": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose ps agent-worker"
+      }
+    },
+    "restart": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose restart agent-worker"
+      }
+    },
+    "sh": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose exec agent-worker sh"
+      }
     }
   }
 }

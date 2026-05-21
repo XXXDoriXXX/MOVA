@@ -1,0 +1,96 @@
+{
+  "name": "devx",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "sourceRoot": "tools/devx",
+  "tags": ["scope:tooling"],
+  "targets": {
+    "_": {
+      "executor": "nx:noop"
+    },
+
+    "up": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose up -d --build",
+        "color": true
+      }
+    },
+    "down": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose down"
+      }
+    },
+    "nuke": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose down -v"
+      }
+    },
+
+    "ps": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose ps --format 'table {{.Name}}\\t{{.Status}}\\t{{.Ports}}'"
+      }
+    },
+    "status": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "echo '── containers ────────────────────────────────────────'",
+          "docker compose ps --format 'table {{.Service}}\\t{{.Status}}\\t{{.Ports}}'",
+          "echo",
+          "echo '── stats (cpu / mem) ─────────────────────────────────'",
+          "docker stats --no-stream --format 'table {{.Name}}\\t{{.CPUPerc}}\\t{{.MemUsage}}' $(docker compose ps -q) 2>/dev/null || true"
+        ],
+        "parallel": false,
+        "color": true
+      }
+    },
+
+    "logs": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose logs -f --tail=100",
+        "color": true
+      }
+    },
+    "logs:errors": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose logs -f --tail=200 | grep -Ei --color=always 'error|warn|fatal|exception|panic|fail'",
+        "color": true
+      }
+    },
+
+    "tail": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "npx nx run api-gateway:logs",
+          "npx nx run realtime-service:logs",
+          "npx nx run agent-worker:logs"
+        ],
+        "parallel": true,
+        "color": true,
+        "streamOutput": true
+      }
+    },
+
+    "restart:all": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose restart api-gateway realtime-service agent-worker"
+      }
+    },
+
+    "migrate": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "docker compose run --rm migrations"
+      }
+    }
+  }
+}

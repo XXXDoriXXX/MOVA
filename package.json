@@ -45,7 +45,7 @@
   "private": true,
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.77",
-    "@ai-sdk/google": "^3.0.75",
+    "@ai-sdk/google": "^3.0.77",
     "@ai-sdk/groq": "^3.0.39",
     "@ai-sdk/openai": "^3.0.63",
     "@keyv/redis": "^5.1.6",
@@ -54,7 +54,7 @@
     "@livekit/agents-plugin-elevenlabs": "^1.0.44",
     "@livekit/agents-plugin-openai": "^1.0.44",
     "@livekit/agents-plugin-silero": "^1.0.44",
-    "@livekit/rtc-node": "^0.13.27",
+    "@livekit/rtc-node": "^0.13.28",
     "@nest-lab/throttler-storage-redis": "^1.2.0",
     "@nestjs/bullmq": "^11.0.4",
     "@nestjs/cache-manager": "^3.1.2",

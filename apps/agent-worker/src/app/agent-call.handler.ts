@@ -81,6 +81,38 @@ export class AgentCallHandler {
   /** Round-robin pointer so consecutive fallbacks don't repeat the same line. */
   private fallbackCursor = 0;
 
+  /**
+   * Idle-probe watchdog. Fires when the agent has been listening for too
+   * long with NO sound from the interlocutor (no VAD, no STT partial, no
+   * STT final). Without this the line goes silent both ways: the agent
+   * politely waits for input that never comes, the user (caller and the
+   * deaf-end mobile user) thinks "AI is silent" and hangs up.
+   *
+   * Armed: after each AI utterance finishes (initial greeting + every
+   * `onAiFinal` + every fallback line).
+   * Cleared: on any `user_input_transcribed` (partial or final).
+   *
+   * First probe lands later than subsequent ones — a fresh-connect human
+   * deserves a few seconds to clear their throat; back-to-back silence
+   * after we've already probed once means we're probably talking to a
+   * machine or someone who genuinely didn't pick up.
+   */
+  private idleProbeTimer: NodeJS.Timeout | null = null;
+  private idleProbeCount = 0;
+  /** Cleared when the SIP participant joins; before that, idle probes
+   *  are pointless — nobody's on the line yet. */
+  private participantAnswered = false;
+  private static readonly IDLE_FIRST_MS = 18_000;
+  private static readonly IDLE_FOLLOWUP_MS = 25_000;
+  /** After this many unanswered probes we give up and end the call so
+   *  we don't run forever talking to nobody and burning balance. */
+  private static readonly IDLE_MAX_PROBES = 3;
+  private static readonly IDLE_PROBES_UA = [
+    'Алло? Ви мене чуєте?',
+    'Перепрошую, можливо погано чути — ви на лінії?',
+    'Здається, нас не чути. Я ще трохи зачекаю і покладу слухавку.',
+  ];
+
   constructor(
     private readonly roomName: string,
     public readonly userContext: AgentContext,
@@ -124,11 +156,10 @@ export class AgentCallHandler {
       // until there's a real interlocutor — instead of swapping to the
       // chat the moment the agent is ready (which is hundreds of ms after
       // dialing the trunk, with a long wait still ahead).
-      let answered = false;
       this.room.on(RoomEvent.ParticipantConnected, (p: RemoteParticipant) => {
-        if (answered) return;
+        if (this.participantAnswered) return;
         if (p.kind !== ParticipantKind.SIP) return;
-        answered = true;
+        this.participantAnswered = true;
         this.logger.log(
           `📞 [Call Lifecycle] Interlocutor answered (identity=${p.identity})`,
         );
@@ -179,6 +210,9 @@ export class AgentCallHandler {
       await this.session.say(this.agentFactory.getInitialGreeting(this.userContext), {
         allowInterruptions: true,
       });
+      // Greeting done — start the idle-probe timer so a non-responsive
+      // interlocutor doesn't strand the call in silence.
+      this.armIdleProbe();
 
       this.logger.log(
         `🎉 [Call Lifecycle] Connection sequence completed in ${Date.now() - callStartTime}ms`,
@@ -338,6 +372,7 @@ export class AgentCallHandler {
   private cleanup(): void {
     this.stopHeartbeat();
     this.clearResponseWatchdog();
+    this.clearIdleProbe();
     if (this.session) {
       try {
         this.session.close();
@@ -363,6 +398,12 @@ export class AgentCallHandler {
     sessionEmitter.on('user_input_transcribed', (ev: Record<string, unknown>) => {
       const text = (ev['text'] as string) ?? (ev['transcript'] as string) ?? '';
       if (!text) return;
+
+      // Any sound from the interlocutor — partial or final — proves
+      // they're alive. Stand the idle-probe down and reset the count
+      // so it can re-arm fresh after the next AI turn.
+      this.clearIdleProbe();
+      this.idleProbeCount = 0;
 
       if (ev['isFinal']) {
         this.onInterlocutorFinal(text);
@@ -448,6 +489,67 @@ export class AgentCallHandler {
         void this.handleAiSilence('plugin_error');
       }
     });
+  }
+
+  // ─── Idle-probe (interlocutor goes silent) ─────────────
+
+  private armIdleProbe(): void {
+    this.clearIdleProbe();
+    // Don't probe before the SIP leg picked up — there's literally nobody
+    // on the line yet.
+    if (!this.participantAnswered) return;
+    if (this.idleProbeCount >= AgentCallHandler.IDLE_MAX_PROBES) return;
+    const delay =
+      this.idleProbeCount === 0
+        ? AgentCallHandler.IDLE_FIRST_MS
+        : AgentCallHandler.IDLE_FOLLOWUP_MS;
+    this.idleProbeTimer = setTimeout(() => {
+      void this.fireIdleProbe();
+    }, delay);
+  }
+
+  private clearIdleProbe(): void {
+    if (this.idleProbeTimer) {
+      clearTimeout(this.idleProbeTimer);
+      this.idleProbeTimer = null;
+    }
+  }
+
+  private async fireIdleProbe(): Promise<void> {
+    this.clearIdleProbe();
+    if (!this.session) return;
+    if (this.idleProbeCount >= AgentCallHandler.IDLE_MAX_PROBES) {
+      // We've prompted enough times with no answer — give up and end
+      // the call so we don't keep talking to dead air on the user's
+      // balance. The end emits the standard call.ended event so the
+      // mobile post-call sheet renders normally.
+      this.logger.warn(
+        `[Idle probe] No response after ${AgentCallHandler.IDLE_MAX_PROBES} probes — ending call.`,
+      );
+      await this.stop();
+      return;
+    }
+    const lines = AgentCallHandler.IDLE_PROBES_UA;
+    const line = lines[this.idleProbeCount % lines.length]!;
+    this.idleProbeCount += 1;
+    this.logger.log(
+      `[Idle probe] No interlocutor input — probing (${this.idleProbeCount}/${AgentCallHandler.IDLE_MAX_PROBES}): "${line}"`,
+    );
+    try {
+      await this.session.say(line, { allowInterruptions: true });
+      this.recordRecent('ai', line);
+      this.emitTyped({
+        type: 'ai.text.final',
+        data: { text: line, llmProvider: 'idle_probe', llmModel: 'static' },
+      });
+      // Re-arm with the longer follow-up window so we don't pester.
+      this.armIdleProbe();
+    } catch (err) {
+      reportError(this.logger, '[Idle probe] failed to speak probe line', err, {
+        conversationId: this.conversationId,
+        probeCount: this.idleProbeCount,
+      });
+    }
   }
 
   // ─── AI silence fallback ───────────────────────────────
@@ -547,8 +649,10 @@ export class AgentCallHandler {
   }
 
   private onAiFinal(text: string): void {
-    // AI replied — silence watchdog can stand down.
+    // AI replied — silence watchdog can stand down, and we re-arm the
+    // idle probe because now we're back to waiting on the interlocutor.
     this.clearResponseWatchdog();
+    this.armIdleProbe();
     this.recordRecent('ai', text);
     const llmProvider =
       this.userContext.config?.llm?.provider ??

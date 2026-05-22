@@ -191,7 +191,30 @@ export class AgentCallHandler {
       // a single GC pause or Redis blip.
       this.startHeartbeat();
 
-      this.session = await this.agentFactory.createSession(this.vadModel, this.userContext);
+      const sessionResult = await this.agentFactory.createSession(
+        this.vadModel,
+        this.userContext,
+      );
+      this.session = sessionResult.session;
+      // Surface a degradation banner from the very first turn when the
+      // user's preferred LLM was unhealthy and the registry routed us to
+      // a fallback. Mobile shows the existing recoverable provider.failure
+      // banner — no silent substitution.
+      if (sessionResult.llmProvenance.viaFallback) {
+        this.logger.warn(
+          `[Provider] LLM requested=${sessionResult.llmProvenance.requestedProvider} ` +
+            `unhealthy → using ${sessionResult.llmProvenance.effectiveProvider} instead.`,
+        );
+        this.emitTyped({
+          type: 'provider.failure',
+          data: {
+            providerType: 'llm',
+            providerName: sessionResult.llmProvenance.requestedProvider,
+            errorCode: 'PROVIDER_DEGRADED',
+            errorMessage: `Requested ${sessionResult.llmProvenance.requestedProvider} is degraded — using ${sessionResult.llmProvenance.effectiveProvider}.`,
+          },
+        });
+      }
       const agent = this.agentFactory.createAgent(this.userContext);
 
       this.bindSessionEvents(this.session);

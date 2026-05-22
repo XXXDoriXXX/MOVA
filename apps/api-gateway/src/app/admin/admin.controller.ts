@@ -1,13 +1,17 @@
 import {
+  BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
+  NotFoundException,
   Param,
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -42,6 +46,9 @@ import {
   type AuditPage,
 } from './audit-log.service';
 import { AdminAccessGuard } from './admin-access.guard';
+import { findKnownSetting } from './settings/known-settings';
+import { ProviderProbeService } from './settings/provider-probe.service';
+import { SettingsService } from './settings/settings.service';
 import {
   BlockUserDto,
   ForceEndConversationDto,
@@ -77,6 +84,8 @@ export class AdminController {
   constructor(
     private readonly admin: AdminService,
     private readonly auditLog: AuditLogService,
+    private readonly settings: SettingsService,
+    private readonly probe: ProviderProbeService,
   ) {}
 
   /**
@@ -338,4 +347,88 @@ export class AdminController {
       limit ? Number(limit) : undefined,
     );
   }
+
+  // ── Settings / API keys (admin-managed overlay) ────
+
+  @Get('settings')
+  @ApiOperation({
+    summary: 'List admin-managed env keys (masked) with source provenance.',
+  })
+  async listSettings() {
+    const items = await this.settings.listForAdmin();
+    return { items };
+  }
+
+  @Put('settings/:key')
+  @ApiOperation({
+    summary:
+      'Set/update a managed key. Persists encrypted, mutates process.env, runs the upstream probe.',
+  })
+  async setSetting(
+    @CurrentUser() actor: AuthenticatedUser,
+    @Param('key') key: string,
+    @Body() body: { value?: string },
+  ) {
+    const known = findKnownSetting(key);
+    if (!known) throw new NotFoundException(`Unknown key: ${key}`);
+    const value = (body?.value ?? '').trim();
+    if (!value) {
+      throw new BadRequestException('value is required (non-empty)');
+    }
+    const actorId = isPersistableActor(actor.id) ? actor.id : null;
+    const { masked } = await this.settings.set(key, value, actorId);
+    // Audit log: free-form action string isn't part of the AuditAction
+    // enum yet; logging via the structured logger keeps this row in
+    // Pino/Sentry until we extend the DB enum in a follow-up migration.
+    // Value is NEVER logged — only the key + masked tail.
+    console.log(
+      `[settings] ${key} updated by ${actor.email ?? actorId ?? 'unknown'} → ${masked}`,
+    );
+    const probe = await this.probe.probe(known, value);
+    return { masked, probe };
+  }
+
+  @Post('settings/:key/test')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Probe a candidate value against the provider WITHOUT writing it (dry-run).',
+  })
+  async testSetting(
+    @Param('key') key: string,
+    @Body() body: { value?: string },
+  ) {
+    const known = findKnownSetting(key);
+    if (!known) throw new NotFoundException(`Unknown key: ${key}`);
+    const value = (body?.value ?? '').trim();
+    if (!value) {
+      throw new BadRequestException('value is required (non-empty)');
+    }
+    return this.probe.probe(known, value);
+  }
+
+  @Delete('settings/:key')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary:
+      'Remove the DB override — value reverts to .env on next process restart.',
+  })
+  async clearSetting(
+    @CurrentUser() actor: AuthenticatedUser,
+    @Param('key') key: string,
+  ): Promise<void> {
+    const known = findKnownSetting(key);
+    if (!known) throw new NotFoundException(`Unknown key: ${key}`);
+    await this.settings.clear(key);
+    const actorId = isPersistableActor(actor.id) ? actor.id : null;
+    console.log(
+      `[settings] ${key} cleared by ${actor.email ?? actorId ?? 'unknown'}`,
+    );
+  }
+}
+
+/** AuditLogService rejects non-UUID actor ids; the synthetic admin
+ *  ("admin-bypass") needs to land as null so audit rows pass FK checks. */
+function isPersistableActor(id: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 }

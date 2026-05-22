@@ -114,6 +114,13 @@ export const envSchema = z.object({
   // Generate once with `openssl rand -base64 32` and paste into .env.
   SETTINGS_ENCRYPTION_KEY: z.string().min(16).optional(),
 
+  // ── Gemini TTS (cheap multilingual fallback) ────────
+  // Voice and model used when TTS_PROVIDER=gemini OR a template/per-call
+  // override selects gemini. API key is shared with the Gemini LLM
+  // provider (GEMINI_API_KEY) — no separate secret to manage.
+  GEMINI_TTS_VOICE: z.string().default('Kore'),
+  GEMINI_TTS_MODEL: z.string().default('gemini-2.5-flash-tts'),
+
   // ── Error tracking (Sentry) ────────────────────────
   SENTRY_DSN: z.string().url().optional(),
   SENTRY_ENVIRONMENT: z.string().optional(),

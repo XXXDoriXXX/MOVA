@@ -27,6 +27,7 @@ export enum LlmProviderEnum {
 export enum TtsProviderEnum {
   ELEVENLABS = 'elevenlabs',
   OPENAI = 'openai',
-  /** Deepgram Aura — fallback for English content. */
-  DEEPGRAM = 'deepgram',
+  /** Google Gemini TTS — multilingual, ~$10 per 1M chars, decent UA quality.
+   *  Uses the same GEMINI_API_KEY as the LLM provider. */
+  GEMINI = 'gemini',
 }

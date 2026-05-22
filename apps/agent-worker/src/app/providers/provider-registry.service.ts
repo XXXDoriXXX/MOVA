@@ -9,7 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import CircuitBreaker from 'opossum';
 import type { Gauge, Histogram } from 'prom-client';
-import { Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 
 import {
   LlmProviderEnum,
@@ -113,12 +113,76 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit(): Promise<void> {
+    // Adopt any open incidents that survived the previous process so the
+    // first probe failure doesn't create a duplicate row in the DB. The
+    // in-memory `llmHealth` map is fresh on boot, so without this hand-off
+    // a misconfigured provider would file a new "open" incident on every
+    // container restart and the admin dashboard would slowly fill with
+    // dupes like "17 open incidents (upstream)" for the same actual fault.
+    await this.adoptExistingOpenIncidents();
     // Run an initial probe so the very first turn has accurate health scores.
     await this.probeAll();
     // Background re-probe every 60s.
     this.probeInterval = setInterval(() => {
       this.probeAll().catch((err) => this.logger.error(`Probe error: ${String(err)}`));
     }, 60_000);
+  }
+
+  /**
+   * Pull one open incident per registered LLM provider from the DB and
+   * attach its id to the in-memory health entry. We pick the most recent
+   * one — older orphans (from earlier crashes that didn't get a chance to
+   * recover) are best-effort marked recovered so the admin view only ever
+   * shows at most one open incident per provider.
+   */
+  private async adoptExistingOpenIncidents(): Promise<void> {
+    for (const id of this.llmProviders.keys()) {
+      try {
+        const open = await this.incidents.find({
+          where: {
+            providerType: ProviderType.LLM,
+            providerName: id,
+            recoveredAt: IsNull(),
+          },
+          order: { occurredAt: 'DESC' },
+        });
+        if (open.length === 0) continue;
+        const [latest, ...stale] = open;
+        const h = this.llmHealth.get(id);
+        if (h) {
+          h.incidentId = latest!.id;
+          // Probe will set the right score; pre-load to 0 so we don't
+          // accidentally route a turn through a known-bad provider in the
+          // window before the first probe completes.
+          h.score = 0;
+          this.healthGauge.set({ type: 'llm', provider: id }, 0);
+        }
+        if (stale.length > 0) {
+          const now = new Date();
+          await this.incidents
+            .update(
+              { id: In(stale.map((s) => s.id)) },
+              { recoveredAt: now },
+            )
+            .catch(() => undefined);
+          this.logger.log(
+            `Adopted open incident ${latest!.id} for ${id}; auto-resolved ${
+              stale.length
+            } stale dupe(s) from prior runs.`,
+          );
+        } else {
+          this.logger.log(
+            `Adopted open incident ${latest!.id} for ${id} (carried over from previous process).`,
+          );
+        }
+      } catch (err) {
+        this.logger.warn(
+          `adoptExistingOpenIncidents failed for ${id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
   }
 
   async onModuleDestroy(): Promise<void> {

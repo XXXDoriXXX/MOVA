@@ -62,24 +62,29 @@ export class AgentFactory {
     llmProvenance: {
       effectiveProvider: string;
       requestedProvider: string;
+      effectiveModel: string | null;
       viaFallback: boolean;
     };
+    /** Provider snapshots so the caller can broadcast the active call
+     *  config to the mobile UI for at-a-glance visibility. */
+    sttProvenance: { provider: string; model: string };
+    ttsProvenance: { provider: string; voice: string };
   }> {
-    const stt = this.sttFactory.create(context.config);
-    const resolved = this.llmFactory.resolve(context.config);
-    const tts = this.ttsFactory.create(context.config);
+    const sttResolved = this.sttFactory.resolve(context.config);
+    const llmResolved = this.llmFactory.resolve(context.config);
+    const ttsResolved = this.ttsFactory.resolve(context.config);
 
-    stt.on('error', this.createErrorHandler('STT'));
-    resolved.llm.on('error', this.createErrorHandler('LLM'));
-    tts.on('error', this.createErrorHandler('TTS'));
+    sttResolved.stt.on('error', this.createErrorHandler('STT'));
+    llmResolved.llm.on('error', this.createErrorHandler('LLM'));
+    ttsResolved.tts.on('error', this.createErrorHandler('TTS'));
 
     const minEndpointingDelay = context.config?.tts?.minEndpointingDelay ?? 500;
     const maxEndpointingDelay = context.config?.tts?.maxEndpointingDelay ?? 1500;
 
     const session = new voice.AgentSession({
-      stt,
-      llm: resolved.llm,
-      tts,
+      stt: sttResolved.stt,
+      llm: llmResolved.llm,
+      tts: ttsResolved.tts,
       vad,
       voiceOptions: {
         allowInterruptions: true,
@@ -90,10 +95,13 @@ export class AgentFactory {
     return {
       session,
       llmProvenance: {
-        effectiveProvider: resolved.effectiveProvider,
-        requestedProvider: resolved.requestedProvider,
-        viaFallback: resolved.viaFallback,
+        effectiveProvider: llmResolved.effectiveProvider,
+        requestedProvider: llmResolved.requestedProvider,
+        effectiveModel: llmResolved.effectiveModel,
+        viaFallback: llmResolved.viaFallback,
       },
+      sttProvenance: { provider: sttResolved.provider, model: sttResolved.model },
+      ttsProvenance: { provider: ttsResolved.provider, voice: ttsResolved.voice },
     };
   }
 

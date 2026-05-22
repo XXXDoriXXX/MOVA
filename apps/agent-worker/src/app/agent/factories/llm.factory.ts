@@ -18,6 +18,9 @@ export interface ResolvedLlm {
   llm: llm.LLM;
   /** Provider id we ended up using (after health-based selection). */
   effectiveProvider: LlmProviderEnum;
+  /** Model string passed to the underlying plugin — typically what mobile
+   *  wants to display ("gpt-4o-mini", "google/gemini-2.5-flash", …). */
+  effectiveModel: string | null;
   /** Provider id requested by the caller (template / per-call config / env). */
   requestedProvider: LlmProviderEnum;
   /** True when registry redirected us away from the requested provider. */
@@ -90,8 +93,36 @@ export class LlmFactory {
     // Honour user's model only when we stayed on the user's provider.
     // Cross-provider model strings are nonsense (e.g. "gpt-4o" on Anthropic).
     const requestedModel = viaFallback ? undefined : agentConfig?.llm?.model;
-    const llm = this.buildPluginFor(effectiveProvider, requestedModel);
-    return { llm, effectiveProvider, requestedProvider, viaFallback };
+    const effectiveModel = this.resolveModel(effectiveProvider, requestedModel);
+    const llm = this.buildPluginFor(effectiveProvider, effectiveModel);
+    return { llm, effectiveProvider, effectiveModel, requestedProvider, viaFallback };
+  }
+
+  /** Compute the model string we'll pass to the plugin, mirroring the
+   *  switch in buildPluginFor so callers can report what's running
+   *  without having to redo the resolution. */
+  private resolveModel(
+    provider: LlmProviderEnum,
+    requestedModel: string | undefined,
+  ): string {
+    switch (provider) {
+      case LlmProviderEnum.OPENAI:
+        return requestedModel || this.config.get<string>('LLM_MODEL', 'gpt-4o-mini');
+      case LlmProviderEnum.GEMINI: {
+        const m = requestedModel || this.config.get<string>('LLM_MODEL', 'google/gemini-2.5-flash');
+        return m.startsWith('google/') ? m : `google/${m}`;
+      }
+      case LlmProviderEnum.ANTHROPIC: {
+        const m = requestedModel || this.config.get<string>('LLM_MODEL', 'anthropic/claude-3.5-sonnet');
+        return m.startsWith('anthropic/') ? m : `anthropic/${m}`;
+      }
+      case LlmProviderEnum.GROQ: {
+        const m = requestedModel || this.config.get<string>('LLM_MODEL', 'groq/llama-3.1-70b-versatile');
+        return m.startsWith('groq/') ? m : `groq/${m}`;
+      }
+      default:
+        return 'gpt-4o-mini';
+    }
   }
 
   private requestedProviderFrom(agentConfig?: AgentConfigDto): LlmProviderEnum {
@@ -130,46 +161,19 @@ export class LlmFactory {
     }
   }
 
-  private buildPluginFor(
-    provider: LlmProviderEnum,
-    requestedModel: string | undefined,
-  ): llm.LLM {
+  private buildPluginFor(provider: LlmProviderEnum, model: string): llm.LLM {
     switch (provider) {
       case LlmProviderEnum.OPENAI: {
-        const model =
-          requestedModel || this.config.get<string>('LLM_MODEL', 'gpt-4o-mini');
-        this.logger.debug(
-          `🔌 [Factory: LLM] OpenAI native plugin, model=${model}`,
-        );
+        this.logger.debug(`🔌 [Factory: LLM] OpenAI native plugin, model=${model}`);
         const instance = new openai.LLM({ model });
         instance.setMaxListeners(0);
         return instance;
       }
-
-      case LlmProviderEnum.GEMINI: {
-        const model =
-          requestedModel ||
-          this.config.get<string>('LLM_MODEL', 'google/gemini-2.5-flash');
-        return this.viaInferenceGateway(model, 'google/');
-      }
-
-      case LlmProviderEnum.ANTHROPIC: {
-        const model =
-          requestedModel ||
-          this.config.get<string>('LLM_MODEL', 'anthropic/claude-3.5-sonnet');
-        return this.viaInferenceGateway(model, 'anthropic/');
-      }
-
-      case LlmProviderEnum.GROQ: {
-        const model =
-          requestedModel ||
-          this.config.get<string>(
-            'LLM_MODEL',
-            'groq/llama-3.1-70b-versatile',
-          );
-        return this.viaInferenceGateway(model, 'groq/');
-      }
-
+      case LlmProviderEnum.GEMINI:
+      case LlmProviderEnum.ANTHROPIC:
+      case LlmProviderEnum.GROQ:
+        // Model is already prefixed by resolveModel().
+        return this.viaInferenceGateway(model, '');
       default: {
         this.logger.warn(
           `⚠️ [Factory: LLM] Unknown provider "${provider}", falling back to OpenAI`,

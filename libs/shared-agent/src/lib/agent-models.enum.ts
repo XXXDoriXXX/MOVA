@@ -30,4 +30,8 @@ export enum TtsProviderEnum {
   /** Google Gemini TTS — multilingual, ~$10 per 1M chars, decent UA quality.
    *  Uses the same GEMINI_API_KEY as the LLM provider. */
   GEMINI = 'gemini',
+  /** Google Cloud Text-to-Speech (Wavenet / Standard / Neural2 voices).
+   *  Cheap and deterministic — primary recommendation for UA. Needs a
+   *  separate GOOGLE_TTS_API_KEY (Google Cloud Console, not AI Studio). */
+  GOOGLE = 'google',
 }

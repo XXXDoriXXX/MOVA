@@ -76,10 +76,19 @@ export const KNOWN_SETTINGS: KnownSetting[] = [
   },
   // ── TTS ──
   {
+    key: 'GOOGLE_TTS_API_KEY',
+    label: 'Google Cloud TTS',
+    group: 'TTS',
+    description:
+      'Cloud Console API key (NOT AI Studio). Powers uk-UA-Wavenet voices — primary cheap UA TTS.',
+    probe: 'live',
+    minLength: 20,
+  },
+  {
     key: 'ELEVENLABS_API_KEY',
     label: 'ElevenLabs',
     group: 'TTS',
-    description: 'Multilingual voice synthesis (eleven_multilingual_v2).',
+    description: 'Multilingual voice synthesis (eleven_multilingual_v2). Premium fallback.',
     probe: 'live',
     minLength: 20,
   },

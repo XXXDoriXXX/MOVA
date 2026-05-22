@@ -121,6 +121,11 @@ export const envSchema = z.object({
   GEMINI_TTS_VOICE: z.string().default('Kore'),
   GEMINI_TTS_MODEL: z.string().default('gemini-2.5-flash-tts'),
 
+  // ── Google Cloud TTS (primary cheap UA voice) ──────
+  GOOGLE_TTS_API_KEY: z.string().optional(),
+  GOOGLE_TTS_VOICE: z.string().default('uk-UA-Wavenet-A'),
+  GOOGLE_TTS_LANGUAGE_CODE: z.string().default('uk-UA'),
+
   // ── Error tracking (Sentry) ────────────────────────
   SENTRY_DSN: z.string().url().optional(),
   SENTRY_ENVIRONMENT: z.string().optional(),

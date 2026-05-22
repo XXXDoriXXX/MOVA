@@ -54,6 +54,8 @@ export class ProviderProbeService {
           return await this.probeAnthropic(value);
         case 'GEMINI_API_KEY':
           return await this.probeGemini(value);
+        case 'GOOGLE_TTS_API_KEY':
+          return await this.probeGoogleCloudTts(value);
         case 'DEEPGRAM_API_KEY':
           return await this.probeDeepgram(value);
         case 'ELEVENLABS_API_KEY':
@@ -95,6 +97,25 @@ export class ProviderProbeService {
     const res = await this.client.get(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,
     );
+    return this.interpret(res.status);
+  }
+
+  /** Cloud TTS uses a separate API endpoint + project from Gemini's
+   *  AI Studio key. We list voices (cheap, no synthesis billed) and
+   *  the 200/403 split tells us if Cloud TTS is enabled on the project
+   *  the key belongs to. */
+  private async probeGoogleCloudTts(key: string): Promise<ProbeResult> {
+    const res = await this.client.get(
+      `https://texttospeech.googleapis.com/v1/voices?key=${encodeURIComponent(key)}&languageCode=uk-UA`,
+    );
+    if (res.status === 403) {
+      return {
+        ok: false,
+        status: 403,
+        message:
+          'Ключ не має доступу до Cloud TTS — увімкни Cloud Text-to-Speech API на проєкті в Google Cloud Console.',
+      };
+    }
     return this.interpret(res.status);
   }
 

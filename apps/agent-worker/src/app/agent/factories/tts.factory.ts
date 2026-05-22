@@ -6,6 +6,8 @@ import * as elevenlabs from '@livekit/agents-plugin-elevenlabs';
 import * as google from '@livekit/agents-plugin-google';
 import { AgentConfigDto, TtsProviderEnum } from '@mova-back/shared-agent';
 
+import { GoogleCloudTts } from '../providers/google-cloud-tts';
+
 type OpenAITTSOptions = NonNullable<ConstructorParameters<typeof openai.TTS>[0]>;
 export type OpenAITTSVoice = OpenAITTSOptions['voice'];
 
@@ -44,7 +46,10 @@ export class TtsFactory {
   }
 
   resolve(agentConfig?: AgentConfigDto): ResolvedTts {
-    const providerStr = agentConfig?.tts?.provider || this.config.get<string>('TTS_PROVIDER', 'openai');
+    // Default is Google Cloud TTS Wavenet: cheap (\$16/1M chars), high-quality
+    // UA voices, deterministic (no LLM weirdness). ElevenLabs / OpenAI / Gemini
+    // remain available via per-template override or by switching TTS_PROVIDER.
+    const providerStr = agentConfig?.tts?.provider || this.config.get<string>('TTS_PROVIDER', 'google');
     const provider = providerStr.toLowerCase() as TtsProviderEnum;
 
     switch (provider) {
@@ -101,6 +106,37 @@ export class TtsFactory {
         });
         (instance as unknown as { setMaxListeners(n: number): void }).setMaxListeners(0);
         return { tts: instance, provider: 'gemini', voice };
+      }
+      case TtsProviderEnum.GOOGLE: {
+        // Google Cloud TTS — primary cheap UA voice. Voice id encodes
+        // language + tier + variant, e.g. "uk-UA-Wavenet-A" (female) /
+        // "uk-UA-Wavenet-B" (male). Standard tier ("uk-UA-Standard-A") is
+        // 4× cheaper still but sounds dated; Wavenet hits the price/
+        // quality sweet spot for proxy calls.
+        const voice =
+          agentConfig?.tts?.voice ||
+          this.config.get<string>('GOOGLE_TTS_VOICE', 'uk-UA-Wavenet-A');
+        const languageCode =
+          this.config.get<string>('GOOGLE_TTS_LANGUAGE_CODE', 'uk-UA');
+        const apiKey = this.config.get<string>('GOOGLE_TTS_API_KEY');
+        if (!apiKey) {
+          this.logger.warn(
+            `⚠️ [Factory: TTS] GOOGLE_TTS_API_KEY not set, falling back to OpenAI for this call.`,
+          );
+          const fallbackTts = new openai.TTS({ voice: 'fable' as OpenAITTSVoice, speed: 1.0 });
+          fallbackTts.setMaxListeners(0);
+          return { tts: fallbackTts, provider: 'openai', voice: 'fable' };
+        }
+        this.logger.debug(
+          `🔌 [Factory: TTS] Google Cloud TTS, voice=${voice}, lang=${languageCode}`,
+        );
+        const instance = new GoogleCloudTts({
+          apiKey,
+          languageCode,
+          voiceName: voice,
+        });
+        (instance as unknown as { setMaxListeners(n: number): void }).setMaxListeners(0);
+        return { tts: instance, provider: 'google', voice };
       }
       default: {
         this.logger.warn(`⚠️ [Factory: TTS] Unknown provider "${provider}", falling back to OpenAI`);

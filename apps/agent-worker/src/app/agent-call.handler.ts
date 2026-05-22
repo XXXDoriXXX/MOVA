@@ -215,6 +215,38 @@ export class AgentCallHandler {
           },
         });
       }
+      // Broadcast the active call config so the mobile UI can show
+      // "now using GPT-4o + ElevenLabs (Rachel)" at-a-glance. Emitted as
+      // three separate \`call.config.changed\` events because the existing
+      // event shape carries one providerType at a time; mobile's reducer
+      // updates the right slot per event. styleId rides on the LLM event
+      // (the agent-context already resolved it; the suggestion service
+      // will read the same value on its first turn).
+      this.emitTyped({
+        type: 'call.config.changed',
+        data: {
+          providerType: 'llm',
+          provider: sessionResult.llmProvenance.effectiveProvider,
+          model: sessionResult.llmProvenance.effectiveModel ?? undefined,
+          styleId: this.userContext.activeStyleId,
+        },
+      });
+      this.emitTyped({
+        type: 'call.config.changed',
+        data: {
+          providerType: 'stt',
+          provider: sessionResult.sttProvenance.provider,
+          model: sessionResult.sttProvenance.model,
+        },
+      });
+      this.emitTyped({
+        type: 'call.config.changed',
+        data: {
+          providerType: 'tts',
+          provider: sessionResult.ttsProvenance.provider,
+          voice: sessionResult.ttsProvenance.voice,
+        },
+      });
       const agent = this.agentFactory.createAgent(this.userContext);
 
       this.bindSessionEvents(this.session);

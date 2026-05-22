@@ -193,3 +193,17 @@ export interface ProviderIncident {
 export function listIncidents(): Promise<{ items: ProviderIncident[] }> {
   return request<{ items: ProviderIncident[] }>(`/admin/incidents`);
 }
+
+export interface ProviderHealthRow {
+  providerType: string;
+  providerName: string;
+  status: 'healthy' | 'degraded' | 'down';
+  openIncidents: number;
+  lastErrorCode: string | null;
+  lastOccurredAt: string;
+  lastRecoveredAt: string | null;
+}
+
+export function getProvidersHealth(): Promise<{ items: ProviderHealthRow[] }> {
+  return request<{ items: ProviderHealthRow[] }>(`/admin/providers/health`);
+}

@@ -582,6 +582,77 @@ export class AdminService {
     return qb.getMany();
   }
 
+  /**
+   * Aggregate per-provider health view. The agent-worker's in-process
+   * registry holds the live score, but admin runs in api-gateway so it
+   * doesn't have direct access. Instead we derive the picture from the
+   * persisted incident log:
+   *
+   *   - any open incident (recoveredAt is null) → status: "down"
+   *   - any recovered incident within the last hour → "degraded"
+   *   - otherwise → "healthy"
+   *
+   * Returns one row per (providerType, providerName) tuple ever seen.
+   * Providers that never produced an incident don't appear here — they
+   * are healthy by definition.
+   */
+  async providersHealth(): Promise<
+    Array<{
+      providerType: string;
+      providerName: string;
+      status: 'healthy' | 'degraded' | 'down';
+      openIncidents: number;
+      lastErrorCode: string | null;
+      lastOccurredAt: string;
+      lastRecoveredAt: string | null;
+    }>
+  > {
+    // Pull the most recent 200 incidents — enough to cover every provider
+    // we touched in the recent past without blowing memory.
+    const rows = await this.incidents
+      .createQueryBuilder('i')
+      .orderBy('i."occurredAt"', 'DESC')
+      .limit(200)
+      .getMany();
+    const RECENT_WINDOW_MS = 60 * 60 * 1000;
+    const now = Date.now();
+    const byKey = new Map<
+      string,
+      ReturnType<AdminService['providersHealth']> extends Promise<Array<infer T>>
+        ? T
+        : never
+    >();
+    for (const row of rows) {
+      const key = `${row.providerType}:${row.providerName}`;
+      let entry = byKey.get(key);
+      if (!entry) {
+        entry = {
+          providerType: row.providerType,
+          providerName: row.providerName,
+          status: 'healthy',
+          openIncidents: 0,
+          lastErrorCode: row.errorCode,
+          lastOccurredAt: row.occurredAt.toISOString(),
+          lastRecoveredAt: row.recoveredAt
+            ? row.recoveredAt.toISOString()
+            : null,
+        };
+        byKey.set(key, entry);
+      }
+      const isOpen = row.recoveredAt === null;
+      if (isOpen) {
+        entry.openIncidents += 1;
+        entry.status = 'down';
+      } else if (
+        entry.status !== 'down' &&
+        now - row.recoveredAt!.getTime() < RECENT_WINDOW_MS
+      ) {
+        entry.status = 'degraded';
+      }
+    }
+    return [...byKey.values()];
+  }
+
   // ── helpers ─────────────────────────────────────────
 
   private toSummary(user: User): AdminUserSummary {

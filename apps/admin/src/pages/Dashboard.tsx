@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import {
+  getProvidersHealth,
   getStats,
   listConversations,
   type AdminConversation,
   type AdminStats,
+  type ProviderHealthRow,
 } from '../api';
 import { ConversationRow } from '../components/ConversationRow';
 
@@ -23,19 +25,22 @@ const REFRESH_MS = 3_000;
 export function DashboardPage() {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [active, setActive] = useState<AdminConversation[]>([]);
+  const [providers, setProviders] = useState<ProviderHealthRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     async function tick() {
       try {
-        const [s, a] = await Promise.all([
+        const [s, a, p] = await Promise.all([
           getStats(),
           listConversations({ status: 'active', limit: 20 }),
+          getProvidersHealth(),
         ]);
         if (!cancelled) {
           setStats(s);
           setActive(a.items);
+          setProviders(p.items);
           setErr(null);
         }
       } catch (e) {
@@ -66,6 +71,38 @@ export function DashboardPage() {
         <Tile label="Інцидентів" value={stats?.openIncidents ?? '—'} />
         <Tile label="Користувачів" value={stats?.totalUsers ?? '—'} />
         <Tile label="Заблоковано" value={stats?.blockedUsers ?? '—'} kind={(stats?.blockedUsers ?? 0) > 0 ? 'inverse' : undefined} />
+      </div>
+
+      <div className="card">
+        <h3>Стан провайдерів</h3>
+        {providers.length === 0 ? (
+          <div className="empty">
+            Жодного інциденту ще не зафіксовано. Усі провайдери вважаються
+            здоровими — буде запис тут, коли щось почне відвалюватись.
+          </div>
+        ) : (
+          <div className="provider-grid">
+            {providers.map((p) => (
+              <div key={`${p.providerType}:${p.providerName}`} className="provider-row">
+                <span className={`provider-dot ${p.status}`} />
+                <div className="provider-meta">
+                  <div className="provider-name">
+                    {p.providerName}
+                    <span className="provider-type"> · {p.providerType}</span>
+                  </div>
+                  <div className="provider-sub">
+                    {p.status === 'down'
+                      ? `${p.openIncidents} відкритих інцидент(ів)`
+                      : p.status === 'degraded'
+                      ? `відновився, лишилось спостерігати`
+                      : 'у порядку'}
+                    {p.lastErrorCode ? ` · ${p.lastErrorCode}` : ''}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="card">

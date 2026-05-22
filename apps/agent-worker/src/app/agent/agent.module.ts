@@ -6,6 +6,7 @@ import { SttFactory } from './factories/stt.factory';
 import { LlmFactory } from './factories/llm.factory';
 import { TtsFactory } from './factories/tts.factory';
 import { envSchema } from '@mova-back/shared-config';
+import { ProvidersModule } from '../providers/providers.module';
 
 @Module({
   imports: [
@@ -20,6 +21,9 @@ import { envSchema } from '@mova-back/shared-config';
       },
     }),
     SharedRedisModule,
+    // LlmFactory consults ProviderRegistry's health snapshot to skip
+    // dead providers and silently fall back to a healthy one.
+    ProvidersModule,
   ],
   providers: [AgentFactory, SttFactory, LlmFactory, TtsFactory],
   exports: [AgentFactory, SharedRedisModule, ConfigModule],

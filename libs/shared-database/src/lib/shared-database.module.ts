@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
+import { AppSetting } from './entities/app-setting.entity';
 import { AuditLog } from './entities/audit-log.entity';
 import { ConversationStyle } from './entities/conversation-style.entity';
 import { UserStyleProfile } from './entities/user-style-profile.entity';
@@ -31,6 +32,7 @@ const ENTITIES = [
   Suggestion,
   ProviderIncident,
   AuditLog,
+  AppSetting,
   UserStyleProfile,
   ConversationStyle,
 ];

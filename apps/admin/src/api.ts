@@ -208,3 +208,53 @@ export interface ProviderHealthRow {
 export function getProvidersHealth(): Promise<{ items: ProviderHealthRow[] }> {
   return request<{ items: ProviderHealthRow[] }>(`/admin/providers/health`);
 }
+
+// ── Admin-managed settings (env overlay) ────────────────────────────
+
+export interface SettingRow {
+  key: string;
+  label: string;
+  group: 'LLM' | 'STT' | 'TTS' | 'LiveKit' | 'Other';
+  description: string;
+  /** "••••abcd" or null when no override exists yet. */
+  masked: string | null;
+  source: 'db' | 'env' | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+export interface SettingProbeResult {
+  ok: boolean;
+  status?: number;
+  message: string;
+}
+
+export function listSettings(): Promise<{ items: SettingRow[] }> {
+  return request<{ items: SettingRow[] }>('/admin/settings');
+}
+
+export function setSetting(
+  key: string,
+  value: string,
+): Promise<{ masked: string; probe: SettingProbeResult }> {
+  return request(`/admin/settings/${encodeURIComponent(key)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ value }),
+  });
+}
+
+export function testSetting(
+  key: string,
+  value: string,
+): Promise<SettingProbeResult> {
+  return request(`/admin/settings/${encodeURIComponent(key)}/test`, {
+    method: 'POST',
+    body: JSON.stringify({ value }),
+  });
+}
+
+export function clearSetting(key: string): Promise<void> {
+  return request(`/admin/settings/${encodeURIComponent(key)}`, {
+    method: 'DELETE',
+  });
+}

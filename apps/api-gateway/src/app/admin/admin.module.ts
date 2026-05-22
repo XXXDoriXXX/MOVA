@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import {
+  AppSetting,
   AuditLog,
   Conversation,
   Message,
@@ -16,6 +17,8 @@ import { AdminAccessGuard } from './admin-access.guard';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { AuditLogService } from './audit-log.service';
+import { ProviderProbeService } from './settings/provider-probe.service';
+import { SettingsService } from './settings/settings.service';
 
 /**
  * Admin module. Imports AuthModule for RefreshTokenService (block flow
@@ -34,12 +37,19 @@ import { AuditLogService } from './audit-log.service';
       Message,
       ProviderIncident,
       AuditLog,
+      AppSetting,
     ]),
     AuthModule,
     ConversationsModule,
   ],
   controllers: [AdminController],
-  providers: [AdminService, AuditLogService, AdminAccessGuard],
-  exports: [AuditLogService],
+  providers: [
+    AdminService,
+    AuditLogService,
+    AdminAccessGuard,
+    SettingsService,
+    ProviderProbeService,
+  ],
+  exports: [AuditLogService, SettingsService],
 })
 export class AdminModule {}

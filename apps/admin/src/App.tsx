@@ -8,6 +8,7 @@ import { ConversationsPage } from './pages/Conversations';
 import { ConversationDetailPage } from './pages/ConversationDetail';
 import { UsersPage } from './pages/Users';
 import { IncidentsPage } from './pages/Incidents';
+import { SettingsPage } from './pages/Settings';
 
 /**
  * App root. Handles three states:
@@ -73,6 +74,7 @@ function AuthedLayout({
         <NavLink to="/calls">Дзвінки</NavLink>
         <NavLink to="/users">Користувачі</NavLink>
         <NavLink to="/incidents">Інциденти</NavLink>
+        <NavLink to="/settings">Ключі</NavLink>
         <div className="spacer" />
         <div style={{ fontSize: 12, color: 'var(--mute)', padding: '8px 14px' }}>
           {user.email}
@@ -89,6 +91,7 @@ function AuthedLayout({
           <Route path="/calls/:id" element={<ConversationDetailPage />} />
           <Route path="/users" element={<UsersPage />} />
           <Route path="/incidents" element={<IncidentsPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </main>

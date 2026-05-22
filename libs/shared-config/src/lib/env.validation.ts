@@ -108,6 +108,12 @@ export const envSchema = z.object({
   LAKERA_FAIL_OPEN: envBool(true),
   LAKERA_TIMEOUT_MS: z.coerce.number().int().positive().default(1500),
 
+  // ── Admin-managed settings overlay (encrypted in app_setting table) ──
+  // Mandatory for the admin panel's "Keys" page to function. ≥16 chars so
+  // SecretCrypto can fold it into an AES-256 key without padding shenanigans.
+  // Generate once with `openssl rand -base64 32` and paste into .env.
+  SETTINGS_ENCRYPTION_KEY: z.string().min(16).optional(),
+
   // ── Error tracking (Sentry) ────────────────────────
   SENTRY_DSN: z.string().url().optional(),
   SENTRY_ENVIRONMENT: z.string().optional(),

@@ -3,6 +3,7 @@ import * as path from 'path';
 import { config as loadDotenv } from 'dotenv';
 import { DataSource } from 'typeorm';
 
+import { AppSetting } from './lib/entities/app-setting.entity';
 import { AuditLog } from './lib/entities/audit-log.entity';
 import { ConversationStyle } from './lib/entities/conversation-style.entity';
 import { UserStyleProfile } from './lib/entities/user-style-profile.entity';
@@ -55,6 +56,7 @@ export const AppDataSource = new DataSource({
     Suggestion,
     ProviderIncident,
     AuditLog,
+    AppSetting,
     UserStyleProfile,
     ConversationStyle,
   ],

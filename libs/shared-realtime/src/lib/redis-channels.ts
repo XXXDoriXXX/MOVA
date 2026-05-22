@@ -23,6 +23,11 @@ export const RedisChannels = {
 
   /** agent-worker → realtime-service: heartbeat (5s interval) */
   heartbeat: (conversationId: string) => `heartbeat:${conversationId}`,
+
+  /** api-gateway → all services: an app_setting row was created/updated/
+   *  deleted. Payload is JSON `{ key, action: 'upsert'|'delete' }`.
+   *  Subscribers re-read the row from DB and mutate their `process.env`. */
+  settingsUpdated: 'settings-updated',
 } as const;
 
 export const RedisKeys = {

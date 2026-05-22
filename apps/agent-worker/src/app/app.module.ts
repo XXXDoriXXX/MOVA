@@ -6,10 +6,12 @@ import { SentryGlobalFilter, SentryModule } from '@sentry/nestjs/setup';
 import { LoggerModule } from 'nestjs-pino';
 
 import { SharedConfigModule, type AppEnv } from '@mova-back/shared-config';
-import { SharedDatabaseModule } from '@mova-back/shared-database';
+import { AppSetting, SharedDatabaseModule } from '@mova-back/shared-database';
 import { SharedRedisModule } from '@mova-back/shared-redis';
+import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AgentRunnerService } from './agent-runner.service';
+import { SettingsSyncService } from './settings-sync.service';
 import { AgentModule } from './agent/agent.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -52,6 +54,7 @@ import { SuggestionsModule } from './suggestions/suggestions.module';
     SharedRedisModule,
 
     SharedDatabaseModule,
+    TypeOrmModule.forFeature([AppSetting]),
 
     EventEmitterModule.forRoot({ wildcard: false }),
 
@@ -63,6 +66,11 @@ import { SuggestionsModule } from './suggestions/suggestions.module';
     SuggestionsModule,
   ],
   controllers: [AppController],
-  providers: [AppService, AgentRunnerService, { provide: APP_FILTER, useClass: SentryGlobalFilter }],
+  providers: [
+    AppService,
+    AgentRunnerService,
+    SettingsSyncService,
+    { provide: APP_FILTER, useClass: SentryGlobalFilter },
+  ],
 })
 export class AppModule {}

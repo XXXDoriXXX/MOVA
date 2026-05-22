@@ -28,47 +28,47 @@ export function IncidentsPage() {
         </div>
       ) : (
         <div className="list">
-          {items.map((i) => (
-            <div key={i.id} className="row">
-              <div
-                className="dot"
-                style={{
-                  background:
-                    i.severity === 'critical'
-                      ? 'var(--danger)'
-                      : i.severity === 'high'
-                        ? 'var(--warning)'
-                        : 'var(--mute)',
-                }}
-              />
-              <div className="meta">
-                <div className="top">
-                  {i.providerId} · {i.category}
+          {items.map((i) => {
+            const isOpen = i.recoveredAt === null;
+            return (
+              <div key={i.id} className="row">
+                <div
+                  className="dot"
+                  style={{
+                    background: isOpen ? 'var(--danger)' : 'var(--mute)',
+                  }}
+                />
+                <div className="meta">
+                  <div className="top">
+                    {i.providerName} · {i.providerType}
+                  </div>
+                  <div className="bottom">
+                    {i.errorCode}
+                    {i.errorMessage ? ` — ${i.errorMessage}` : ''}
+                  </div>
                 </div>
-                <div className="bottom">{i.message}</div>
-              </div>
-              <span className="duration">
-                {new Date(i.detectedAt).toLocaleString('uk-UA', {
-                  day: '2-digit',
-                  month: '2-digit',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-              </span>
-              <span
-                className="badge"
-                style={{
-                  background:
-                    i.status === 'open'
+                <span className="duration">
+                  {new Date(i.occurredAt).toLocaleString('uk-UA', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </span>
+                <span
+                  className="badge"
+                  style={{
+                    background: isOpen
                       ? 'rgba(229,72,61,0.12)'
                       : 'var(--surface-muted)',
-                  color: i.status === 'open' ? 'var(--danger)' : 'var(--ink)',
-                }}
-              >
-                {i.status}
-              </span>
-            </div>
-          ))}
+                    color: isOpen ? 'var(--danger)' : 'var(--ink)',
+                  }}
+                >
+                  {isOpen ? 'open' : 'recovered'}
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
     </>

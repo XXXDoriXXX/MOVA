@@ -181,13 +181,14 @@ export function unblockUser(id: string): Promise<void> {
 
 export interface ProviderIncident {
   id: string;
-  providerId: string;
-  category: string;
-  severity: string;
-  status: string;
-  detectedAt: string;
-  resolvedAt: string | null;
-  message: string;
+  /** "stt" | "llm" | "tts" — matches the backend enum. */
+  providerType: string;
+  providerName: string;
+  errorCode: string;
+  errorMessage: string;
+  conversationId: string | null;
+  occurredAt: string;
+  recoveredAt: string | null;
 }
 
 export function listIncidents(): Promise<{ items: ProviderIncident[] }> {

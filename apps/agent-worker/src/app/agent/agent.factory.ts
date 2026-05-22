@@ -51,29 +51,50 @@ export class AgentFactory {
     });
   }
 
-  async createSession(vad: silero.VAD, context: AgentContext) {
+  async createSession(
+    vad: silero.VAD,
+    context: AgentContext,
+  ): Promise<{
+    session: voice.AgentSession;
+    /** Provenance for the LLM the session ended up using. Caller emits a
+     *  `provider.failure` (recoverable) event if `viaFallback === true`
+     *  so mobile can show a degraded banner from turn 1. */
+    llmProvenance: {
+      effectiveProvider: string;
+      requestedProvider: string;
+      viaFallback: boolean;
+    };
+  }> {
     const stt = this.sttFactory.create(context.config);
-    const llm = this.llmFactory.create(context.config);
+    const resolved = this.llmFactory.resolve(context.config);
     const tts = this.ttsFactory.create(context.config);
 
     stt.on('error', this.createErrorHandler('STT'));
-    llm.on('error', this.createErrorHandler('LLM'));
+    resolved.llm.on('error', this.createErrorHandler('LLM'));
     tts.on('error', this.createErrorHandler('TTS'));
 
     const minEndpointingDelay = context.config?.tts?.minEndpointingDelay ?? 500;
     const maxEndpointingDelay = context.config?.tts?.maxEndpointingDelay ?? 1500;
 
-    return new voice.AgentSession({
-      stt: stt,
-      llm: llm,
-      tts: tts,
-      vad: vad,
+    const session = new voice.AgentSession({
+      stt,
+      llm: resolved.llm,
+      tts,
+      vad,
       voiceOptions: {
         allowInterruptions: true,
         minEndpointingDelay,
         maxEndpointingDelay,
       },
     });
+    return {
+      session,
+      llmProvenance: {
+        effectiveProvider: resolved.effectiveProvider,
+        requestedProvider: resolved.requestedProvider,
+        viaFallback: resolved.viaFallback,
+      },
+    };
   }
 
   private createErrorHandler(moduleName: string) {

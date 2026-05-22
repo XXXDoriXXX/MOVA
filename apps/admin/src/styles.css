@@ -181,6 +181,26 @@ input, textarea { font: inherit; }
   50% { opacity: 0.3; }
 }
 
+/* Provider health grid (Dashboard) */
+.provider-grid { display: flex; flex-direction: column; gap: 10px; }
+.provider-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius-xl);
+}
+.provider-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--mute);
+}
+.provider-dot.healthy { background: var(--accent); }
+.provider-dot.degraded { background: #C77700; }
+.provider-dot.down { background: var(--danger); animation: pulse 1.4s ease-in-out infinite; }
+.provider-meta { display: flex; flex-direction: column; gap: 2px; }
+.provider-name { font-weight: 600; font-size: 14px; }
+.provider-type { color: var(--mute); font-weight: 400; font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; }
+.provider-sub { color: var(--mute); font-size: 12px; }
+
 /* Detail page */
 .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .bubble {

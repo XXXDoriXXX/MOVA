@@ -4,6 +4,26 @@ import { llm, inference } from '@livekit/agents';
 import * as openai from '@livekit/agents-plugin-openai';
 import { AgentConfigDto, LlmProviderEnum } from '@mova-back/shared-agent';
 
+import { ProviderRegistry } from '../../providers/provider-registry.service';
+
+/**
+ * Result of resolving the in-call LLM. Includes provenance so the caller
+ * can emit a `provider.failure` (recoverable) event when the user's
+ * requested provider was unhealthy and we transparently substituted a
+ * healthier one — the mobile UI can then show a "degraded mode" banner
+ * from the very first turn instead of leaving the user wondering why
+ * their picked model isn't being used.
+ */
+export interface ResolvedLlm {
+  llm: llm.LLM;
+  /** Provider id we ended up using (after health-based selection). */
+  effectiveProvider: LlmProviderEnum;
+  /** Provider id requested by the caller (template / per-call config / env). */
+  requestedProvider: LlmProviderEnum;
+  /** True when registry redirected us away from the requested provider. */
+  viaFallback: boolean;
+}
+
 /**
  * LLM provider selection for the live-call agent.
  *
@@ -32,15 +52,88 @@ import { AgentConfigDto, LlmProviderEnum } from '@mova-back/shared-agent';
 export class LlmFactory {
   private readonly logger = new Logger(LlmFactory.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly registry: ProviderRegistry,
+  ) {}
 
+  /**
+   * Resolve and instantiate the in-call LLM, routing through the registry's
+   * health snapshot. Flow:
+   *   1. Compute the *requested* provider from config / env / hardcoded
+   *      default (the same precedence as before).
+   *   2. Ask the registry for the actual provider to use given that
+   *      preference. Registry returns the requested one if healthy,
+   *      otherwise the next best in the fallback order.
+   *   3. Instantiate the LiveKit plugin for the effective provider. If
+   *      the user requested a specific model AND we ended up on the
+   *      same provider, honour it; otherwise use that provider's default
+   *      so we don't try `claude-3-sonnet` on the OpenAI plugin.
+   *
+   * `create()` retained for callers that don't care about provenance.
+   */
   create(agentConfig?: AgentConfigDto): llm.LLM {
+    return this.resolve(agentConfig).llm;
+  }
+
+  resolve(agentConfig?: AgentConfigDto): ResolvedLlm {
+    const requestedProvider = this.requestedProviderFrom(agentConfig);
+    const selection = this.safeSelect(requestedProvider);
+    const effectiveProvider = selection.id;
+    const viaFallback = effectiveProvider !== requestedProvider;
+    if (viaFallback) {
+      this.logger.warn(
+        `[Factory: LLM] Requested ${requestedProvider} is unhealthy ` +
+          `(score=${selection.requestedScore}) — falling back to ${effectiveProvider}.`,
+      );
+    }
+    // Honour user's model only when we stayed on the user's provider.
+    // Cross-provider model strings are nonsense (e.g. "gpt-4o" on Anthropic).
+    const requestedModel = viaFallback ? undefined : agentConfig?.llm?.model;
+    const llm = this.buildPluginFor(effectiveProvider, requestedModel);
+    return { llm, effectiveProvider, requestedProvider, viaFallback };
+  }
+
+  private requestedProviderFrom(agentConfig?: AgentConfigDto): LlmProviderEnum {
     const providerStr =
       agentConfig?.llm?.provider ||
       this.config.get<string>('LLM_PROVIDER', 'openai');
     const provider = providerStr.toLowerCase() as LlmProviderEnum;
-    const requestedModel = agentConfig?.llm?.model;
+    // Unknown enum value → coerce to OpenAI (hard default). buildPluginFor
+    // will also defend, but normalising here keeps logging readable.
+    if (!Object.values(LlmProviderEnum).includes(provider)) {
+      return LlmProviderEnum.OPENAI;
+    }
+    return provider;
+  }
 
+  /** Wrap registry.selectLlm so a missing/empty registry doesn't crash the
+   *  call — we just degrade to "use the requested provider as-is". */
+  private safeSelect(prefer: LlmProviderEnum): {
+    id: LlmProviderEnum;
+    requestedScore?: number;
+  } {
+    try {
+      const snapshot = this.registry.getHealthSnapshot();
+      const { provider } = this.registry.selectLlm(prefer);
+      return {
+        id: provider.id as LlmProviderEnum,
+        requestedScore: snapshot[prefer]?.score,
+      };
+    } catch (err) {
+      this.logger.warn(
+        `[Factory: LLM] selectLlm failed (${
+          err instanceof Error ? err.message : String(err)
+        }); using requested provider as-is.`,
+      );
+      return { id: prefer };
+    }
+  }
+
+  private buildPluginFor(
+    provider: LlmProviderEnum,
+    requestedModel: string | undefined,
+  ): llm.LLM {
     switch (provider) {
       case LlmProviderEnum.OPENAI: {
         const model =

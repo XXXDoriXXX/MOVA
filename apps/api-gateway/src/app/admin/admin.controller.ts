@@ -252,6 +252,15 @@ export class AdminController {
     return this.admin.getStats();
   }
 
+  @Get('providers/health')
+  @ApiOperation({
+    summary:
+      'Per-provider health rollup (status derived from open incidents + recent recoveries)',
+  })
+  providersHealth() {
+    return this.admin.providersHealth().then((items) => ({ items }));
+  }
+
   @Get('incidents')
   @ApiOperation({
     summary: 'Provider incidents (active first, then recent by occurrence)',

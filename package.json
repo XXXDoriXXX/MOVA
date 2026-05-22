@@ -56,6 +56,7 @@
     "@livekit/agents": "^1.0.44",
     "@livekit/agents-plugin-deepgram": "^1.0.44",
     "@livekit/agents-plugin-elevenlabs": "^1.0.44",
+    "@livekit/agents-plugin-google": "^1.4.4",
     "@livekit/agents-plugin-openai": "^1.0.44",
     "@livekit/agents-plugin-silero": "^1.0.44",
     "@livekit/rtc-node": "^0.13.28",

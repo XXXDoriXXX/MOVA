@@ -2,6 +2,9 @@
   "name": "@mova-back/source",
   "version": "0.0.0",
   "license": "MIT",
+  "workspaces": [
+    "apps/admin"
+  ],
   "scripts": {
     "migration:build": "npx nx build shared-database",
     "migration:generate": "npm run migration:build && typeorm migration:generate -d dist/libs/shared-database/src/data-source.js",

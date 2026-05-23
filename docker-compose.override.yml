@@ -38,7 +38,7 @@ services:
   # host-side `npm run migration:*` scripts.
   # ──────────────────────────────────────────────────────────────────────────
   migrations:
-    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; npx nx build shared-database && npx typeorm migration:run -d dist/libs/shared-database/src/data-source.js"]
+    command: ["sh", "-c", "sh /app/tools/dev-bootstrap.sh && npx nx build shared-database && npx typeorm migration:run -d dist/libs/shared-database/src/data-source.js"]
     volumes:
       - .:/app
       - /app/node_modules
@@ -51,7 +51,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: base
-    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; rm -rf /app/.nx/workspace-data 2>/dev/null || true; exec npx nx serve api-gateway --host 0.0.0.0 --skip-nx-cache"]
+    command: ["sh", "-c", "sh /app/tools/dev-bootstrap.sh && exec npx nx serve api-gateway --host 0.0.0.0 --skip-nx-cache"]
     volumes:
       - .:/app
       - /app/node_modules # anonymous — keep container's npm ci output
@@ -70,7 +70,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: base
-    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; rm -rf /app/.nx/workspace-data 2>/dev/null || true; exec npx nx serve realtime-service --host 0.0.0.0 --skip-nx-cache"]
+    command: ["sh", "-c", "sh /app/tools/dev-bootstrap.sh && exec npx nx serve realtime-service --host 0.0.0.0 --skip-nx-cache"]
     volumes:
       - .:/app
       - /app/node_modules
@@ -99,7 +99,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: base
-    command: ["sh", "-c", "test -d /app/node_modules/typeorm || { echo '⚠️  node_modules missing in volume — installing now (3-5 min, first run only)'; npm ci --legacy-peer-deps; }; rm -rf /app/.nx/workspace-data 2>/dev/null || true; exec npx nx serve agent-worker --host 0.0.0.0 --skip-nx-cache"]
+    command: ["sh", "-c", "sh /app/tools/dev-bootstrap.sh && exec npx nx serve agent-worker --host 0.0.0.0 --skip-nx-cache"]
     dns: []
     volumes:
       - .:/app

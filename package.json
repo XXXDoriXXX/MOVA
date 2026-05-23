@@ -11,7 +11,7 @@
     "migration:run": "npm run migration:build && typeorm migration:run -d dist/libs/shared-database/src/data-source.js",
     "migration:revert": "npm run migration:build && typeorm migration:revert -d dist/libs/shared-database/src/data-source.js",
     "migration:show": "npm run migration:build && typeorm migration:show -d dist/libs/shared-database/src/data-source.js",
-    "docker:doctor": "sh tools/docker-doctor.sh",
+    "docker:doctor": "node tools/docker-doctor.js",
     "docker:up": "docker compose up -d --build",
     "docker:up:prod": "docker compose -f docker-compose.yml up -d --build",
     "docker:down": "docker compose down",

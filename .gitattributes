@@ -1,0 +1,59 @@
+# Line-ending normalisation. Without this, Git on Windows (with the
+# default `core.autocrlf=true`) silently converts LF → CRLF on
+# checkout. That's fine for files that only ever run on Windows, but
+# everything in this repo is shipped into Linux containers — and
+# Linux `sh` chokes on \r in shell scripts with errors like
+# "set: Illegal option -" or "command not found" on a line that
+# looks perfectly normal in the editor.
+#
+# After changing this file, contributors with already-checked-out
+# trees need to re-normalise:
+#
+#   git add --renormalize .
+#   git status      # shows what got LF-fixed
+#   git commit -m "Normalise line endings"
+#
+# (Or on Windows, `git rm --cached -r .` followed by
+# `git reset --hard` does the same thing.)
+
+# Default: let Git auto-detect text vs binary, but always store +
+# check out with LF — even on Windows. Cross-platform projects with
+# a Linux deploy target want this set.
+* text=auto eol=lf
+
+# Explicit overrides for files that MUST be LF even if auto-detect
+# guesses wrong. These run inside containers / CI runners:
+*.sh         text eol=lf
+*.bash       text eol=lf
+Dockerfile   text eol=lf
+Dockerfile.* text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.json       text eol=lf
+*.js         text eol=lf
+*.cjs        text eol=lf
+*.mjs        text eol=lf
+*.ts         text eol=lf
+*.tsx        text eol=lf
+*.env*       text eol=lf
+
+# Files that are allowed to keep CRLF on Windows checkouts (rare,
+# but listed to be explicit). None currently — placeholder.
+
+# Binary files: never normalise, never diff line by line.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.pdf   binary
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
+*.mp3   binary
+*.mp4   binary
+*.zip   binary
+*.tar   binary
+*.gz    binary

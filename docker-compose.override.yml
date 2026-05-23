@@ -38,7 +38,16 @@ services:
   # host-side `npm run migration:*` scripts.
   # ──────────────────────────────────────────────────────────────────────────
   migrations:
-    command: ["sh", "-c", "sh /app/tools/dev-bootstrap.sh && npx nx build shared-database && npx typeorm migration:run -d dist/libs/shared-database/src/data-source.js"]
+    # Long shell command: bootstrap deps → build shared-database → run
+    # migrations. We trap a failure and emit a one-line "what to check"
+    # so an exit 2 from this container is actionable in the parent
+    # `docker compose up` output (it bubbles up via depends_on).
+    command:
+      [
+        "sh",
+        "-c",
+        "set -e; sh /app/tools/dev-bootstrap.sh; npx nx build shared-database; if ! npx typeorm migration:run -d dist/libs/shared-database/src/data-source.js; then echo ''; echo '✗ Migrations failed. Common causes:'; echo '  · Postgres unreachable → check `docker compose logs postgres`'; echo '  · DATABASE_URL wrong → grep ^DATABASE_URL .env'; echo '  · Schema corruption → `npm run docker:nuke` (destroys data!) then retry'; exit 2; fi",
+      ]
     volumes:
       - .:/app
       - /app/node_modules

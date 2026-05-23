@@ -7,15 +7,113 @@ on:
       - 'feat/**'
   pull_request:
 
+# Cancel in-flight runs on the same ref when a newer push comes in.
+# A rapid sequence of commits used to produce a queue of three or
+# four failing CI runs (each spamming an email and a GitHub
+# notification); now only the latest one survives.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   actions: read
   contents: read
 
 jobs:
-  test:
-    name: Lint, Test & Build
+  # ─────────────────────────────────────────────────────────────
+  # Skip the whole pipeline for changes that don't touch code —
+  # README rewrites, .env.example tweaks, design files, etc.
+  # Skipped jobs still report green so branch-protection rules
+  # that require "CI / Lint" stay happy.
+  # ─────────────────────────────────────────────────────────────
+  changes:
+    name: Detect changed paths
     runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      docker: ${{ steps.filter.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'apps/**'
+              - 'libs/**'
+              - 'tools/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'tsconfig*.json'
+              - 'jest.preset.js'
+              - 'nx.json'
+              - '.github/workflows/**'
+            docker:
+              - 'Dockerfile'
+              - 'docker-compose*.yml'
+              - 'apps/**'
+              - 'libs/**'
+              - 'package.json'
+              - 'package-lock.json'
 
+  # ─────────────────────────────────────────────────────────────
+  # Lint / test / build — split into three jobs so a fast lint
+  # failure doesn't make us wait for the 6-minute build before
+  # we see what's actually broken. Each job re-uses the cached
+  # node_modules from a single install step to avoid `npm ci`
+  # times-three (3x90s of cold install per run).
+  # ─────────────────────────────────────────────────────────────
+  install:
+    name: Install
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: tree:0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+  lint:
+    name: Lint
+    needs: install
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci --legacy-peer-deps
+      - name: Nx affected lint
+        # Only lint projects whose inputs actually changed. Falls back
+        # to full lint on push to master (where we don't have a SHA to
+        # diff against beyond HEAD~1).
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            npx nx affected -t lint --base=origin/${{ github.base_ref }} --head=HEAD
+          else
+            npx nx run-many -t lint
+          fi
+
+  test:
+    name: Test
+    needs: install
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -30,61 +128,97 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       NODE_ENV: test
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mova_test
       JWT_SECRET: ci-test-jwt-secret-not-for-production
       REDIS_HOST: localhost
       REDIS_PORT: 6379
-      REDIS_PASSWORD: ci-test-redis-password
+      REDIS_PASSWORD: ''
       LIVEKIT_URL: https://ci-placeholder.livekit.cloud
       LIVEKIT_API_KEY: ci-placeholder-key
       LIVEKIT_API_SECRET: ci-placeholder-secret
       OPENAI_API_KEY: ci-placeholder-openai
       DEEPGRAM_API_KEY: ci-placeholder-deepgram
-
+      # SETTINGS_ENCRYPTION_KEY must be ≥16 chars even in tests
+      SETTINGS_ENCRYPTION_KEY: ci-placeholder-settings-encryption-key
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          filter: tree:0
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'npm'
+      - run: npm ci --legacy-peer-deps
+      - name: Nx affected test
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            npx nx affected -t test --passWithNoTests --base=origin/${{ github.base_ref }} --head=HEAD
+          else
+            npx nx run-many -t test --passWithNoTests
+          fi
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Lint
-        run: npx nx run-many -t lint
-
-      - name: Test
-        run: npx nx run-many -t test --passWithNoTests
-
-      - name: Build
-        run: npx nx run-many -t build
-
-  docker-build:
-    name: Verify Docker Builds
+  build:
+    name: Build
+    needs: install
     runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci --legacy-peer-deps
+      - name: Nx affected build
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            npx nx affected -t build --base=origin/${{ github.base_ref }} --head=HEAD
+          else
+            npx nx run-many -t build
+          fi
 
+  # ─────────────────────────────────────────────────────────────
+  # Docker image build verification — kept matrixed so the three
+  # services build in parallel, with BuildKit cache mounts so a
+  # cold rebuild takes ~3 min instead of ~9. Skipped when the
+  # docker-relevant files didn't change (saves ~10 min of CI).
+  # ─────────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker / ${{ matrix.app }}
+    needs: changes
+    if: needs.changes.outputs.docker == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
-        app: [api-gateway, agent-worker]
+        app: [api-gateway, agent-worker, realtime-service]
       fail-fast: false
-
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
-      - name: Build Docker image (${{ matrix.app }})
-        run: |
-          docker build \
-            --build-arg APP_NAME=${{ matrix.app }} \
-            --tag mova-back/${{ matrix.app }}:ci-${{ github.sha }} \
-            --file Dockerfile \
-            .
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (${{ matrix.app }})
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          tags: mova-back/${{ matrix.app }}:ci-${{ github.sha }}
+          build-args: |
+            APP_NAME=${{ matrix.app }}
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}

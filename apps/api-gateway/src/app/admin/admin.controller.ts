@@ -6,6 +6,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  InternalServerErrorException,
   NotFoundException,
   Param,
   ParseUUIDPipe,
@@ -14,6 +15,7 @@ import {
   Put,
   Query,
   Req,
+  ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -376,16 +378,35 @@ export class AdminController {
       throw new BadRequestException('value is required (non-empty)');
     }
     const actorId = isPersistableActor(actor.id) ? actor.id : null;
-    const { masked } = await this.settings.set(key, value, actorId);
-    // Audit log: free-form action string isn't part of the AuditAction
-    // enum yet; logging via the structured logger keeps this row in
-    // Pino/Sentry until we extend the DB enum in a follow-up migration.
-    // Value is NEVER logged — only the key + masked tail.
+    let saved: { masked: string };
+    try {
+      saved = await this.settings.set(key, value, actorId);
+    } catch (err) {
+      // Common config-time errors should surface to the admin UI verbatim
+      // instead of getting flattened to "Internal server error". The
+      // admin panel runs behind ADMIN_PASSWORD on localhost — leaking
+      // the encryption-key-not-set / table-missing message is intended.
+      const message = err instanceof Error ? err.message : String(err);
+      if (
+        message.includes('SETTINGS_ENCRYPTION_KEY') ||
+        message.includes('encryption')
+      ) {
+        throw new ServiceUnavailableException(
+          'SETTINGS_ENCRYPTION_KEY is not configured. Add it to .env (`openssl rand -base64 32`) and restart api-gateway.',
+        );
+      }
+      if (message.includes('app_setting') || message.includes('does not exist')) {
+        throw new ServiceUnavailableException(
+          'Table `app_setting` is missing — run `npm run docker:migrate` to apply the latest schema.',
+        );
+      }
+      throw new InternalServerErrorException(`settings.set failed: ${message}`);
+    }
     console.log(
-      `[settings] ${key} updated by ${actor.email ?? actorId ?? 'unknown'} → ${masked}`,
+      `[settings] ${key} updated by ${actor.email ?? actorId ?? 'unknown'} → ${saved.masked}`,
     );
     const probe = await this.probe.probe(known, value);
-    return { masked, probe };
+    return { masked: saved.masked, probe };
   }
 
   @Post('settings/:key/test')

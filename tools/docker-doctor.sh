@@ -44,7 +44,20 @@ if ! docker info >/dev/null 2>&1; then
 fi
 ok "docker daemon up ($(docker --version | cut -d, -f1))"
 
-# ── 2. .env file ──
+# ── 2. .npmrc (peer-dep resolution mode) ──
+section "npm config"
+if [ ! -f .npmrc ]; then
+  warn ".npmrc missing from repo root"
+  hint "Bare \`npm install\` will fail with ERESOLVE on the livekit-agents peer-dep conflict."
+  hint "Restore with: git checkout origin/master -- .npmrc"
+elif ! grep -qE "^legacy-peer-deps\s*=\s*true" .npmrc; then
+  warn ".npmrc exists but doesn't set legacy-peer-deps=true"
+  hint "Host \`npm install\` may fail; Docker bootstrap will still work."
+else
+  ok ".npmrc OK (legacy-peer-deps=true)"
+fi
+
+# ── 3. .env file ──
 section "Environment"
 if [ ! -f .env ]; then
   fail ".env is missing"

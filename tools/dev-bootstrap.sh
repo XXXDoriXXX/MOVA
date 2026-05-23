@@ -42,6 +42,9 @@ fi
 
 if [ "$needs_install" = "1" ]; then
   echo "▶︎ Running npm ci (3-5 min on first run; ~30s for incremental)…"
+  # `legacy-peer-deps=true` is set in .npmrc at the repo root, so the
+  # flag is implicit — kept here as an explicit belt-and-braces in
+  # case anyone strips the .npmrc during a Docker layer rebuild.
   npm ci --legacy-peer-deps
   if [ -n "$current_hash" ]; then
     echo "$current_hash" > "$HASH_MARKER"

@@ -109,6 +109,76 @@ export class SuggestionsService {
   }
 
   /**
+   * Generate ONE conversational reply for the main agent voice. Unlike
+   * generate() (which returns 3 short JSON suggestions), this returns a
+   * single natural-language sentence the agent will speak on accept.
+   *
+   * Lives here because SuggestionsService already owns the registry +
+   * style-resolver wiring; a separate service would duplicate both.
+   * Uses the caller's preferred LLM provider when supplied (so the
+   * main reply respects the user's model choice), falling back to the
+   * registry's health-ranked default. Never throws — returns null on
+   * any failure so the handler can fall back to a "can you repeat?"
+   * line rather than crashing the call.
+   */
+  async generateReply(
+    request: SuggestionsRequest,
+    preferProvider?: LlmProviderEnum,
+  ): Promise<string | null> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+    const styleAddendum = await this.styleResolver.resolve(
+      request.userId,
+      request.styleId,
+    );
+    try {
+      const { provider } = this.registry.selectLlm(preferProvider);
+      const lang = request.language === 'en' ? 'English' : 'Ukrainian';
+      const systemParts = [
+        `You are speaking on a live phone call on behalf of a deaf-mute user.`,
+        `Reply in ${lang}, 1–2 short sentences, plain text only (it goes to`,
+        `text-to-speech — no markdown, lists, or emoji). Sound like a real`,
+        `person on the line; never reveal you are an AI.`,
+        `--- Role / context ---`,
+        request.systemPrompt,
+      ];
+      if (styleAddendum) systemParts.push(styleAddendum);
+      const recentBlock = request.recentMessages
+        .slice(-10)
+        .map((m) => `${m.role}: ${m.text}`)
+        .join('\n');
+      const userParts = [
+        recentBlock ? `Recent dialogue:\n${recentBlock}\n` : '',
+        `Interlocutor just said: "${request.parentMessageText}"`,
+        `Reply now.`,
+      ];
+      const raw = await this.registry.runLlm(
+        provider.id as LlmProviderEnum,
+        (p) =>
+          p.generate({
+            messages: [
+              { role: 'system', content: systemParts.join('\n') },
+              { role: 'user', content: userParts.join('\n') },
+            ],
+            maxTokens: 120,
+            temperature: 0.6,
+            signal: controller.signal,
+          }),
+        { conversationId: request.conversationId },
+      );
+      const cleaned = raw.trim().replace(/^["']|["']$/g, '').slice(0, 500);
+      return cleaned.length > 0 ? cleaned : null;
+    } catch (err) {
+      this.logger.debug(
+        `generateReply LLM call failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /**
    * Pure-function counterpart. Returns null when the model output cannot be
    * trusted; never throws (callers expect best-effort semantics).
    *

@@ -86,6 +86,14 @@ export function mapInternalToServer(event: InternalCallEvent): ServerEvent | nul
         },
       };
 
+    case 'ai.thinking':
+      return {
+        type: 'ai.thinking',
+        id,
+        timestamp,
+        data: {},
+      };
+
     case 'ai.text.candidate':
       // Pass-through: candidate is the gate event the mobile UI shows
       // before TTS runs. autoAcceptInMs comes from the agent's

@@ -38,4 +38,16 @@ export class GeminiLlmProvider extends AiSdkLlmAdapter {
   protected resolveModel(modelId: string): LanguageModel {
     return this.client(modelId);
   }
+
+  /**
+   * Disable Gemini 2.5 "thinking". By default 2.5-flash spends a large,
+   * variable chunk of its maxOutputTokens budget on internal reasoning
+   * tokens — with our small per-reply budget that left almost nothing for
+   * the visible answer, so replies came back truncated mid-word
+   * ("Перепро", "О восьмій ра"). thinkingBudget: 0 turns reasoning off,
+   * which both fixes truncation and cuts latency on the live-call path.
+   */
+  protected providerOptions() {
+    return { google: { thinkingConfig: { thinkingBudget: 0 } } };
+  }
 }

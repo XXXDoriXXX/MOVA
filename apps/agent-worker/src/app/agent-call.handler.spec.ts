@@ -154,6 +154,17 @@ function makeHarness(opts: {
   const suggestions = {
     generateAndEmit: jest.fn().mockResolvedValue(undefined),
     generateReply: jest.fn().mockResolvedValue('mock reply'),
+    generateReplyStream: jest
+      .fn()
+      .mockImplementation(
+        async (
+          _req: unknown,
+          onChunk: (t: string) => void,
+        ): Promise<string> => {
+          onChunk('mock reply');
+          return 'mock reply';
+        },
+      ),
   } as unknown as jest.Mocked<SuggestionsService>;
 
   const redis = {

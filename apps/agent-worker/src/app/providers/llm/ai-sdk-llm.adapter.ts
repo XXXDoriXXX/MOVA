@@ -1,5 +1,11 @@
 import { generateText, streamText, type LanguageModel, type ModelMessage } from 'ai';
 
+/** The AI SDK's provider-options shape (vendor → option bag). Extracted
+ *  from generateText so we don't depend on a deep @ai-sdk/provider import. */
+type SdkProviderOptions = NonNullable<
+  Parameters<typeof generateText>[0]['providerOptions']
+>;
+
 import {
   LlmProviderEnum,
   ProviderError,
@@ -48,6 +54,16 @@ export abstract class AiSdkLlmAdapter implements ILlmProvider {
   /** Factory that returns a `LanguageModel` instance given a model id. */
   protected abstract resolveModel(modelId: string): LanguageModel;
 
+  /**
+   * Vendor-specific options forwarded to the AI SDK as `providerOptions`.
+   * Default: none. Subclasses override to e.g. disable Gemini's thinking
+   * tokens (which otherwise eat the maxOutputTokens budget and truncate
+   * the visible reply mid-word). Returning undefined omits the field.
+   */
+  protected providerOptions(): SdkProviderOptions | undefined {
+    return undefined;
+  }
+
   async *stream(options: LlmGenerateOptions & { model?: string }): AsyncIterable<string> {
     const modelId = options.model ?? this.defaultModel;
     const { system, messages } = splitSystemMessages(options.messages);
@@ -59,6 +75,7 @@ export abstract class AiSdkLlmAdapter implements ILlmProvider {
         maxOutputTokens: options.maxTokens,
         temperature: options.temperature ?? 0.7,
         abortSignal: options.signal,
+        providerOptions: this.providerOptions(),
       });
       for await (const chunk of result.textStream) {
         yield chunk;
@@ -79,6 +96,7 @@ export abstract class AiSdkLlmAdapter implements ILlmProvider {
         maxOutputTokens: options.maxTokens,
         temperature: options.temperature ?? 0.7,
         abortSignal: options.signal,
+        providerOptions: this.providerOptions(),
       });
       return result.text;
     } catch (err) {

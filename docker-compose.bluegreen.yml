@@ -1,0 +1,64 @@
+# Blue-green compose override — used ON TOP of docker-compose.yml +
+# docker-compose.prod.yml during a zero-downtime deploy. Adds two
+# DUPLICATE api-gateway containers (api-gateway-blue, api-gateway-green)
+# behind nginx. The switch script flips nginx's upstream to point at
+# the inactive color after its healthcheck passes, then optionally
+# stops the previously-active color.
+#
+# Why only api-gateway: it's the only service that holds a live
+# connection from end-users (REST + LB-routed). realtime-service WS
+# connections are sticky but reconnect transparently on close; the
+# in-place restart there is fine. agent-worker is pure Redis pub/sub —
+# zero impact from a brief in-place restart.
+#
+# Compose merge:
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.prod.yml \
+#     -f docker-compose.bluegreen.yml \
+#     up -d api-gateway-blue api-gateway-green
+#
+# Operator workflow lives in infra/vps/switch-color.sh.
+
+services:
+  # The base api-gateway from docker-compose.yml is REPLACED by the
+  # blue/green pair below. We keep the name `api-gateway` defined so
+  # depends_on references from migrations / realtime-service /
+  # agent-worker still resolve — point it at whichever color is
+  # currently active by re-declaring its target.
+  api-gateway:
+    # No-op container — overridden by the blue/green pair. We keep it
+    # in the graph just so existing depends_on references stay valid.
+    # If you `compose up api-gateway` directly during a blue-green
+    # deploy you get a noisy alpine "echo + sleep" that exits non-zero
+    # so you notice you ran the wrong command.
+    image: alpine:3.20
+    command: ["sh", "-c", "echo 'In blue-green mode — use api-gateway-blue or api-gateway-green' >&2; exit 64"]
+    restart: "no"
+    healthcheck:
+      disable: true
+
+  api-gateway-blue:
+    extends:
+      file: docker-compose.yml
+      service: api-gateway
+    container_name: mova_api_gateway_blue
+    image: ghcr.io/${GHCR_OWNER}/mova-api-gateway:${IMAGE_TAG:-latest}
+    # Distinct host port per color so nginx upstream can target each
+    # one independently. nginx's switch-color.sh flips between 3000
+    # (blue) and 3010 (green).
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      MOVA_COLOR: blue
+
+  api-gateway-green:
+    extends:
+      file: docker-compose.yml
+      service: api-gateway
+    container_name: mova_api_gateway_green
+    image: ghcr.io/${GHCR_OWNER}/mova-api-gateway:${IMAGE_TAG:-latest}
+    ports:
+      - "127.0.0.1:3010:3000"
+    environment:
+      MOVA_COLOR: green

@@ -146,6 +146,24 @@ NGINX_ENABLED=/etc/nginx/sites-enabled/mova
 sed "s/__MOVA_DOMAIN__/$MOVA_DOMAIN/g" \
   "$MOVA_HOME/infra/vps/nginx/mova.conf.template" >"$NGINX_AVAILABLE"
 ln -sf "$NGINX_AVAILABLE" "$NGINX_ENABLED"
+
+# Seed the active-upstream include file with the default blue port.
+# switch-color.sh rewrites this file on every blue-green deploy.
+# Default to blue = 3000 so a fresh install runs single-color out of
+# the box; the operator can opt into blue-green later by running
+# `IMAGE_TAG=<sha> infra/vps/switch-color.sh` once green is built.
+mkdir -p /etc/nginx/conf.d
+cat >/etc/nginx/conf.d/mova-active-upstream.conf <<'EOF'
+# Default upstream — managed by infra/vps/switch-color.sh in
+# blue-green deployments. Edit by hand at your own risk.
+upstream mova_api {
+    server 127.0.0.1:3000;
+    keepalive 32;
+}
+EOF
+# Track which color is "active" so the switch script's compare is fast.
+echo blue > "$MOVA_HOME/.active-color"
+chown "$MOVA_USER:$MOVA_USER" "$MOVA_HOME/.active-color"
 # Disable the default site that ships with nginx — it would fight ours on :80.
 rm -f /etc/nginx/sites-enabled/default
 nginx -t
@@ -172,22 +190,38 @@ systemctl daemon-reload
 systemctl enable mova.service
 
 # ── 8. backups cron ─────────────────────────────────────────────
-log "Installing pg_dump cron ..."
+log "Installing pg_dump cron + restore-drill cron ..."
 install -m 755 \
   "$MOVA_HOME/infra/vps/cron/pg-backup.sh" \
   /usr/local/bin/mova-pg-backup
+install -m 755 \
+  "$MOVA_HOME/infra/vps/cron/restore-drill.sh" \
+  /usr/local/bin/mova-restore-drill
 mkdir -p /var/backups/mova
 chown "$MOVA_USER:$MOVA_USER" /var/backups/mova
-# crontab entry: daily 03:30 UTC. systemd-timer would be more polished
-# but cron is universal and easier to inspect with `crontab -l`.
-( crontab -u "$MOVA_USER" -l 2>/dev/null || true; \
-  echo "30 3 * * * /usr/local/bin/mova-pg-backup >> /var/log/mova-backup.log 2>&1" ) \
-  | crontab -u "$MOVA_USER" -
+# Crontab:
+#   * Daily backup at 03:30 UTC.
+#   * Monthly restore-drill on the 7th at 04:00 UTC — a week into
+#     the month so we always have ≥1 fresh daily dump to test against,
+#     and on a Sunday-ish offset that doesn't collide with a typical
+#     "first-of-month report" workload.
+#   systemd-timer would be more polished but cron is universal and
+#   easier to inspect with `crontab -l`. Replace the whole crontab
+#   atomically so re-running bootstrap doesn't duplicate entries.
+CRON_TMP=$(mktemp)
+{
+  # Preserve any non-mova lines the operator may have added by hand.
+  crontab -u "$MOVA_USER" -l 2>/dev/null \
+    | grep -vE 'mova-pg-backup|mova-restore-drill' || true
+  echo "30 3 * * * /usr/local/bin/mova-pg-backup >> /var/log/mova-backup.log 2>&1"
+  echo "0 4 7 * * /usr/local/bin/mova-restore-drill >> /var/log/mova-restore-drill.log 2>&1"
+} > "$CRON_TMP"
+crontab -u "$MOVA_USER" "$CRON_TMP"
+rm "$CRON_TMP"
 
-# Log rotation for the backup log + docker container logs that
-# overflow easily on a long-running pod.
+# Log rotation for backup + restore-drill logs.
 cat >/etc/logrotate.d/mova <<'EOF'
-/var/log/mova-backup.log {
+/var/log/mova-backup.log /var/log/mova-restore-drill.log {
     weekly
     rotate 8
     compress

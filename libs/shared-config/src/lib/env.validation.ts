@@ -69,6 +69,27 @@ export const envSchema = z.object({
     .string()
     .min(32, 'JWT_SECRET must be at least 32 chars (HS256). Replace with RS256 in prod.')
     .default('dev-only-secret-please-replace-in-production-min-32-chars'),
+  /**
+   * Previous JWT secret — used during a rotation window so tokens
+   * signed by the OLD JWT_SECRET still validate while clients pick
+   * up the NEW one on their next refresh. Optional; when unset, only
+   * the current secret accepts tokens (no grace period).
+   *
+   * Rotation workflow:
+   *   1. Old prod state: JWT_SECRET=A
+   *   2. Edit .env: set JWT_SECRET_PREVIOUS=A, set JWT_SECRET=B
+   *   3. Deploy. Tokens signed with A still verify; new sign uses B.
+   *   4. Wait for the JWT TTL (default 15 min) so all in-flight A-tokens
+   *      have refreshed into B-tokens.
+   *   5. Edit .env: drop JWT_SECRET_PREVIOUS. Redeploy.
+   *
+   * Min 32 chars enforced as for JWT_SECRET to prevent a degenerate
+   * "rotate to a weak secret" pattern.
+   */
+  JWT_SECRET_PREVIOUS: z
+    .string()
+    .min(32, 'JWT_SECRET_PREVIOUS must be at least 32 chars (HS256).')
+    .optional(),
   JWT_ACCESS_TTL: z.string().default('15m'),
   JWT_REFRESH_TTL: z.string().default('30d'),
 
@@ -175,19 +196,60 @@ export const envSchema = z.object({
 })
   // Cross-field invariants — caught at startup, prevent footguns.
   .superRefine((env, ctx) => {
-    if (env.NODE_ENV === 'production') {
-      if (env.JWT_SECRET === 'dev-only-secret-please-replace-in-production-min-32-chars') {
+    if (env.NODE_ENV !== 'production') return;
+
+    if (env.JWT_SECRET === 'dev-only-secret-please-replace-in-production-min-32-chars') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['JWT_SECRET'],
+        message:
+          'JWT_SECRET must be set to a strong production value when NODE_ENV=production',
+      });
+    }
+
+    // Hard refuse the most-common weak password leaks. The bcrypt
+    // path (ADMIN_PASSWORD_HASH) bypasses this — the hash makes the
+    // plaintext irrelevant for validation. Catches the case where
+    // someone copies dev .env to prod and forgets to change "password".
+    if (env.ADMIN_PASSWORD && !env.ADMIN_PASSWORD_HASH) {
+      const weakPasswords = new Set([
+        'password',
+        'admin',
+        'changeme',
+        '12345678',
+        'qwerty',
+        'mova',
+      ]);
+      if (weakPasswords.has(env.ADMIN_PASSWORD.toLowerCase())) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['JWT_SECRET'],
+          path: ['ADMIN_PASSWORD'],
           message:
-            'JWT_SECRET must be set to a strong production value when NODE_ENV=production',
+            `ADMIN_PASSWORD is one of the weak defaults (${[...weakPasswords].join(', ')}). ` +
+            `Migrate to ADMIN_PASSWORD_HASH (bcrypt) in production. ` +
+            `Generate with: node -e "console.log(require('bcrypt').hashSync(process.argv[1],12))" 'mypassword'`,
         });
       }
-      if (!env.SENTRY_DSN) {
-        // Warn, don't fail — we still allow Sentry-less deploys, but make it explicit.
-        // No-op here; observability layer will log a warning at bootstrap.
-      }
+      // ADMIN_PASSWORD plaintext at all is a smell in prod — warn but
+      // don't hard-fail (legacy deployments still rely on it). The
+      // guard logs a per-process deprecation warning on first match.
+    }
+
+    // Rotation-window sanity: PREVIOUS must NOT equal CURRENT —
+    // otherwise the "two secrets" config provides zero rotation
+    // benefit and just doubles the verification cost.
+    if (env.JWT_SECRET_PREVIOUS && env.JWT_SECRET_PREVIOUS === env.JWT_SECRET) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['JWT_SECRET_PREVIOUS'],
+        message:
+          'JWT_SECRET_PREVIOUS must differ from JWT_SECRET — setting them equal disables rotation.',
+      });
+    }
+
+    if (!env.SENTRY_DSN) {
+      // Warn, don't fail — we still allow Sentry-less deploys, but make it explicit.
+      // No-op here; observability layer will log a warning at bootstrap.
     }
   });
 

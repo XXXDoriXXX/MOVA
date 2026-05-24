@@ -28,6 +28,6 @@ import { UserStyleReaderService } from './user-style-reader.service';
     TypeOrmModule.forFeature([UserStyleProfile, ConversationStyle]),
   ],
   providers: [SuggestionsService, UserStyleReaderService, StyleResolverService],
-  exports: [SuggestionsService],
+  exports: [SuggestionsService, StyleResolverService],
 })
 export class SuggestionsModule {}

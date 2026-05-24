@@ -246,6 +246,11 @@ services:
       - '--storage.tsdb.path=/prometheus'
       - '--storage.tsdb.retention.time=30d'
       - '--web.enable-lifecycle'
+      # Tempo's metrics_generator pushes service-graph + span-metrics
+      # into Prometheus via remote_write. Disabled by default; flip
+      # on here so Grafana's Service Graph panel can hydrate from
+      # Prometheus instead of querying Tempo directly.
+      - '--web.enable-remote-write-receiver'
     volumes:
       - ./infra/prometheus:/etc/prometheus:ro
       - prometheus_data:/prometheus
@@ -293,6 +298,26 @@ services:
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
     depends_on:
       - loki
+    networks:
+      - mova_network
+
+  tempo:
+    image: grafana/tempo:latest
+    container_name: mova_tempo
+    restart: unless-stopped
+    command: ['-config.file=/etc/tempo.yml']
+    volumes:
+      - ./infra/tempo/tempo-config.yml:/etc/tempo.yml:ro
+      - tempo_data:/var/tempo
+    ports:
+      # Tempo HTTP API (Grafana datasource queries hit this).
+      - "127.0.0.1:3200:3200"
+      # OTLP receivers — service-side OTel SDKs export here.
+      # Bound to 127.0.0.1 because the only legitimate senders are
+      # in the same docker network. External exporters route through
+      # nginx or skip Tempo entirely.
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
     networks:
       - mova_network
 
@@ -346,4 +371,5 @@ volumes:
   prometheus_data:
   alertmanager_data:
   loki_data:
+  tempo_data:
   grafana_data:

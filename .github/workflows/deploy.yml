@@ -179,3 +179,56 @@ jobs:
           done
           echo "❌ api-gateway never became healthy" >&2
           exit 1
+
+      # ── Sentry release tracking ──────────────────────────────
+      # Tag the new deploy in Sentry so:
+      #   1. Issues are grouped by release — easy to spot regressions
+      #      ("this exception only started after the May 24 deploy").
+      #   2. Stack-trace frames map to source via uploaded sourcemaps
+      #      instead of showing minified line numbers.
+      #
+      # Gated on SENTRY_AUTH_TOKEN being set as a repo secret. Without
+      # it, the step short-circuits cleanly — Sentry release tracking
+      # is a nice-to-have, not a deploy gate.
+      #
+      # GitHub Actions doesn't allow referencing `secrets.*` directly
+      # in `if:` expressions; we flip an env flag in a tiny step so
+      # downstream `if: env.SENTRY_AUTH_TOKEN_SET` works.
+      - name: Detect Sentry config
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          if [ -n "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN_SET=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Checkout (for sourcemap upload)
+        if: ${{ env.SENTRY_AUTH_TOKEN_SET == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # commits since last release for sentry-cli
+
+      - name: Tag Sentry release
+        if: ${{ env.SENTRY_AUTH_TOKEN_SET == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          RELEASE: mova@${{ steps.tag.outputs.tag }}
+        run: |
+          curl -sL https://sentry.io/get-cli/ | bash
+          sentry-cli releases new "$RELEASE"
+          sentry-cli releases set-commits "$RELEASE" --auto || true
+          # Sourcemap upload is per-app — Nx builds dump to
+          # dist/apps/<app>/. We upload all three with the same
+          # release tag so any service's stack-trace finds its map.
+          for APP in api-gateway realtime-service agent-worker; do
+            if [ -d "dist/apps/$APP" ]; then
+              sentry-cli sourcemaps upload \
+                --release "$RELEASE" \
+                --url-prefix "~/dist/apps/$APP" \
+                "dist/apps/$APP" || true
+            fi
+          done
+          sentry-cli releases finalize "$RELEASE"
+          sentry-cli releases deploys "$RELEASE" new -e production

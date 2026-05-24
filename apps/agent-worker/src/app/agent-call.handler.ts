@@ -9,6 +9,7 @@ import { Redis } from 'ioredis';
 import * as silero from '@livekit/agents-plugin-silero';
 import { voice } from '@livekit/agents';
 import { EventEmitter } from 'events';
+import { ReadableStream } from 'node:stream/web';
 
 import { reportError } from '@mova-back/shared-config';
 import { CallErrorCode, type InternalCallEvent } from '@mova-back/shared-realtime';
@@ -465,7 +466,7 @@ export class AgentCallHandler {
       // gateTts() returns true immediately and we pass through.
       const agent = new GatedAgent(
         { instructions: this.agentFactory.buildSystemPrompt(this.userContext) },
-        () => this.gateTts(),
+        (text) => this.decideTts(text),
       );
 
       this.bindSessionEvents(this.session);
@@ -487,8 +488,9 @@ export class AgentCallHandler {
       // wasting balance on silent air. Failure here is FATAL
       // (TTS_UNAVAILABLE) — without TTS there is literally no call.
       phase = 'greeting';
+      const greetingText = this.agentFactory.getInitialGreeting(this.userContext);
       const greetingResult = await this.safeSay(
-        this.agentFactory.getInitialGreeting(this.userContext),
+        greetingText,
         AgentCallHandler.TTS_GREETING_TIMEOUT_MS,
         { allowInterruptions: true },
       );
@@ -498,6 +500,15 @@ export class AgentCallHandler {
             (greetingResult.error?.message ?? 'no error detail'),
         );
       }
+      // Surface the greeting as a chat bubble. conversation_item_added
+      // no longer emits (it raced the candidate gate), so direct say()s
+      // publish their own ai.text.final. The greeting is the AI's
+      // opening line — the user should see it land in chat as the call
+      // goes live.
+      this.emitTyped({
+        type: 'ai.text.final',
+        data: { text: greetingText, llmProvider: 'greeting', llmModel: 'static' },
+      });
       // Greeting done — promote to active. Start the idle-probe timer
       // so a non-responsive interlocutor doesn't strand the call in
       // silence, arm the STT-stall watchdog now that SIP audio is
@@ -870,57 +881,15 @@ export class AgentCallHandler {
       }
     });
 
-    sessionEmitter.on('conversation_item_added', (ev: Record<string, unknown>) => {
-      const item = ev['item'] as
-        | {
-            role?: string;
-            content?: string | Array<unknown>;
-            textContent?: string;
-          }
-        | undefined;
-      if (!item || item.role !== 'assistant') return;
-
-      // ChatMessage.content is ChatContent[] where ChatContent =
-      // string | ImageContent | AudioContent. Plain text replies arrive as
-      // an array of strings (NOT { text }), so the previous indexing into
-      // `content[0].text` always returned undefined and the AI reply was
-      // never published. Prefer the SDK-provided `textContent` getter, then
-      // fall back to joining string parts of the content array, then to a
-      // raw string. AudioContent has an optional `transcript` we also pick
-      // up so realtime-API replies (audio-first) still surface as text.
-      let text = '';
-      if (typeof item.textContent === 'string' && item.textContent.length > 0) {
-        text = item.textContent;
-      } else if (typeof item.content === 'string') {
-        text = item.content;
-      } else if (Array.isArray(item.content)) {
-        text = item.content
-          .map((part) => {
-            if (typeof part === 'string') return part;
-            const obj = part as { text?: string; transcript?: string } | null;
-            return obj?.text ?? obj?.transcript ?? '';
-          })
-          .filter((s) => s.length > 0)
-          .join('\n');
-      }
-      if (!text) return;
-
-      // Bypass path: this conversation_item_added came from a direct
-      // session.say() WE made (greeting / fallback / idle-probe / user-
-      // typed via interruptAndSpeak). Pass straight to onAiFinal — those
-      // are already audible by the time mobile hears about them, so a
-      // candidate gate would just stall the playback.
-      if (this.bypassCandidateCount > 0) {
-        this.bypassCandidateCount -= 1;
-        this.onAiFinal(text);
-        return;
-      }
-
-      // Default path: the LLM auto-replied to a user_input_transcribed.
-      // Gate it through the candidate machinery so the user reads
-      // before-the-fact and can cancel.
-      this.startCandidate(text);
-    });
+    // NOTE: conversation_item_added is intentionally NOT used to emit
+    // chat events anymore. It fires AFTER ttsNode in the LiveKit
+    // pipeline, which made the old candidate-here / gate-in-ttsNode
+    // split race (audio played before the preview reached mobile). All
+    // AI-reply chat emission now flows through the ttsNode gate
+    // (decideTts → startCandidate → onAiFinal on accept). Direct
+    // say()s (greeting / fallback / idle-probe) emit their own
+    // ai.text.final explicitly; user-typed emits user.spoke. Leaving a
+    // listener here would double-publish, so it's removed entirely.
 
     sessionEmitter.on('error', (err: Record<string, unknown> | Error) => {
       // If we're already tearing down, every "session closed" / "stream
@@ -1020,15 +989,34 @@ export class AgentCallHandler {
   }
 
   /**
+   * Called by the GatedAgent's ttsNode for every assistant utterance.
+   * Decides whether the audio plays now or waits behind a candidate:
+   *
+   *   - Direct say() (greeting / fallback / idle-probe / user-typed)
+   *     bumped `bypassCandidateCount` before calling session.say(), so
+   *     here we just decrement and return true — those play
+   *     immediately and emit their own chat bubble at the call site.
+   *   - LLM auto-reply: register a candidate, emit the preview event,
+   *     and return the decision Promise the gate awaits.
+   */
+  private decideTts(text: string): Promise<boolean> {
+    if (this.bypassCandidateCount > 0) {
+      this.bypassCandidateCount -= 1;
+      return Promise.resolve(true);
+    }
+    return this.startCandidate(text);
+  }
+
+  /**
    * Register a new candidate for the just-LLM-produced text. Emits the
    * ai.text.candidate event to mobile so it can render the preview
    * bubble, starts the auto-accept timer (if in auto mode), and
-   * stashes the resolver so the ttsNode gate can await the decision.
+   * RETURNS the decision Promise so the ttsNode gate awaits it.
    * Replaces any previous in-flight candidate (which can only happen
    * if the LLM produced two replies back-to-back — rare, we just
    * silently cancel the previous one).
    */
-  private startCandidate(text: string): void {
+  private startCandidate(text: string): Promise<boolean> {
     if (this.currentCandidate) {
       // Replace: cancel pending so the gate unblocks (returns false →
       // no audio). Mobile sees the new candidate event and drops its
@@ -1082,11 +1070,14 @@ export class AgentCallHandler {
           : null,
       },
     });
+    return this.currentCandidate.decision;
   }
 
   /** Resolves the current candidate (if id matches). Idempotent on
-   *  stale ids. Emits ai.text.final on accept so the chat-history
-   *  bubble exists; on cancel we just drop the preview, no final. */
+   *  stale ids. On accept runs onAiFinal (emits ai.text.final +
+   *  records the turn + re-arms the idle probe); on cancel we just
+   *  drop the preview, no chat bubble. The gate Promise resolution
+   *  is what unblocks ttsNode (true → audio, false → silence). */
   private resolveCandidate(candidateId: string, accepted: boolean): void {
     const candidate = this.currentCandidate;
     if (!candidate || candidate.id !== candidateId) return;
@@ -1095,37 +1086,18 @@ export class AgentCallHandler {
       candidate.timer = null;
     }
     this.currentCandidate = null;
-    candidate.resolveDecision(accepted);
     this.logger.log(
       `[Candidate] ${candidateId} → ${accepted ? 'ACCEPT (TTS will play)' : 'CANCEL (no TTS)'}`,
     );
     if (accepted) {
-      // Now that we know it's going to be spoken, publish the canonical
-      // ai.text.final so it lands in chat history as the final bubble.
-      const llmProvider =
-        this.userContext.config?.llm?.provider ??
-        this.userContext.template?.defaultLlmProvider ??
-        'openai';
-      const llmModel =
-        this.userContext.config?.llm?.model ??
-        this.userContext.template?.defaultLlmModel ??
-        'gpt-4o-mini';
-      this.emitTyped({
-        type: 'ai.text.final',
-        data: { text: candidate.text, llmProvider, llmModel },
-      });
+      // onAiFinal is the single source of the chat bubble + side
+      // effects (recordRecent, re-arm idle probe). Run it BEFORE
+      // resolving the gate so the ai.text.final lands slightly ahead
+      // of the audio starting — mobile shows the committed bubble as
+      // the voice begins.
+      this.onAiFinal(candidate.text);
     }
-  }
-
-  /** Called from the GatedAgent's ttsNode override — awaits the
-   *  user's decision (or auto-accept timer) before the audio pipeline
-   *  produces a single frame. Returns true → audio plays, false → no
-   *  audio. When no candidate is registered (greeting/fallback/probe
-   *  paths that bypassed the gate) we pass through unconditionally. */
-  async gateTts(): Promise<boolean> {
-    const candidate = this.currentCandidate;
-    if (!candidate) return true;
-    return candidate.decision;
+    candidate.resolveDecision(accepted);
   }
 
   // ─── Idle-probe (interlocutor goes silent) ─────────────
@@ -1636,26 +1608,32 @@ export class AgentCallHandler {
 }
 
 /**
- * voice.Agent subclass whose ttsNode awaits a gate before the audio
- * pipeline can produce a single frame. The gate is a Promise-returning
- * callback supplied by AgentCallHandler — resolved true ⇒ pass through
- * to LiveKit's default ttsNode (audio plays), resolved false ⇒ return
- * null (skip TTS entirely). When the handler has no pending candidate
- * (greeting / fallback / idle-probe / user-typed paths bumped the
- * bypass counter), gateTts() returns true immediately and we behave
- * like a vanilla voice.Agent.
+ * voice.Agent subclass that gates TTS on a per-utterance decision.
  *
- * Why override ttsNode and not llmNode: by ttsNode time the LLM
- * already finalised the assistant message AND fired
- * conversation_item_added (which the handler uses to register the
- * candidate). Gating at the TTS step lets the user see the text
- * before audio commits — gating at LLM time would also need its own
- * text-extraction logic and would race the existing emit path.
+ * CRITICAL ordering note: LiveKit Agents calls ttsNode as the LLM
+ * streams its reply — BEFORE conversation_item_added fires. An earlier
+ * design registered the candidate in conversation_item_added and only
+ * gated in ttsNode; the gate ran first, saw no candidate, and let the
+ * audio play before the preview ever reached mobile. So the candidate
+ * is now created INSIDE ttsNode from the buffered text stream — the
+ * gate and the candidate are inseparable, no race.
+ *
+ * Flow per ttsNode call:
+ *   1. Drain the LLM's text stream into a single string.
+ *   2. Hand it to the handler's decide() callback, which either:
+ *        - direct say() (greeting / fallback / probe / typed) →
+ *          resolves true immediately (no candidate)
+ *        - LLM auto-reply → registers a candidate, emits
+ *          ai.text.candidate, and resolves when the user accepts /
+ *          cancels / the auto-timer fires
+ *   3. true  → re-stream the buffered text into the default ttsNode
+ *              so audio plays
+ *      false → return null, no audio
  */
 class GatedAgent extends voice.Agent {
   constructor(
     opts: ConstructorParameters<typeof voice.Agent>[0],
-    private readonly gate: () => Promise<boolean>,
+    private readonly decide: (text: string) => Promise<boolean>,
   ) {
     super(opts);
   }
@@ -1664,8 +1642,51 @@ class GatedAgent extends voice.Agent {
     text: Parameters<voice.Agent['ttsNode']>[0],
     modelSettings: Parameters<voice.Agent['ttsNode']>[1],
   ): ReturnType<voice.Agent['ttsNode']> {
-    const accepted = await this.gate();
+    const buffered = await drainTextStream(text);
+    if (!buffered.trim()) {
+      // Nothing to synthesize — pass the (empty) stream through so the
+      // pipeline completes cleanly instead of hanging.
+      return voice.Agent.default.ttsNode(
+        this,
+        stringToTextStream(buffered),
+        modelSettings,
+      );
+    }
+    const accepted = await this.decide(buffered);
     if (!accepted) return null;
-    return voice.Agent.default.ttsNode(this, text, modelSettings);
+    return voice.Agent.default.ttsNode(
+      this,
+      stringToTextStream(buffered),
+      modelSettings,
+    );
   }
+}
+
+/** Drain a ReadableStream<string> into one concatenated string. */
+async function drainTextStream(
+  stream: ReadableStream<string>,
+): Promise<string> {
+  const reader = stream.getReader();
+  let out = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (typeof value === 'string') out += value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return out;
+}
+
+/** Wrap a string back into a single-chunk ReadableStream<string> so it
+ *  can be fed into the default ttsNode after the gate decision. */
+function stringToTextStream(s: string): ReadableStream<string> {
+  return new ReadableStream<string>({
+    start(controller) {
+      if (s.length > 0) controller.enqueue(s);
+      controller.close();
+    },
+  });
 }

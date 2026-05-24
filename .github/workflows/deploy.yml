@@ -1,0 +1,181 @@
+# Deploy Mova to the production VPS on every push to master.
+#
+# Flow:
+#   1. CI workflow runs first (build/lint/test). If it fails, no deploy.
+#   2. Build the three service images (api-gateway, realtime-service,
+#      agent-worker) and push them to GHCR tagged with the commit sha.
+#   3. SSH into the VPS, pull the new image tags, run `docker compose
+#      up -d`. Compose's healthchecks gate the rollout.
+#   4. Poll /v1/health/live for a couple minutes; fail the workflow
+#      if it doesn't come back green so the operator gets an email.
+#
+# Why not blue-green here:
+#   - For a single-VPS deploy with healthchecks + restart policies
+#     the in-place `docker compose up -d` swap-and-restart cycle is
+#     a few seconds of unavailability per service. That's acceptable
+#     for the diploma target; blue-green is a Phase 5.3 follow-up.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   SSH_HOST       — VPS IP / hostname
+#   SSH_USER       — usually `mova`
+#   SSH_PRIVATE_KEY — deploy key paired with the user's authorized_keys
+#   SSH_PORT       — optional, defaults to 22
+#
+# GHCR auth uses GITHUB_TOKEN automatically (granted via `packages:
+# write` permission below). The VPS pulls images authenticated as
+# the same GitHub user account that owns the deploy key.
+
+name: Deploy
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (defaults to current sha)'
+        required: false
+
+concurrency:
+  group: deploy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false  # never cancel an in-flight prod deploy
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # ── 1. Wait for CI ─────────────────────────────────────────────
+  # Reuse the existing CI workflow as a gate. Skip if the user
+  # manually triggered via workflow_dispatch (assume they know
+  # what they're doing).
+  wait-ci:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for CI workflow
+        uses: lewagon/wait-on-check-action@v1.4.0
+        with:
+          ref: ${{ github.ref }}
+          check-name: 'verify'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 20
+          allowed-conclusions: success
+
+  # ── 2. Build + push three images ───────────────────────────────
+  build-push:
+    needs: [wait-ci]
+    if: always() && (needs.wait-ci.result == 'success' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: [api-gateway, realtime-service, agent-worker]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Lowercase the repo owner — GHCR rejects uppercase in
+      # `ghcr.io/Owner/...` paths.
+      - name: Compute image tag
+        id: tag
+        run: |
+          OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          TAG_SHA=${{ github.event.inputs.image_tag || github.sha }}
+          echo "image=ghcr.io/${OWNER_LOWER}/mova-${{ matrix.app }}:${TAG_SHA}" >> $GITHUB_OUTPUT
+          echo "image_latest=ghcr.io/${OWNER_LOWER}/mova-${{ matrix.app }}:latest" >> $GITHUB_OUTPUT
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: runner
+          build-args: |
+            APP_NAME=${{ matrix.app }}
+          push: true
+          tags: |
+            ${{ steps.tag.outputs.image }}
+            ${{ steps.tag.outputs.image_latest }}
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+  # ── 3. SSH deploy ──────────────────────────────────────────────
+  deploy:
+    needs: [build-push]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Compute tag
+        id: tag
+        run: |
+          OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_TAG=${{ github.event.inputs.image_tag || github.sha }}
+          echo "owner=$OWNER_LOWER" >> $GITHUB_OUTPUT
+          echo "tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: SSH deploy
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          # ENVS pass IMAGE_TAG + GHCR_OWNER through so the remote
+          # docker-compose can pin the exact image revision instead
+          # of always pulling `latest` (latest-tag races are how
+          # half-deployed builds get into prod).
+          envs: IMAGE_TAG,GHCR_OWNER
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd /opt/mova
+            # Save the previous tag so a rollback workflow can refer
+            # to it without git-archaeology.
+            if [ -f .last-good-deploy ]; then
+              cp .last-good-deploy .previous-deploy
+            fi
+            # Pull the new images first — if any of the three is
+            # missing/corrupt, fail the deploy BEFORE swapping prod.
+            export IMAGE_TAG=${{ steps.tag.outputs.tag }}
+            export GHCR_OWNER=${{ steps.tag.outputs.owner }}
+            git fetch --tags origin
+            git reset --hard ${{ github.sha }}
+            # Compose flags: explicit -f forces both files in this
+            # exact order. `.override.yml` (dev bind-mounts) is
+            # auto-loaded ONLY in the implicit two-file lookup; once
+            # we pass -f we get just base + prod = what we want.
+            COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml"
+            docker compose $COMPOSE_FILES pull --quiet api-gateway realtime-service agent-worker
+            # docker compose up -d gives each service its restart=on-failure
+            # policy. Healthcheck-blocked depends_on in compose.yml means
+            # the new api-gateway won't start until postgres + redis +
+            # migrations are healthy.
+            docker compose $COMPOSE_FILES up -d --remove-orphans
+            echo "${{ steps.tag.outputs.tag }}" > .last-good-deploy
+
+      # Liveness wait — fail the workflow loudly if the new build
+      # doesn't come back green within ~2 minutes. The VPS would
+      # auto-restart the failed pod, but a deploy that ships and
+      # silently breaks is worse than one that fails the CI run.
+      - name: Wait for /v1/health/live
+        run: |
+          set -e
+          for i in {1..40}; do
+            if curl -fsS -m 3 "https://${{ secrets.SSH_HOST }}/v1/health/live" >/dev/null; then
+              echo "✅ api-gateway healthy after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "❌ api-gateway never became healthy" >&2
+          exit 1

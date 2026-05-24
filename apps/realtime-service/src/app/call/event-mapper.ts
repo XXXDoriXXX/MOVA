@@ -66,7 +66,10 @@ export function mapInternalToServer(event: InternalCallEvent): ServerEvent | nul
         id,
         timestamp,
         data: {
-          messageId: id, // temporary — will become persisted Message.id
+          // Prefer the agent-assigned id (now plumbed through) so the
+          // client's message id matches the persisted Message.id; fall
+          // back to the stream id for legacy producers.
+          messageId: event.data.messageId ?? id,
           text: event.data.text,
         },
       };
@@ -110,6 +113,7 @@ export function mapInternalToServer(event: InternalCallEvent): ServerEvent | nul
             model: event.data.llmModel,
           },
           autoAcceptInMs: event.data.autoAcceptInMs,
+          streaming: event.data.streaming,
         },
       };
 

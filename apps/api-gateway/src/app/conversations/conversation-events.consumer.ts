@@ -139,6 +139,10 @@ export class ConversationEventsConsumer implements OnModuleInit, OnModuleDestroy
 
   private async onTranscriptFinal(event: TranscriptFinal): Promise<void> {
     await this.conversations.appendMessage({
+      // Persist under the agent-assigned id so the parentMessageId on the
+      // matching `suggestions.generated` event references a real row
+      // (otherwise FK_suggestions_parent fails and the batch is dropped).
+      id: event.data.messageId,
       conversationId: event.conversationId,
       role: MessageRole.INTERLOCUTOR,
       content: event.data.text,

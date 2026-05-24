@@ -35,6 +35,14 @@ const baseEvent = z.object({
 export const TranscriptFinalEvent = baseEvent.extend({
   type: z.literal('transcript.final'),
   data: z.object({
+    /**
+     * UUID the agent-worker assigns to this interlocutor message. The
+     * api-gateway persists the Message row under this exact id so that
+     * downstream `suggestions.generated` (whose parentMessageId points
+     * here) satisfies the FK. Optional for back-compat with older
+     * producers; when absent the consumer falls back to a DB-generated id.
+     */
+    messageId: z.string().uuid().optional(),
     text: z.string().min(1),
     /** STT provider id (e.g. "deepgram"). */
     sttProvider: z.string().min(1),
@@ -87,11 +95,17 @@ export const AiTextCandidateEvent = baseEvent.extend({
   data: z.object({
     /** Unique id the user references in accept/cancel commands. */
     candidateId: z.string().min(1),
-    text: z.string().min(1),
+    text: z.string(),
     llmProvider: z.string().min(1),
     llmModel: z.string().min(1),
     /** ms until auto-accept; null in manual mode. */
     autoAcceptInMs: z.number().int().nonnegative().nullable(),
+    /**
+     * True while the reply is still being generated (text grows with each
+     * emit). The mobile card shows a generating state and does NOT run the
+     * auto-accept countdown until a final emit arrives with streaming=false.
+     */
+    streaming: z.boolean(),
   }),
 });
 

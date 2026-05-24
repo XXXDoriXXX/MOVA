@@ -126,6 +126,9 @@ export const ServerEvent = {
       }),
       /** ms until auto-accept; null in manual mode. */
       autoAcceptInMs: z.number().int().nonnegative().nullable(),
+      /** True while the reply text is still streaming in (grows per emit).
+       *  Countdown/auto-accept only applies once a streaming=false emit lands. */
+      streaming: z.boolean().default(false),
     }),
   }),
 

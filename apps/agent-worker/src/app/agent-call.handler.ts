@@ -225,7 +225,7 @@ export class AgentCallHandler {
    * lives on the in-call drawer.
    */
   private autoMode = true;
-  private static readonly AUTO_ACCEPT_DELAY_MS = 3_000;
+  private static readonly AUTO_ACCEPT_DELAY_MS = 5_000;
   /** Manual mode has a long-tail safety timeout so a stuck mobile
    *  client (lost the candidate event, never accepted) doesn't leak
    *  the pending Promise forever. 60s is long enough for any human
@@ -242,7 +242,16 @@ export class AgentCallHandler {
     id: string;
     text: string;
     timer: NodeJS.Timeout | null;
+    /** False while the reply is still streaming in; true once generation
+     *  completes. The auto-accept/safety timer is only armed after this. */
+    finalized: boolean;
+    /** Set if the user hit accept while the text was still streaming —
+     *  we speak the full text the moment generation finalizes. */
+    acceptedEarly: boolean;
   } | null = null;
+
+  /** Aborts the in-flight streaming generation (cancel / supersede). */
+  private candidateAbort: AbortController | null = null;
 
   constructor(
     private readonly roomName: string,
@@ -761,6 +770,7 @@ export class AgentCallHandler {
     this.clearIdleProbe();
     this.clearSttStall();
     this.clearCallDeadline();
+    this.clearCandidate();
     if (this.session) {
       try {
         this.session.close();
@@ -908,7 +918,12 @@ export class AgentCallHandler {
     if (this.autoMode === enabled) return;
     this.autoMode = enabled;
     const candidate = this.currentCandidate;
-    if (!candidate) return;
+    // Only a FINALIZED candidate has (or needs) an auto-accept timer. A
+    // still-streaming one picks up the new mode when it finalizes.
+    if (!candidate || !candidate.finalized) {
+      this.logger.log(`[Candidate] auto-mode → ${enabled ? 'ON' : 'OFF'}`);
+      return;
+    }
     if (candidate.timer) {
       clearTimeout(candidate.timer);
       candidate.timer = null;
@@ -919,6 +934,9 @@ export class AgentCallHandler {
         AgentCallHandler.AUTO_ACCEPT_DELAY_MS,
       );
     }
+    // Re-emit so mobile flips the card between countdown ring and manual
+    // mic affordance live.
+    this.emitCandidate(candidate.id, candidate.text, false);
     this.logger.log(`[Candidate] auto-mode → ${enabled ? 'ON' : 'OFF'}`);
   }
 
@@ -945,12 +963,33 @@ export class AgentCallHandler {
    */
   private async generateAndPresentReply(parentText: string): Promise<void> {
     if (!this.conversationId || !this.userContext.template) return;
-    // Surface a "thinking" indicator while the LLM works.
+    // A newer interlocutor turn supersedes any in-flight candidate:
+    // abort its generation and drop it (mobile replaces the card on the
+    // new candidate event).
+    this.clearCandidate();
+
+    // Surface a "thinking" indicator until the first token lands.
     this.emitTyped({ type: 'ai.thinking', data: {} });
+
     const preferProvider = this.userContext.config?.llm?.provider as
       | LlmProviderEnum
       | undefined;
-    const reply = await this.suggestions.generateReply(
+
+    const id = randomUUID();
+    const abort = new AbortController();
+    this.candidateAbort = abort;
+    this.currentCandidate = {
+      id,
+      text: '',
+      timer: null,
+      finalized: false,
+      acceptedEarly: false,
+    };
+    // Initial streaming card — empty text, no countdown yet.
+    this.emitCandidate(id, '', true);
+
+    let lastEmit = 0;
+    const reply = await this.suggestions.generateReplyStream(
       {
         conversationId: this.conversationId,
         parentMessageId: randomUUID(),
@@ -961,32 +1000,42 @@ export class AgentCallHandler {
         userId: this.userContext.userId,
         styleId: this.userContext.activeStyleId,
       },
+      (cumulative) => {
+        // Drop chunks for a candidate that was cancelled / superseded.
+        if (this.currentCandidate?.id !== id) return;
+        this.currentCandidate.text = cumulative;
+        // Throttle WS chatter — emit at most ~8/s; the finalize emit below
+        // always lands the complete text.
+        const now = Date.now();
+        if (now - lastEmit < 120) return;
+        lastEmit = now;
+        this.emitCandidate(id, cumulative, true);
+      },
       preferProvider,
+      abort.signal,
     );
-    // The call may have ended while we were generating — bail rather
-    // than present a candidate for a dead call.
-    if (this.state !== 'active') return;
+
+    // Cancelled / superseded mid-generation → nothing left to do.
+    if (this.currentCandidate?.id !== id) return;
+    if (this.state !== 'active') {
+      this.clearCandidate();
+      return;
+    }
     if (!reply) {
-      // LLM gave us nothing usable — let the silence fallback handle it.
+      // Nothing usable — drop the card and let the silence fallback speak.
+      this.clearCandidate();
       void this.handleAiSilence('timeout');
       return;
     }
-    this.startCandidate(reply);
+    this.finalizeCandidate(id, reply);
   }
 
   /**
-   * Register a candidate reply: emit the preview event so mobile shows
-   * the "about to speak" card, and (in auto mode) arm the auto-accept
-   * timer. Replaces any in-flight candidate. NOTHING is spoken here —
-   * speech happens in resolveCandidate(accept) via session.say().
+   * Emit an ai.text.candidate event. `streaming=true` while the reply is
+   * still being generated (mobile shows a generating state, no countdown);
+   * `streaming=false` is the final emit that arms the countdown ring.
    */
-  private startCandidate(text: string): void {
-    if (this.currentCandidate) {
-      // A newer reply supersedes the old preview — drop the old one
-      // silently (mobile replaces its card on the new candidate event).
-      this.clearCandidateTimer();
-    }
-    const id = randomUUID();
+  private emitCandidate(id: string, text: string, streaming: boolean): void {
     const llmProvider =
       this.userContext.config?.llm?.provider ??
       this.userContext.template?.defaultLlmProvider ??
@@ -995,11 +1044,43 @@ export class AgentCallHandler {
       this.userContext.config?.llm?.model ??
       this.userContext.template?.defaultLlmModel ??
       'gpt-4o-mini';
+    this.emitTyped({
+      type: 'ai.text.candidate',
+      data: {
+        candidateId: id,
+        text,
+        llmProvider,
+        llmModel,
+        autoAcceptInMs:
+          !streaming && this.autoMode
+            ? AgentCallHandler.AUTO_ACCEPT_DELAY_MS
+            : null,
+        streaming,
+      },
+    });
+  }
 
-    // Auto mode: schedule auto-accept after the preview window. Manual
-    // mode: schedule a 60s safety cancel so a stuck/closed mobile
-    // doesn't leak the candidate forever.
-    const timer = setTimeout(
+  /**
+   * Generation finished. Lock in the full text, emit the final card, and
+   * either speak immediately (user already hit accept mid-stream) or arm
+   * the auto-accept (auto) / safety-cancel (manual) timer.
+   */
+  private finalizeCandidate(id: string, fullText: string): void {
+    const candidate = this.currentCandidate;
+    if (!candidate || candidate.id !== id) return;
+    candidate.text = fullText;
+    candidate.finalized = true;
+    this.candidateAbort = null;
+    this.logger.log(
+      `[Candidate] finalized id=${id} autoMode=${this.autoMode} acceptedEarly=${candidate.acceptedEarly} text="${fullText.slice(0, 40)}…"`,
+    );
+    this.emitCandidate(id, fullText, false);
+
+    if (candidate.acceptedEarly) {
+      this.resolveCandidate(id, true);
+      return;
+    }
+    candidate.timer = setTimeout(
       () => {
         if (this.autoMode) this.resolveCandidate(id, true);
         else this.resolveCandidate(id, false);
@@ -1008,44 +1089,37 @@ export class AgentCallHandler {
         ? AgentCallHandler.AUTO_ACCEPT_DELAY_MS
         : AgentCallHandler.MANUAL_TIMEOUT_MS,
     );
-
-    this.currentCandidate = { id, text, timer };
-
-    this.logger.log(
-      `[Candidate] new id=${id} autoMode=${this.autoMode} text="${text.slice(0, 40)}…"`,
-    );
-    this.emitTyped({
-      type: 'ai.text.candidate',
-      data: {
-        candidateId: id,
-        text,
-        llmProvider,
-        llmModel,
-        autoAcceptInMs: this.autoMode
-          ? AgentCallHandler.AUTO_ACCEPT_DELAY_MS
-          : null,
-      },
-    });
   }
 
-  private clearCandidateTimer(): void {
-    if (this.currentCandidate?.timer) {
-      clearTimeout(this.currentCandidate.timer);
-    }
+  /** Drop the in-flight candidate: abort its generation, clear its timer. */
+  private clearCandidate(): void {
+    this.candidateAbort?.abort();
+    this.candidateAbort = null;
+    if (this.currentCandidate?.timer) clearTimeout(this.currentCandidate.timer);
+    this.currentCandidate = null;
   }
 
   /**
    * Resolve the current candidate (if id matches). Idempotent on stale
-   * ids. ACCEPT → speak the text via session.say() (the clean,
-   * supported TTS path) and emit ai.text.final for the chat bubble.
-   * CANCEL → drop it; re-arm the idle probe so a non-responsive call
-   * doesn't strand in silence.
+   * ids. If accept lands while the reply is still streaming we remember it
+   * and speak the moment generation finalizes. ACCEPT (finalized) → speak
+   * via session.say() and emit ai.text.final. CANCEL → drop it (aborting
+   * generation if still running) and re-arm the idle probe.
    */
   private resolveCandidate(candidateId: string, accepted: boolean): void {
     const candidate = this.currentCandidate;
     if (!candidate || candidate.id !== candidateId) return;
-    if (candidate.timer) clearTimeout(candidate.timer);
-    this.currentCandidate = null;
+
+    if (accepted && !candidate.finalized) {
+      candidate.acceptedEarly = true;
+      this.logger.log(
+        `[Candidate] ${candidateId} → ACCEPT (waiting for stream to finish)`,
+      );
+      return;
+    }
+
+    const text = candidate.text;
+    this.clearCandidate();
     this.logger.log(
       `[Candidate] ${candidateId} → ${accepted ? 'ACCEPT (speaking)' : 'CANCEL'}`,
     );
@@ -1054,8 +1128,8 @@ export class AgentCallHandler {
       // onAiFinal emits the ai.text.final bubble + records the turn +
       // re-arms the idle probe. We emit the bubble first so it lands
       // as the voice begins.
-      this.onAiFinal(candidate.text);
-      void this.safeSay(candidate.text, AgentCallHandler.TTS_SAY_TIMEOUT_MS, {
+      this.onAiFinal(text);
+      void this.safeSay(text, AgentCallHandler.TTS_SAY_TIMEOUT_MS, {
         allowInterruptions: true,
         addToChatCtx: true,
       }).then((result) => {
@@ -1236,6 +1310,9 @@ export class AgentCallHandler {
     this.emitTyped({
       type: 'transcript.final',
       data: {
+        // Carry the id so api-gateway persists the Message under it and the
+        // parallel suggestions.generated (parentMessageId=messageId) FK holds.
+        messageId,
         text,
         sttProvider: this.userContext.config?.stt?.provider ?? 'deepgram',
       },
@@ -1243,10 +1320,10 @@ export class AgentCallHandler {
     this.publishLegacyFinal('user', text);
 
     if (this.conversationId && this.userContext.template) {
-      // Main reply: generate → present as a candidate (NOT auto-spoken).
-      // This is the primary turn now that the session has no LLM —
-      // generateAndPresentReply emits ai.thinking, generates, and either
-      // startCandidate(reply) or falls back to the silence line.
+      // Main reply: generate (streaming) → present as a candidate (NOT
+      // auto-spoken). This is the primary turn now that the session has no
+      // LLM — generateAndPresentReply emits ai.thinking, streams the reply
+      // into a live candidate card, then finalizes or falls back to silence.
       void this.generateAndPresentReply(text);
 
       // Quick replies in parallel — best-effort chips the user can tap

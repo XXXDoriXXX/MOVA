@@ -59,6 +59,14 @@ const MAX_OUTPUT_TOKENS = 200;
 const LLM_TIMEOUT_MS = 2_000;
 
 /**
+ * The main spoken reply gets a more generous budget than the quick-reply
+ * chips: it's the primary turn (not best-effort), can be 1–2 full
+ * sentences, and we'd rather wait a beat than ship a half-sentence.
+ */
+const REPLY_MAX_TOKENS = 256;
+const REPLY_TIMEOUT_MS = 8_000;
+
+/**
  * Generates 3 short reply candidates after each interlocutor turn.
  *
  * Runs in PARALLEL with the main LLM turn — does NOT block the primary
@@ -126,48 +134,22 @@ export class SuggestionsService {
     preferProvider?: LlmProviderEnum,
   ): Promise<string | null> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
-    const styleAddendum = await this.styleResolver.resolve(
-      request.userId,
-      request.styleId,
-    );
+    const timeout = setTimeout(() => controller.abort(), REPLY_TIMEOUT_MS);
     try {
       const { provider } = this.registry.selectLlm(preferProvider);
-      const lang = request.language === 'en' ? 'English' : 'Ukrainian';
-      const systemParts = [
-        `You are speaking on a live phone call on behalf of a deaf-mute user.`,
-        `Reply in ${lang}, 1–2 short sentences, plain text only (it goes to`,
-        `text-to-speech — no markdown, lists, or emoji). Sound like a real`,
-        `person on the line; never reveal you are an AI.`,
-        `--- Role / context ---`,
-        request.systemPrompt,
-      ];
-      if (styleAddendum) systemParts.push(styleAddendum);
-      const recentBlock = request.recentMessages
-        .slice(-10)
-        .map((m) => `${m.role}: ${m.text}`)
-        .join('\n');
-      const userParts = [
-        recentBlock ? `Recent dialogue:\n${recentBlock}\n` : '',
-        `Interlocutor just said: "${request.parentMessageText}"`,
-        `Reply now.`,
-      ];
+      const messages = await this.buildReplyMessages(request);
       const raw = await this.registry.runLlm(
         provider.id as LlmProviderEnum,
         (p) =>
           p.generate({
-            messages: [
-              { role: 'system', content: systemParts.join('\n') },
-              { role: 'user', content: userParts.join('\n') },
-            ],
-            maxTokens: 120,
+            messages,
+            maxTokens: REPLY_MAX_TOKENS,
             temperature: 0.6,
             signal: controller.signal,
           }),
         { conversationId: request.conversationId },
       );
-      const cleaned = raw.trim().replace(/^["']|["']$/g, '').slice(0, 500);
-      return cleaned.length > 0 ? cleaned : null;
+      return cleanReply(raw);
     } catch (err) {
       this.logger.debug(
         `generateReply LLM call failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -176,6 +158,91 @@ export class SuggestionsService {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  /**
+   * Streaming counterpart of generateReply. Invokes `onChunk` with the
+   * cumulative cleaned text after every token batch so the caller can
+   * forward a live preview to the mobile client. Resolves to the final
+   * cleaned text (or null on failure / empty output).
+   *
+   * `signal` lets the caller abort generation early (user cancelled the
+   * candidate, or a newer interlocutor turn superseded it).
+   */
+  async generateReplyStream(
+    request: SuggestionsRequest,
+    onChunk: (cumulativeText: string) => void,
+    preferProvider?: LlmProviderEnum,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REPLY_TIMEOUT_MS);
+    const onAbort = () => controller.abort();
+    signal?.addEventListener('abort', onAbort);
+    try {
+      const { provider } = this.registry.selectLlm(preferProvider);
+      const messages = await this.buildReplyMessages(request);
+      const full = await this.registry.runLlm(
+        provider.id as LlmProviderEnum,
+        async (p) => {
+          let acc = '';
+          for await (const chunk of p.stream({
+            messages,
+            maxTokens: REPLY_MAX_TOKENS,
+            temperature: 0.6,
+            signal: controller.signal,
+          })) {
+            acc += chunk;
+            const cleaned = cleanReply(acc);
+            if (cleaned) onChunk(cleaned);
+          }
+          return acc;
+        },
+        { conversationId: request.conversationId },
+      );
+      return cleanReply(full);
+    } catch (err) {
+      this.logger.debug(
+        `generateReplyStream LLM call failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  /** Shared prompt assembly for the main spoken reply (streaming + not). */
+  private async buildReplyMessages(
+    request: SuggestionsRequest,
+  ): Promise<Array<{ role: 'system' | 'user'; content: string }>> {
+    const styleAddendum = await this.styleResolver.resolve(
+      request.userId,
+      request.styleId,
+    );
+    const lang = request.language === 'en' ? 'English' : 'Ukrainian';
+    const systemParts = [
+      `You are speaking on a live phone call on behalf of a deaf-mute user.`,
+      `Reply in ${lang}, 1–2 short sentences, plain text only (it goes to`,
+      `text-to-speech — no markdown, lists, or emoji). Sound like a real`,
+      `person on the line; never reveal you are an AI.`,
+      `--- Role / context ---`,
+      request.systemPrompt,
+    ];
+    if (styleAddendum) systemParts.push(styleAddendum);
+    const recentBlock = request.recentMessages
+      .slice(-10)
+      .map((m) => `${m.role}: ${m.text}`)
+      .join('\n');
+    const userParts = [
+      recentBlock ? `Recent dialogue:\n${recentBlock}\n` : '',
+      `Interlocutor just said: "${request.parentMessageText}"`,
+      `Reply now.`,
+    ];
+    return [
+      { role: 'system', content: systemParts.join('\n') },
+      { role: 'user', content: userParts.join('\n') },
+    ];
   }
 
   /**
@@ -358,4 +425,10 @@ export class SuggestionsService {
     // emit here intentionally omits ids — the public WS protocol carries
     // ids that the consumer adds before forwarding to the mobile client.
   }
+}
+
+/** Trim, strip wrapping quotes, and cap length. Returns null if empty. */
+function cleanReply(raw: string): string | null {
+  const cleaned = raw.trim().replace(/^["']|["']$/g, '').slice(0, 500);
+  return cleaned.length > 0 ? cleaned : null;
 }

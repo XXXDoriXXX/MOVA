@@ -31,6 +31,10 @@ interface EndConversationInput {
 }
 
 interface InsertMessageInput {
+  /** Optional explicit primary key. When provided (agent-worker plumbs a
+   *  pre-generated UUID), the row is saved under it so cross-event FKs
+   *  (suggestions → parent message) resolve. Omit to let the DB generate. */
+  id?: string;
   conversationId: string;
   role: MessageRole;
   content: string;
@@ -266,6 +270,7 @@ export class ConversationsService {
 
   async appendMessage(input: InsertMessageInput): Promise<Message> {
     return this.messages.save({
+      ...(input.id ? { id: input.id } : {}),
       conversationId: input.conversationId,
       role: input.role,
       content: input.content,

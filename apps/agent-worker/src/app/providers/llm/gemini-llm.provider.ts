@@ -14,9 +14,12 @@ import { AiSdkLlmAdapter } from './ai-sdk-llm.adapter';
  * stronger on multilingual (incl. Ukrainian) over long contexts.
  *
  * Model selection:
- *   - default: gemini-2.5-flash (cheap, fast, multimodal-capable).
- *   - override per-call via options.model (e.g. 'gemini-2.5-pro' for
- *     reasoning-heavy templates).
+ *   - default: gemini-2.5-flash-lite — cheapest current-gen Gemini
+ *     ($0.10/$0.40 per 1M tok, ~6× cheaper output than gemini-2.5-flash)
+ *     with strong multilingual incl. Ukrainian. This is the live-call
+ *     workhorse (it's the health-ranked fallback when OpenAI is down).
+ *   - override per-call via options.model ('gemini-2.5-flash' / '-pro')
+ *     for reasoning-heavy or higher-stakes templates.
  *
  * Configuration is bound at construction; one GoogleGenerativeAIProvider
  * client lives for the process lifetime. The SDK pools connections.
@@ -24,7 +27,7 @@ import { AiSdkLlmAdapter } from './ai-sdk-llm.adapter';
 @Injectable()
 export class GeminiLlmProvider extends AiSdkLlmAdapter {
   readonly id = LlmProviderEnum.GEMINI;
-  readonly defaultModel = 'gemini-2.5-flash';
+  readonly defaultModel = 'gemini-2.5-flash-lite';
 
   private readonly client: GoogleGenerativeAIProvider;
 

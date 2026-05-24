@@ -107,6 +107,28 @@ export const ServerEvent = {
     }),
   }),
 
+  /**
+   * Candidate AI reply — produced by the LLM but NOT yet spoken.
+   * Mobile renders this as a preview bubble so the user reads what's
+   * about to go out and either accepts (or lets the auto-mode timer
+   * elapse) or cancels. After accept the standard ai.text.final +
+   * ai.tts.start/end events follow as if the agent had spoken it
+   * directly; after cancel the candidate is discarded silently.
+   */
+  aiTextCandidate: envelope.extend({
+    type: z.literal('ai.text.candidate'),
+    data: z.object({
+      candidateId: z.string().min(1),
+      text: z.string(),
+      source: z.object({
+        provider: z.string(),
+        model: z.string(),
+      }),
+      /** ms until auto-accept; null in manual mode. */
+      autoAcceptInMs: z.number().int().nonnegative().nullable(),
+    }),
+  }),
+
   /** TTS started speaking. */
   aiTtsStart: envelope.extend({
     type: z.literal('ai.tts.start'),
@@ -211,6 +233,7 @@ export const ServerEventSchema = z.discriminatedUnion('type', [
   ServerEvent.aiThinking,
   ServerEvent.aiTextPartial,
   ServerEvent.aiTextFinal,
+  ServerEvent.aiTextCandidate,
   ServerEvent.aiTtsStart,
   ServerEvent.aiTtsEnd,
   ServerEvent.suggestionsNew,
@@ -277,6 +300,47 @@ export const ClientCommand = {
     }),
   }),
 
+  /**
+   * Promote a pending AI candidate to actual speech. Mobile sends this
+   * either explicitly (manual mode — user tapped "Send") or implicitly
+   * when its auto-mode countdown ring elapses without the user tapping
+   * cancel. Server idempotent: a second accept for the same candidateId
+   * is a no-op.
+   */
+  acceptAiReply: z.object({
+    type: z.literal('user.accept_ai_reply'),
+    data: z.object({
+      candidateId: z.string().min(1),
+    }),
+  }),
+
+  /**
+   * Drop a pending AI candidate without speaking it. The agent then
+   * waits for the user to either type something or accept the next
+   * candidate (which the framework will generate on the next turn).
+   */
+  cancelAiReply: z.object({
+    type: z.literal('user.cancel_ai_reply'),
+    data: z.object({
+      candidateId: z.string().min(1),
+    }),
+  }),
+
+  /**
+   * Flip the per-call "auto-accept AI candidates" toggle. When ON the
+   * agent waits a fixed window before auto-promoting the candidate
+   * (current behaviour, just with a visible "about to speak" preview);
+   * when OFF every reply waits for explicit accept. Toggle is per-call,
+   * not persisted to the user profile — different calls may warrant
+   * different control levels.
+   */
+  setAutoMode: z.object({
+    type: z.literal('user.set_auto_mode'),
+    data: z.object({
+      enabled: z.boolean(),
+    }),
+  }),
+
   endCall: z.object({
     type: z.literal('user.end_call'),
   }),
@@ -293,6 +357,9 @@ export const ClientCommandSchema = z.discriminatedUnion('type', [
   ClientCommand.changeVoice,
   ClientCommand.changeModel,
   ClientCommand.changeStyle,
+  ClientCommand.acceptAiReply,
+  ClientCommand.cancelAiReply,
+  ClientCommand.setAutoMode,
   ClientCommand.endCall,
   ClientCommand.ping,
 ]);

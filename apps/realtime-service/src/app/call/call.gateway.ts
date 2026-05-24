@@ -339,6 +339,39 @@ export class CallGateway implements OnModuleDestroy {
         );
         return;
 
+      case 'user.accept_ai_reply':
+        await this.redis.publish(
+          channel,
+          JSON.stringify({
+            action: CallControlAction.ACCEPT_AI_REPLY,
+            candidateId: cmd.data.candidateId,
+            initiatedBy: sockData(socket).userId,
+          }),
+        );
+        return;
+
+      case 'user.cancel_ai_reply':
+        await this.redis.publish(
+          channel,
+          JSON.stringify({
+            action: CallControlAction.CANCEL_AI_REPLY,
+            candidateId: cmd.data.candidateId,
+            initiatedBy: sockData(socket).userId,
+          }),
+        );
+        return;
+
+      case 'user.set_auto_mode':
+        await this.redis.publish(
+          channel,
+          JSON.stringify({
+            action: CallControlAction.SET_AUTO_MODE,
+            enabled: cmd.data.enabled,
+            initiatedBy: sockData(socket).userId,
+          }),
+        );
+        return;
+
       case 'user.end_call':
         await this.redis.publish(
           channel,

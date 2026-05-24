@@ -86,6 +86,25 @@ export function mapInternalToServer(event: InternalCallEvent): ServerEvent | nul
         },
       };
 
+    case 'ai.text.candidate':
+      // Pass-through: candidate is the gate event the mobile UI shows
+      // before TTS runs. autoAcceptInMs comes from the agent's
+      // per-call auto-mode setting; null means manual.
+      return {
+        type: 'ai.text.candidate',
+        id,
+        timestamp,
+        data: {
+          candidateId: event.data.candidateId,
+          text: event.data.text,
+          source: {
+            provider: event.data.llmProvider,
+            model: event.data.llmModel,
+          },
+          autoAcceptInMs: event.data.autoAcceptInMs,
+        },
+      };
+
     case 'ai.tts.end':
       return {
         type: 'ai.tts.end',

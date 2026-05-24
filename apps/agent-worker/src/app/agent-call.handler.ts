@@ -218,6 +218,53 @@ export class AgentCallHandler {
     'Здається, нас не чути. Я ще трохи зачекаю і покладу слухавку.',
   ];
 
+  /**
+   * Per-call "preview before speak" controls. When ON (default), the
+   * LLM's reply for each interlocutor turn pauses briefly as a
+   * candidate that the user can see, accept, or cancel before TTS
+   * plays. The auto-accept timer fires after AUTO_ACCEPT_DELAY_MS so
+   * normal flow still feels conversational. When OFF, every reply
+   * waits for an explicit accept WS command from mobile.
+   *
+   * Per-call (not per-user) on purpose: a sensitive call to a doctor
+   * warrants tighter control than a delivery dispatch; the toggle
+   * lives on the in-call drawer.
+   */
+  private autoMode = true;
+  private static readonly AUTO_ACCEPT_DELAY_MS = 3_000;
+  /** Manual mode has a long-tail safety timeout so a stuck mobile
+   *  client (lost the candidate event, never accepted) doesn't leak
+   *  the pending Promise forever. 60s is long enough for any human
+   *  decision; past that we fail closed (cancel). */
+  private static readonly MANUAL_TIMEOUT_MS = 60_000;
+
+  /**
+   * The single in-flight AI candidate awaiting a user decision. Only
+   * ever one at a time — LiveKit serialises turns through its speech
+   * queue, and our control surface (accept/cancel by candidateId) is
+   * unambiguous as long as we don't pipeline. A new conversation_item
+   * arriving while a candidate is still pending implicitly cancels
+   * the previous one (mobile drops its stale chip when it sees the
+   * new ai.text.candidate event).
+   */
+  private currentCandidate: {
+    id: string;
+    text: string;
+    resolveDecision: (accepted: boolean) => void;
+    decision: Promise<boolean>;
+    timer: NodeJS.Timeout | null;
+  } | null = null;
+
+  /**
+   * Counter incremented before every call to `session.say()` we make
+   * directly (greeting, fallback line, idle probe, user-typed input
+   * via interruptAndSpeak). LiveKit fires conversation_item_added for
+   * those too — the handler reads + decrements this counter so those
+   * speeches DON'T get wrapped in a candidate gate. Without this the
+   * initial greeting would wait for accept and never play.
+   */
+  private bypassCandidateCount = 0;
+
   constructor(
     private readonly roomName: string,
     public readonly userContext: AgentContext,
@@ -409,7 +456,17 @@ export class AgentCallHandler {
           voice: sessionResult.ttsProvenance.voice,
         },
       });
-      const agent = this.agentFactory.createAgent(this.userContext);
+      // GatedAgent overrides ttsNode to await this.gateTts() before
+      // letting LiveKit's default ttsNode produce audio. That gate
+      // resolves true (audio plays) or false (audio dropped) based on
+      // the candidate decision flow above. When no candidate is in
+      // flight — greeting / fallback / idle-probe paths set
+      // bypassCandidateCount so startCandidate never registered one —
+      // gateTts() returns true immediately and we pass through.
+      const agent = new GatedAgent(
+        { instructions: this.agentFactory.buildSystemPrompt(this.userContext) },
+        () => this.gateTts(),
+      );
 
       this.bindSessionEvents(this.session);
 
@@ -848,7 +905,21 @@ export class AgentCallHandler {
       }
       if (!text) return;
 
-      this.onAiFinal(text);
+      // Bypass path: this conversation_item_added came from a direct
+      // session.say() WE made (greeting / fallback / idle-probe / user-
+      // typed via interruptAndSpeak). Pass straight to onAiFinal — those
+      // are already audible by the time mobile hears about them, so a
+      // candidate gate would just stall the playback.
+      if (this.bypassCandidateCount > 0) {
+        this.bypassCandidateCount -= 1;
+        this.onAiFinal(text);
+        return;
+      }
+
+      // Default path: the LLM auto-replied to a user_input_transcribed.
+      // Gate it through the candidate machinery so the user reads
+      // before-the-fact and can cancel.
+      this.startCandidate(text);
     });
 
     sessionEmitter.on('error', (err: Record<string, unknown> | Error) => {
@@ -906,6 +977,155 @@ export class AgentCallHandler {
         void this.handleAiSilence('plugin_error');
       }
     });
+  }
+
+  // ─── AI candidate gate (preview-before-speak) ──────────
+
+  /**
+   * Public toggle for the mobile drawer's auto-mode switch.
+   * - true  → candidates auto-accept after AUTO_ACCEPT_DELAY_MS
+   * - false → candidates wait for explicit user.accept_ai_reply
+   *
+   * If a candidate is currently pending we adjust ITS timer too: a
+   * mid-flight flip from auto→manual cancels the auto-accept; a flip
+   * from manual→auto starts one. This way the toggle "feels live".
+   */
+  setAutoMode(enabled: boolean): void {
+    if (this.autoMode === enabled) return;
+    this.autoMode = enabled;
+    const candidate = this.currentCandidate;
+    if (!candidate) return;
+    if (candidate.timer) {
+      clearTimeout(candidate.timer);
+      candidate.timer = null;
+    }
+    if (enabled) {
+      candidate.timer = setTimeout(
+        () => this.resolveCandidate(candidate.id, true),
+        AgentCallHandler.AUTO_ACCEPT_DELAY_MS,
+      );
+    }
+    this.logger.log(`[Candidate] auto-mode → ${enabled ? 'ON' : 'OFF'}`);
+  }
+
+  /** Public — called from the WS control handler. Idempotent on a
+   *  stale candidateId (different turn already resolved) so a delayed
+   *  network packet can't double-promote. */
+  acceptAiReply(candidateId: string): void {
+    this.resolveCandidate(candidateId, true);
+  }
+
+  cancelAiReply(candidateId: string): void {
+    this.resolveCandidate(candidateId, false);
+  }
+
+  /**
+   * Register a new candidate for the just-LLM-produced text. Emits the
+   * ai.text.candidate event to mobile so it can render the preview
+   * bubble, starts the auto-accept timer (if in auto mode), and
+   * stashes the resolver so the ttsNode gate can await the decision.
+   * Replaces any previous in-flight candidate (which can only happen
+   * if the LLM produced two replies back-to-back — rare, we just
+   * silently cancel the previous one).
+   */
+  private startCandidate(text: string): void {
+    if (this.currentCandidate) {
+      // Replace: cancel pending so the gate unblocks (returns false →
+      // no audio). Mobile sees the new candidate event and drops its
+      // stale preview.
+      this.resolveCandidate(this.currentCandidate.id, false);
+    }
+    const id = randomUUID();
+    const llmProvider =
+      this.userContext.config?.llm?.provider ??
+      this.userContext.template?.defaultLlmProvider ??
+      'openai';
+    const llmModel =
+      this.userContext.config?.llm?.model ??
+      this.userContext.template?.defaultLlmModel ??
+      'gpt-4o-mini';
+
+    let resolveDecision!: (accepted: boolean) => void;
+    const decision = new Promise<boolean>((resolve) => {
+      resolveDecision = resolve;
+    });
+    // Safety: never let the gate hang indefinitely. Manual mode has a
+    // 60s ceiling; if the user just sits there, fail closed (cancel)
+    // so subsequent turns aren't blocked behind a leaked Promise.
+    const safetyTimer = setTimeout(
+      () => this.resolveCandidate(id, false),
+      this.autoMode
+        ? AgentCallHandler.AUTO_ACCEPT_DELAY_MS
+        : AgentCallHandler.MANUAL_TIMEOUT_MS,
+    );
+
+    this.currentCandidate = {
+      id,
+      text,
+      resolveDecision,
+      decision,
+      timer: safetyTimer,
+    };
+
+    this.logger.log(
+      `[Candidate] new id=${id} autoMode=${this.autoMode} text="${text.slice(0, 40)}…"`,
+    );
+    this.emitTyped({
+      type: 'ai.text.candidate',
+      data: {
+        candidateId: id,
+        text,
+        llmProvider,
+        llmModel,
+        autoAcceptInMs: this.autoMode
+          ? AgentCallHandler.AUTO_ACCEPT_DELAY_MS
+          : null,
+      },
+    });
+  }
+
+  /** Resolves the current candidate (if id matches). Idempotent on
+   *  stale ids. Emits ai.text.final on accept so the chat-history
+   *  bubble exists; on cancel we just drop the preview, no final. */
+  private resolveCandidate(candidateId: string, accepted: boolean): void {
+    const candidate = this.currentCandidate;
+    if (!candidate || candidate.id !== candidateId) return;
+    if (candidate.timer) {
+      clearTimeout(candidate.timer);
+      candidate.timer = null;
+    }
+    this.currentCandidate = null;
+    candidate.resolveDecision(accepted);
+    this.logger.log(
+      `[Candidate] ${candidateId} → ${accepted ? 'ACCEPT (TTS will play)' : 'CANCEL (no TTS)'}`,
+    );
+    if (accepted) {
+      // Now that we know it's going to be spoken, publish the canonical
+      // ai.text.final so it lands in chat history as the final bubble.
+      const llmProvider =
+        this.userContext.config?.llm?.provider ??
+        this.userContext.template?.defaultLlmProvider ??
+        'openai';
+      const llmModel =
+        this.userContext.config?.llm?.model ??
+        this.userContext.template?.defaultLlmModel ??
+        'gpt-4o-mini';
+      this.emitTyped({
+        type: 'ai.text.final',
+        data: { text: candidate.text, llmProvider, llmModel },
+      });
+    }
+  }
+
+  /** Called from the GatedAgent's ttsNode override — awaits the
+   *  user's decision (or auto-accept timer) before the audio pipeline
+   *  produces a single frame. Returns true → audio plays, false → no
+   *  audio. When no candidate is registered (greeting/fallback/probe
+   *  paths that bypassed the gate) we pass through unconditionally. */
+  async gateTts(): Promise<boolean> {
+    const candidate = this.currentCandidate;
+    if (!candidate) return true;
+    return candidate.decision;
   }
 
   // ─── Idle-probe (interlocutor goes silent) ─────────────
@@ -1184,6 +1404,13 @@ export class AgentCallHandler {
       return { ok: false, reason: 'error', error: new Error('session is null') };
     }
     const session = this.session;
+    // Bump the bypass counter BEFORE say() so the conversation_item_added
+    // event LiveKit fires inside session.say() finds bypassCandidateCount>0
+    // and skips the candidate-gate path. Otherwise the greeting / fallback
+    // / idle-probe / user-typed lines would wait for an accept that's
+    // never coming (the user shouldn't have to confirm their own typed
+    // text or the agent's greeting).
+    this.bypassCandidateCount += 1;
     let timer: NodeJS.Timeout | null = null;
     const timeoutPromise = new Promise<SaySafeResult>((resolve) => {
       timer = setTimeout(() => {
@@ -1405,5 +1632,40 @@ export class AgentCallHandler {
         JSON.stringify({ roomName: this.roomName, sender, text, isFinal: false }),
       )
       .catch((err: Error) => this.logger.warn(`Legacy interim publish failed: ${err.message}`));
+  }
+}
+
+/**
+ * voice.Agent subclass whose ttsNode awaits a gate before the audio
+ * pipeline can produce a single frame. The gate is a Promise-returning
+ * callback supplied by AgentCallHandler — resolved true ⇒ pass through
+ * to LiveKit's default ttsNode (audio plays), resolved false ⇒ return
+ * null (skip TTS entirely). When the handler has no pending candidate
+ * (greeting / fallback / idle-probe / user-typed paths bumped the
+ * bypass counter), gateTts() returns true immediately and we behave
+ * like a vanilla voice.Agent.
+ *
+ * Why override ttsNode and not llmNode: by ttsNode time the LLM
+ * already finalised the assistant message AND fired
+ * conversation_item_added (which the handler uses to register the
+ * candidate). Gating at the TTS step lets the user see the text
+ * before audio commits — gating at LLM time would also need its own
+ * text-extraction logic and would race the existing emit path.
+ */
+class GatedAgent extends voice.Agent {
+  constructor(
+    opts: ConstructorParameters<typeof voice.Agent>[0],
+    private readonly gate: () => Promise<boolean>,
+  ) {
+    super(opts);
+  }
+
+  override async ttsNode(
+    text: Parameters<voice.Agent['ttsNode']>[0],
+    modelSettings: Parameters<voice.Agent['ttsNode']>[1],
+  ): ReturnType<voice.Agent['ttsNode']> {
+    const accepted = await this.gate();
+    if (!accepted) return null;
+    return voice.Agent.default.ttsNode(this, text, modelSettings);
   }
 }

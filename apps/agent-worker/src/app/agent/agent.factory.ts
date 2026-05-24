@@ -142,6 +142,14 @@ export class AgentFactory {
       : 'Доброго дня. Я використовую асистента, бо не чую.';
   }
 
+  /** Public alias of createSystemPrompt for callers that need to assemble
+   *  their own Agent subclass (e.g. the gated-TTS wrapper in
+   *  agent-call.handler). Kept thin so the prompt construction logic
+   *  stays a single source of truth. */
+  buildSystemPrompt(ctx: AgentContext): string {
+    return this.createSystemPrompt(ctx);
+  }
+
   private createSystemPrompt(ctx: AgentContext): string {
     // Prompt assembled in four sections — order matters: PERSONA first
     // (LLM uses earliest content to anchor "who am I"), then PURPOSE

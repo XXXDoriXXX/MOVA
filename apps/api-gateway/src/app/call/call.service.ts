@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   Inject,
   Injectable,
   InternalServerErrorException,
@@ -95,6 +96,31 @@ export class CallService {
 
   async initiateCall(input: InitiateCallInput): Promise<InitiateCallResult> {
     const { userId, dto } = input;
+
+    // 0. Concurrent-call gate. Two parallel /calls/start from the same
+    //    user (flaky mobile retry loop, stolen JWT, accidental double-tap)
+    //    must NOT both dial SIP — each leg would bill independently and
+    //    the user-side UI can't sensibly show two simultaneous calls.
+    //    We rely on the partial index `idx_conversations_status_active`
+    //    so this counts in microseconds. The race window between this
+    //    check and the createPending INSERT below is tiny but real;
+    //    Phase 3.1 Redlock around the whole initiateCall closes it
+    //    cleanly. For now the second INSERT would still create a row,
+    //    but the second SIP dial would race the first to LiveKit and
+    //    one of them gets a duplicate-room-name 409 — fail-safe.
+    const activeCount = await this.conversations.countActiveForUser(userId);
+    if (activeCount > 0) {
+      this.logger.warn({
+        msg: 'call.start.alreadyOnCall',
+        userId,
+        activeCount,
+      });
+      throw new ConflictException({
+        code: 'CALL_IN_PROGRESS',
+        message:
+          'Already on a call. End the current one before starting another.',
+      });
+    }
 
     // 1. Eligibility — throws InsufficientBalanceError if blocked / out of funds.
     //    This avoids the cost of LiveKit room creation for a user that won't

@@ -73,13 +73,35 @@ export const envSchema = z.object({
   JWT_REFRESH_TTL: z.string().default('30d'),
 
   // ── Admin panel ───────────────────────────────────
-  // SECURITY: simple bearer-token auth for the admin UI. Set this in
-  // production. When empty (dev), the admin endpoints respond with 503
-  // and the UI shows a clear "set ADMIN_PASSWORD" hint. Authentication
-  // is intentionally bare-bones — for a single dev/operator tool,
-  // password-only is fine; for multi-admin teams, swap to JWT + DB
-  // role flags later.
+  // SECURITY: bearer-token auth for the admin UI. TWO env paths,
+  // checked in order:
+  //
+  //   1. ADMIN_PASSWORD_HASH (preferred, production) — bcrypt hash
+  //      of the password. If the .env file leaks, an attacker still
+  //      has to crack the hash before they can call admin endpoints.
+  //      Generate with:
+  //        node -e "console.log(require('bcrypt').hashSync(process.argv[1],12))" 'mypassword'
+  //
+  //   2. ADMIN_PASSWORD (legacy plaintext) — dev convenience. The
+  //      guard logs a deprecation warning the first time it matches.
+  //      Migrate to ADMIN_PASSWORD_HASH for any environment you
+  //      don't fully control.
+  //
+  // When neither is set, the password path is disabled — admin
+  // endpoints return 503 with a clear hint. JWT auth via a DB user
+  // with role=ADMIN still works regardless.
   ADMIN_PASSWORD: z.string().min(8).optional(),
+  // Bcrypt format check: $2[abxy]$<cost>$<53chars>. We don't pin the
+  // cost factor (10–14 are all sane defaults); the prefix + length
+  // is enough to catch a paste mistake. .optional() because dev may
+  // run without admin auth at all.
+  ADMIN_PASSWORD_HASH: z
+    .string()
+    .regex(/^\$2[abxy]\$\d{2}\$/, {
+      message:
+        'ADMIN_PASSWORD_HASH must be a bcrypt hash (starts with $2a$ / $2b$ / $2x$ / $2y$). Generate with `node -e "console.log(require(\'bcrypt\').hashSync(process.argv[1],12))" \'mypassword\'`.',
+    })
+    .optional(),
 
   // ── LiveKit (SIP + WebRTC) ─────────────────────────
   LIVEKIT_URL: z

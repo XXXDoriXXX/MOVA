@@ -21,7 +21,15 @@ async function bootstrap(): Promise<void> {
 
   const config = app.get<ConfigService<AppEnv, true>>(ConfigService);
 
-  app.use(helmet({ contentSecurityPolicy: false }));
+  // No UI on this service — pure WS gateway + /metrics + /health.
+  // Helmet defaults (including the default-src 'self' CSP) are fine
+  // as-is. Adding HSTS + tighter Referrer-Policy to match api-gateway.
+  app.use(
+    helmet({
+      hsts: { maxAge: 15_552_000, includeSubDomains: true, preload: false },
+      referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    }),
+  );
   app.enableCors({ origin: true });
   app.useGlobalPipes(new ZodValidationPipe());
 

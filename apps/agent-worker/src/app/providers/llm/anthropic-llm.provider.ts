@@ -12,9 +12,10 @@ import { AiSdkLlmAdapter } from './ai-sdk-llm.adapter';
  * Anthropic Claude — primary fallback when OpenAI is degraded.
  *
  * Model selection:
- *   - default: claude-3-5-haiku (cheap + fast, comparable to gpt-4o-mini).
- *   - claude-3-5-sonnet available for higher quality if rate-limit budget
- *     allows.
+ *   - default: claude-haiku-4-5 — current-gen cheapest Claude ($1/$5 per
+ *     1M tok), much more capable than the retired 3.5-haiku at a similar
+ *     tier. Used as a fallback when OpenAI/Gemini are degraded.
+ *   - claude-sonnet-4-6 available per call for higher quality.
  *
  * Disabled when `ANTHROPIC_API_KEY` is missing. The registry detects this
  * via `healthCheck()` returning false and skips the provider in fallback
@@ -24,7 +25,7 @@ import { AiSdkLlmAdapter } from './ai-sdk-llm.adapter';
 export class AnthropicLlmProvider extends AiSdkLlmAdapter {
   private readonly logger = new Logger(AnthropicLlmProvider.name);
   readonly id = LlmProviderEnum.ANTHROPIC;
-  readonly defaultModel = 'claude-3-5-haiku-latest';
+  readonly defaultModel = 'claude-haiku-4-5';
 
   private readonly client: AnthropicProvider | null;
 

@@ -1043,7 +1043,7 @@ export class AgentCallHandler {
     const llmModel =
       this.userContext.config?.llm?.model ??
       this.userContext.template?.defaultLlmModel ??
-      'gpt-4o-mini';
+      'gpt-4.1-nano';
     this.emitTyped({
       type: 'ai.text.candidate',
       data: {
@@ -1354,7 +1354,7 @@ export class AgentCallHandler {
     const llmModel =
       this.userContext.config?.llm?.model ??
       this.userContext.template?.defaultLlmModel ??
-      'gpt-4o-mini';
+      'gpt-4.1-nano';
 
     this.emitTyped({
       type: 'ai.text.final',

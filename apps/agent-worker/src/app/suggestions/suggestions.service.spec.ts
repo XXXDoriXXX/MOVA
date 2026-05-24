@@ -89,13 +89,35 @@ describe('SuggestionsService.generate', () => {
     expect(result).toBeNull();
   });
 
-  it('returns null when the JSON has fewer than 3 items', async () => {
+  it('pads to 3 when the JSON has fewer items (LLM miscounted)', async () => {
+    // Previous behaviour was to reject anything ≠ exactly 3 — that meant
+    // a Llama variant returning 2 lost the user's quick replies entirely.
+    // Parser now duplicates the last item to fill out to 3 so the mobile
+    // picker always has the canonical chip count.
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: ['Так', 'Ні'] }),
     );
     const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
     const result = await svc.generate(baseRequest());
-    expect(result).toBeNull();
+    expect(result).toEqual(['Так', 'Ні', 'Ні']);
+  });
+
+  it('truncates to 3 when the JSON has more items', async () => {
+    const { registry } = makeRegistry(
+      JSON.stringify({ suggestions: ['a', 'b', 'c', 'd', 'e'] }),
+    );
+    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
+    const result = await svc.generate(baseRequest());
+    expect(result).toEqual(['a', 'b', 'c']);
+  });
+
+  it('extracts JSON from prose-prefixed output (Llama habit)', async () => {
+    const { registry } = makeRegistry(
+      'Sure, here are 3 replies:\n{"suggestions":["Привіт","Як справи","Бувай"]}',
+    );
+    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
+    const result = await svc.generate(baseRequest());
+    expect(result).toEqual(['Привіт', 'Як справи', 'Бувай']);
   });
 
   it('returns null when item exceeds 120 chars', async () => {

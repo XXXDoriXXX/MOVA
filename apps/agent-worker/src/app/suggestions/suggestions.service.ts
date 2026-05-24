@@ -45,7 +45,13 @@ export interface SuggestionsRequest {
  * Three short strings, each ≤ 120 chars (mirrors Suggestion.content column).
  */
 const SuggestionsJsonSchema = z.object({
-  suggestions: z.array(z.string().min(1).max(120)).length(3),
+  // Loosened from length(3) to a min/max range — LLMs (especially Groq's
+  // Llama variants) reliably hit 3 only ~70% of the time; they often
+  // return 2 or 4 even with explicit instructions. Strict length used to
+  // throw the entire batch away, so the user saw zero quick replies
+  // whenever the model miscounted. Now we accept anything 1-5 and the
+  // parser slices/pads to the canonical 3 below.
+  suggestions: z.array(z.string().min(1).max(120)).min(1).max(5),
 });
 
 /** Hard cap so a runaway model doesn't burn unbounded tokens. */
@@ -218,19 +224,42 @@ export class SuggestionsService {
    * shape via Zod.
    */
   private parseStrict(raw: string): string[] | null {
-    const passes = [raw, raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')];
+    // Try three extraction passes in increasing aggressiveness:
+    //   1. Raw — model obeyed and emitted plain JSON.
+    //   2. Stripped of ```json fences — common Groq Llama behaviour.
+    //   3. First {...} block via regex — catches "Here are your 3
+    //      suggestions: {...}" style prose-prefixed output.
+    const passes = [
+      raw,
+      raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''),
+      raw.match(/\{[\s\S]*\}/)?.[0] ?? '',
+    ];
     for (const candidate of passes) {
+      if (!candidate.trim()) continue;
       try {
         const parsed = JSON.parse(candidate.trim()) as unknown;
         const result = SuggestionsJsonSchema.safeParse(parsed);
         if (result.success) {
-          // Defensive: strip any trailing punctuation Groq might emit, cap length.
-          return result.data.suggestions.map((s) => s.trim().slice(0, 120));
+          const cleaned = result.data.suggestions
+            .map((s) => s.trim().slice(0, 120))
+            .filter((s) => s.length > 0);
+          // Pad if model returned <3 by duplicating the last item;
+          // truncate if >3 by taking the first 3. Mobile renders
+          // exactly 3 chips so any deviation breaks the layout.
+          if (cleaned.length === 0) continue;
+          while (cleaned.length < 3) cleaned.push(cleaned[cleaned.length - 1]!);
+          return cleaned.slice(0, 3);
         }
       } catch {
         // Try next pass.
       }
     }
+    // All passes failed — log the raw output so an operator looking at
+    // "why aren't suggestions showing?" sees what the LLM actually
+    // produced. Capped at 200 chars to avoid log spam on long responses.
+    this.logger.warn(
+      `[Suggestions] parseStrict could not extract a valid suggestions array. Raw output (truncated): ${raw.slice(0, 200)}`,
+    );
     return null;
   }
 
@@ -245,8 +274,14 @@ export class SuggestionsService {
       },
     };
     await this.redis.publish(RedisChannels.callEvents(req.conversationId), JSON.stringify(event));
-    this.logger.debug(
-      `Published 3 suggestions for conversation ${req.conversationId} (parent=${req.parentMessageId})`,
+    // Promoted from debug to log so an operator tailing
+    // \`npm run logs:agent\` can verify suggestions are actually firing
+    // for a live call — the previous debug level meant this line was
+    // invisible by default, which made "why no chips?" a real
+    // diagnostic puzzle. Sample of the first item kept in the message
+    // so the log is informative without being noisy (no full content).
+    this.logger.log(
+      `[Suggestions] published ${items.length} for conversation ${req.conversationId} (e.g. "${items[0]?.slice(0, 40) ?? ''}")`,
     );
     // Note: persisted Suggestion.id values are assigned by the api-gateway
     // consumer when it INSERTs the rows (Phase 4 part 2). The wire shape we

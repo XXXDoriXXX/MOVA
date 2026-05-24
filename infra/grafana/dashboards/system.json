@@ -1,0 +1,127 @@
+{
+  "annotations": { "list": [] },
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Service uptime",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "up{job=~\"api-gateway|realtime-service|agent-worker\"}",
+          "refId": "A",
+          "legendFormat": "{{ job }}"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ]
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
+    },
+    {
+      "title": "Memory (RSS, by service)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "targets": [
+        {
+          "expr": "process_resident_memory_bytes{job=~\"api-gateway|realtime-service|agent-worker\"}",
+          "refId": "A",
+          "legendFormat": "{{ job }}"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" } }
+    },
+    {
+      "title": "CPU usage (by service)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "targets": [
+        {
+          "expr": "rate(process_cpu_seconds_total{job=~\"api-gateway|realtime-service|agent-worker\"}[1m])",
+          "refId": "A",
+          "legendFormat": "{{ job }}"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit" } }
+    },
+    {
+      "title": "Event loop p99 lag (s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "targets": [
+        {
+          "expr": "nodejs_eventloop_lag_p99_seconds{job=~\"api-gateway|realtime-service|agent-worker\"}",
+          "refId": "A",
+          "legendFormat": "{{ job }}"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.05 },
+              { "color": "red", "value": 0.1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Active handles (by service)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "targets": [
+        {
+          "expr": "nodejs_active_handles_total{job=~\"api-gateway|realtime-service|agent-worker\"}",
+          "refId": "A",
+          "legendFormat": "{{ job }}"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+    {
+      "title": "Heap usage (by service)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 21 },
+      "targets": [
+        {
+          "expr": "nodejs_heap_size_used_bytes{job=~\"api-gateway|realtime-service|agent-worker\"}",
+          "refId": "A",
+          "legendFormat": "{{ job }} used"
+        },
+        {
+          "expr": "nodejs_heap_size_total_bytes{job=~\"api-gateway|realtime-service|agent-worker\"}",
+          "refId": "B",
+          "legendFormat": "{{ job }} total"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" } }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["mova", "system"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "Mova — System Health",
+  "uid": "mova-system",
+  "version": 1,
+  "weekStart": ""
+}

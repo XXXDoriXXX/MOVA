@@ -1,0 +1,18 @@
+# Grafana dashboard provisioning. Tells Grafana to scan a directory
+# for *.json dashboard files and auto-load them. The path matches the
+# bind-mount in docker-compose.
+apiVersion: 1
+
+providers:
+  - name: mova
+    orgId: 1
+    folder: Mova
+    type: file
+    disableDeletion: false
+    # Auto-reload on file change (5s poll) so a developer can iterate
+    # on dashboard JSON without restarting Grafana.
+    updateIntervalSeconds: 5
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true

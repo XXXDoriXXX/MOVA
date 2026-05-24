@@ -7,6 +7,7 @@ import * as google from '@livekit/agents-plugin-google';
 import { AgentConfigDto, TtsProviderEnum } from '@mova-back/shared-agent';
 
 import { GoogleCloudTts } from '../providers/google-cloud-tts';
+import { FallbackTts } from '../providers/fallback-tts';
 
 type OpenAITTSOptions = NonNullable<ConstructorParameters<typeof openai.TTS>[0]>;
 export type OpenAITTSVoice = OpenAITTSOptions['voice'];
@@ -30,7 +31,80 @@ export class TtsFactory {
     return this.resolve(agentConfig).tts;
   }
 
+  /**
+   * Resolve the active TTS, then optionally wrap it in a FallbackTts
+   * adapter if `TTS_FALLBACK_PROVIDER` env is set. The fallback uses
+   * the same factory entry-points (resolveOne) so any provider id
+   * the rest of the factory understands works as a fallback too.
+   *
+   * Setting `TTS_FALLBACK_PROVIDER=google` while `TTS_PROVIDER=gemini`
+   * gives us: try Gemini first (better quality on UA), on 429 / 5xx /
+   * 6s no-frame timeout fall back to Cloud TTS Chirp3 — without
+   * recreating the AgentSession. After 3 failures in 60s, primary
+   * goes into cooldown and we skip straight to secondary for 5 min.
+   *
+   * The provenance object reports the PRIMARY (what the operator
+   * configured) so the mobile call.config.changed banner doesn't
+   * flap on transient fallbacks. Banner-on-fallback is a separate
+   * provider.failure emit (which the fallback adapter triggers
+   * via on('error') forwarding).
+   */
   resolve(agentConfig?: AgentConfigDto): ResolvedTts {
+    const primary = this.resolveOne(agentConfig);
+    const fallbackProvider = this.config
+      .get<string>('TTS_FALLBACK_PROVIDER')
+      ?.toLowerCase() as TtsProviderEnum | undefined;
+    if (!fallbackProvider || fallbackProvider === primary.provider) {
+      // No fallback configured, or operator pointed it at the same
+      // provider — meaningless. Return primary as-is.
+      return primary;
+    }
+    let secondary: ResolvedTts;
+    try {
+      // Resolve fallback against a fresh AgentConfig that strips any
+      // per-call override pointing at primary. Operator-level env
+      // wins for the fallback choice; agentConfig.tts is intentionally
+      // ignored so a misbehaving per-call override can't force the
+      // fallback to be a known-bad provider.
+      secondary = this.resolveOne({
+        ...(agentConfig ?? {}),
+        tts: { provider: fallbackProvider },
+      } as AgentConfigDto);
+    } catch (err) {
+      // Fallback misconfigured (bad voice id, missing key). Don't
+      // fail call setup — just disable fallback for this call.
+      this.logger.warn(
+        `⚠️ [Factory: TTS] TTS_FALLBACK_PROVIDER=${fallbackProvider} failed to resolve: ${(err as Error).message}. Continuing without fallback.`,
+      );
+      return primary;
+    }
+    this.logger.log(
+      `🔌 [Factory: TTS] Fallback enabled: primary=${primary.provider} → fallback=${secondary.provider}`,
+    );
+    try {
+      const wrapped = new FallbackTts({
+        primary: primary.tts,
+        fallback: secondary.tts,
+      });
+      (wrapped as unknown as { setMaxListeners(n: number): void }).setMaxListeners(0);
+      return {
+        tts: wrapped,
+        provider: primary.provider,
+        voice: primary.voice,
+      };
+    } catch (err) {
+      // sample-rate / channel-count mismatch between providers.
+      // Log loudly so the operator knows the fallback is silently off.
+      this.logger.error(
+        `⚠️ [Factory: TTS] FallbackTts wrap failed: ${(err as Error).message}. Using primary only.`,
+      );
+      return primary;
+    }
+  }
+
+  /** Inner resolver that does the actual provider switch. Public
+   *  `resolve()` wraps this in optional FallbackTts. */
+  private resolveOne(agentConfig?: AgentConfigDto): ResolvedTts {
     // Precedence: ENV (operator override) > per-call config (user/template
     // preference) > default. ENV wins on purpose — operators need a kill
     // switch when a paid provider (e.g. ElevenLabs) is suddenly broken

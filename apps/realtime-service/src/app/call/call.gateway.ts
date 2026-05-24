@@ -360,13 +360,27 @@ export class CallGateway implements OnModuleDestroy {
       throw new Error('Missing token or conversationId');
     }
 
+    // Dual-secret rotation: try CURRENT first, then PREVIOUS if
+    // configured. Mirrors api-gateway's JwtStrategy logic so a token
+    // signed by the OLD secret keeps working through a deploy window.
+    // See env.validation.ts JWT_SECRET_PREVIOUS for the workflow.
     let payload: unknown;
+    const currentSecret = this.config.get('JWT_SECRET', { infer: true });
+    const previousSecret = this.config.get('JWT_SECRET_PREVIOUS', {
+      infer: true,
+    }) as string | undefined;
     try {
-      payload = await this.jwt.verifyAsync(token, {
-        secret: this.config.get('JWT_SECRET', { infer: true }),
-      });
-    } catch {
-      throw new Error('Invalid token');
+      payload = await this.jwt.verifyAsync(token, { secret: currentSecret });
+    } catch (currentErr) {
+      if (previousSecret) {
+        try {
+          payload = await this.jwt.verifyAsync(token, { secret: previousSecret });
+        } catch {
+          throw new Error('Invalid token');
+        }
+      } else {
+        throw new Error('Invalid token');
+      }
     }
     const parsed = JwtPayloadSchema.safeParse(payload);
     if (!parsed.success) {

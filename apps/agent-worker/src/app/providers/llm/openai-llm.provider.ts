@@ -12,8 +12,10 @@ import { AiSdkLlmAdapter } from './ai-sdk-llm.adapter';
  * OpenAI — primary LLM provider for MVP.
  *
  * Model selection:
- *   - default: gpt-4o-mini (cheap, ~600ms TTFT, good Ukrainian).
- *   - can be overridden per call via options.model.
+ *   - default: gpt-4.1-nano — cheapest current-gen OpenAI ($0.10/$0.40 per
+ *     1M tok, vs gpt-4o-mini's $0.15/$0.60) and a newer base model. Good
+ *     enough for short conversational replies; bump to gpt-4.1-mini per
+ *     call (options.model) or via LLM_MODEL for higher-stakes templates.
  *
  * Configuration is bound at construction; we instantiate one OpenAIProvider
  * client for the lifetime of the process. The SDK pools connections.
@@ -21,7 +23,7 @@ import { AiSdkLlmAdapter } from './ai-sdk-llm.adapter';
 @Injectable()
 export class OpenAiLlmProvider extends AiSdkLlmAdapter {
   readonly id = LlmProviderEnum.OPENAI;
-  readonly defaultModel = 'gpt-4o-mini';
+  readonly defaultModel = 'gpt-4.1-nano';
 
   private readonly client: OpenAIProvider;
 

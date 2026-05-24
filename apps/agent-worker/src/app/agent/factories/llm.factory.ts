@@ -107,21 +107,21 @@ export class LlmFactory {
   ): string {
     switch (provider) {
       case LlmProviderEnum.OPENAI:
-        return requestedModel || this.config.get<string>('LLM_MODEL', 'gpt-4o-mini');
+        return requestedModel || this.config.get<string>('LLM_MODEL', 'gpt-4.1-nano');
       case LlmProviderEnum.GEMINI: {
-        const m = requestedModel || this.config.get<string>('LLM_MODEL', 'google/gemini-2.5-flash');
+        const m = requestedModel || this.config.get<string>('LLM_MODEL', 'google/gemini-2.5-flash-lite');
         return m.startsWith('google/') ? m : `google/${m}`;
       }
       case LlmProviderEnum.ANTHROPIC: {
-        const m = requestedModel || this.config.get<string>('LLM_MODEL', 'anthropic/claude-3.5-sonnet');
+        const m = requestedModel || this.config.get<string>('LLM_MODEL', 'anthropic/claude-haiku-4-5');
         return m.startsWith('anthropic/') ? m : `anthropic/${m}`;
       }
       case LlmProviderEnum.GROQ: {
-        const m = requestedModel || this.config.get<string>('LLM_MODEL', 'groq/llama-3.1-70b-versatile');
+        const m = requestedModel || this.config.get<string>('LLM_MODEL', 'groq/llama-3.1-8b-instant');
         return m.startsWith('groq/') ? m : `groq/${m}`;
       }
       default:
-        return 'gpt-4o-mini';
+        return 'gpt-4.1-nano';
     }
   }
 
@@ -178,7 +178,7 @@ export class LlmFactory {
         this.logger.warn(
           `⚠️ [Factory: LLM] Unknown provider "${provider}", falling back to OpenAI`,
         );
-        const fallbackLlm = new openai.LLM({ model: 'gpt-4o-mini' });
+        const fallbackLlm = new openai.LLM({ model: 'gpt-4.1-nano' });
         fallbackLlm.setMaxListeners(0);
         return fallbackLlm;
       }

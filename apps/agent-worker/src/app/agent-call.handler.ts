@@ -15,6 +15,7 @@ import { CallErrorCode, type InternalCallEvent } from '@mova-back/shared-realtim
 
 import { AgentFactory, AgentContext } from './agent/agent.factory';
 import { CallEventPublisher } from './events/call-event.publisher';
+import { StyleResolverService } from './suggestions/style-resolver.service';
 import { SuggestionsService } from './suggestions/suggestions.service';
 
 /**
@@ -226,6 +227,7 @@ export class AgentCallHandler {
     private readonly redis: Redis,
     private readonly publisher: CallEventPublisher,
     private readonly suggestions: SuggestionsService,
+    private readonly styleResolver: StyleResolverService,
     private readonly onDisconnectCb: (roomName: string) => void,
   ) {
     this.logger = new Logger(`Call-${roomName}`);
@@ -327,6 +329,28 @@ export class AgentCallHandler {
       // us 3 misses before it declares AGENT_LOST — plenty of margin for
       // a single GC pause or Redis blip.
       this.startHeartbeat();
+
+      // Resolve the conversation style into the prompt block BEFORE the
+      // session is created — AgentFactory.createAgent reads it from
+      // userContext.styleInstructions when assembling the system prompt
+      // so the user's chosen tone (OFFICIAL / FRIENDLY / PERSONAL /
+      // custom) shapes the actual agent voice, not just suggestions.
+      // resolveStyle never throws — on any failure it returns null and
+      // the prompt falls back to neutral.
+      try {
+        this.userContext.styleInstructions = await this.styleResolver.resolve(
+          this.userContext.userId ?? null,
+          this.userContext.activeStyleId,
+        );
+      } catch (err) {
+        // Style resolution is decorative — a failure must NEVER block
+        // the call. Worst case: neutral tone. Log + continue.
+        reportError(this.logger, '[Style] resolve failed (continuing with neutral tone)', err, {
+          conversationId: this.conversationId,
+          styleId: this.userContext.activeStyleId,
+        });
+        this.userContext.styleInstructions = null;
+      }
 
       phase = 'session_init';
       const sessionResult = await this.agentFactory.createSession(

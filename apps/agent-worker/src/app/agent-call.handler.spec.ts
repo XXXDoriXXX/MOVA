@@ -182,6 +182,11 @@ function makeHarness(opts: {
     redis,
     publisher as unknown as CallEventPublisher,
     suggestions,
+    // StyleResolverService stub — handler only calls resolve() once at
+    // session start; returning null gives the "no style adaptation"
+    // branch which is what the spec needs (style behaviour itself is
+    // covered by style-resolver.service.spec.ts).
+    { resolve: jest.fn().mockResolvedValue(null) } as never,
     onDisconnectCb,
   );
   return { handler, publisher, onDisconnectCb, session: sessionEmitter, redis };

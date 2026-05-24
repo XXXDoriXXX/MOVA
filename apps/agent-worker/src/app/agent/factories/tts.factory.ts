@@ -11,21 +11,6 @@ import { GoogleCloudTts } from '../providers/google-cloud-tts';
 type OpenAITTSOptions = NonNullable<ConstructorParameters<typeof openai.TTS>[0]>;
 export type OpenAITTSVoice = OpenAITTSOptions['voice'];
 
-/**
- * Default Gemini TTS voice + model.
- *
- * Voice: "Kore" — confident female voice, neutral register. Good for the
- * proxy-call use case where we want to sound like a person, not a
- * narrator. Other safe alternatives for UA: "Aoede" (breezier), "Charon"
- * (male, informative).
- *
- * Model: `gemini-2.5-flash-tts` — multilingual, ~$10 / 1M characters
- * vs ElevenLabs at ~$300. The `-lite-preview` variant exists if cost is
- * critical, but its quality drops below the bar we need for UA.
- */
-const GEMINI_TTS_DEFAULT_VOICE = 'Kore';
-const GEMINI_TTS_DEFAULT_MODEL = 'gemini-2.5-flash-tts';
-
 export interface ResolvedTts {
   tts: tts.TTS;
   /** Effective provider id after env/config resolution. */
@@ -46,10 +31,22 @@ export class TtsFactory {
   }
 
   resolve(agentConfig?: AgentConfigDto): ResolvedTts {
-    // Default is Google Cloud TTS Wavenet: cheap (\$16/1M chars), high-quality
-    // UA voices, deterministic (no LLM weirdness). ElevenLabs / OpenAI / Gemini
-    // remain available via per-template override or by switching TTS_PROVIDER.
-    const providerStr = agentConfig?.tts?.provider || this.config.get<string>('TTS_PROVIDER', 'google');
+    // Precedence: ENV (operator override) > per-call config (user/template
+    // preference) > default. ENV wins on purpose — operators need a kill
+    // switch when a paid provider (e.g. ElevenLabs) is suddenly broken
+    // for everyone (quota exhausted, outage). Without ENV-wins, a stale
+    // `template.defaultTtsProvider='elevenlabs'` in the database silently
+    // overrides the operator's "switch to google" intent, leaving every
+    // call mute even though .env says google.
+    //
+    // Trade-off: a user who actually paid for premium ElevenLabs voice
+    // and switched it in the app loses that choice while ENV is set.
+    // For now that's the right side of the fence — silent calls are
+    // worse than degraded voice quality. Long-term answer is admin UI
+    // for the operator-level override (so leaving ENV unset is OK in
+    // steady state).
+    const envProvider = this.config.get<string>('TTS_PROVIDER');
+    const providerStr = envProvider || agentConfig?.tts?.provider || 'google';
     const provider = providerStr.toLowerCase() as TtsProviderEnum;
 
     switch (provider) {
@@ -78,24 +75,42 @@ export class TtsFactory {
         return { tts: instance, provider: 'openai', voice: voiceStr };
       }
       case TtsProviderEnum.GEMINI: {
-        // Multilingual generative TTS via the same key as the LLM. ~$10
-        // per 1M chars vs ElevenLabs' $300, with respectable UA prosody
-        // because Gemini is heavily multilingual-trained.
+        // Gemini-TTS via the Generative Language API (ai.google.dev) using
+        // `@livekit/agents-plugin-google`'s `google.beta.TTS`. This path
+        // supports plain AI Studio API keys — no service-account / OAuth
+        // needed. The cheaper `gemini-2.5-flash-lite-preview-tts` model
+        // is ONLY available via Cloud TTS (texttospeech.googleapis.com)
+        // which requires a service account + IAM `Vertex AI User` role;
+        // we keep that path on ice in `gemini-cloud-tts.ts` for when
+        // someone wires up SA auth. For now we default to the non-lite
+        // `gemini-2.5-flash-preview-tts` — same voice quality, +~$5/1M
+        // chars over lite. Acceptable trade for keeping auth simple.
         const voice =
           agentConfig?.tts?.voice ||
-          this.config.get<string>('GEMINI_TTS_VOICE', GEMINI_TTS_DEFAULT_VOICE);
+          this.config.get<string>('GEMINI_TTS_VOICE', 'Aoede');
         const model = this.config.get<string>(
           'GEMINI_TTS_MODEL',
-          GEMINI_TTS_DEFAULT_MODEL,
+          'gemini-2.5-flash-preview-tts',
         );
-        // apiKey is optional in the plugin constructor — when omitted it
-        // reads GOOGLE_API_KEY from process.env. We pass it explicitly
-        // from GEMINI_API_KEY so the admin-panel-managed override (which
-        // hydrates GEMINI_API_KEY into process.env on boot) is picked up
-        // without forcing the operator to also set GOOGLE_API_KEY.
+        // Plugin reads from GOOGLE_API_KEY env if no apiKey arg passed.
+        // We accept three env names for the same key so operators using
+        // any of the common conventions Just Work:
+        //   - GEMINI_API_KEY        (our docs / admin panel name)
+        //   - GOOGLE_GENERATIVE_AI_API_KEY (Vercel AI SDK convention,
+        //     what's currently in this repo's .env)
+        //   - GOOGLE_API_KEY        (plugin's own fallback)
         const apiKey =
           this.config.get<string>('GEMINI_API_KEY') ??
+          this.config.get<string>('GOOGLE_GENERATIVE_AI_API_KEY') ??
           this.config.get<string>('GOOGLE_API_KEY');
+        if (!apiKey) {
+          this.logger.warn(
+            `⚠️ [Factory: TTS] No Gemini API key set (GEMINI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY / GOOGLE_API_KEY) — falling back to OpenAI for this call.`,
+          );
+          const fallbackTts = new openai.TTS({ voice: 'fable' as OpenAITTSVoice, speed: 1.0 });
+          fallbackTts.setMaxListeners(0);
+          return { tts: fallbackTts, provider: 'openai', voice: 'fable' };
+        }
         this.logger.debug(
           `🔌 [Factory: TTS] Gemini TTS, model=${model}, voice=${voice}`,
         );

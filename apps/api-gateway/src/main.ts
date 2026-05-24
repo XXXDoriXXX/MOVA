@@ -39,9 +39,39 @@ async function bootstrap(): Promise<void> {
   const config = app.get<ConfigService<AppEnv, true>>(ConfigService);
 
   // ── Security headers ──
-  // Helmet sets reasonable defaults: HSTS, X-Frame-Options, X-Content-Type-Options, etc.
-  // We disable CSP because this is a JSON API consumed by a mobile client (no HTML rendering).
-  app.use(helmet({ contentSecurityPolicy: false }));
+  // Strict-ish CSP that still leaves room for Swagger UI at /v1/docs
+  // (it ships inline styles + scripts and uses eval for schema
+  // parsing). Everything else serves JSON only, so the 'unsafe-*'
+  // directives are a Swagger-shaped compromise; tightening means
+  // dropping Swagger or moving it behind an admin-only proxy.
+  //
+  // HSTS makes the browser remember "HTTPS for this host" so a
+  // downgrade attack at the TLS handshake stage can't strip
+  // protection between visits. nginx already does the actual
+  // http→https redirect; this header hardens the next visit.
+  //
+  // Referrer-Policy keeps full request URLs (which may include
+  // resource IDs in path segments) out of third-party Referer
+  // headers.
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          'default-src': ["'self'"],
+          'script-src': ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+          'style-src': ["'self'", "'unsafe-inline'", 'https:'],
+          'img-src': ["'self'", 'data:', 'https:'],
+          'font-src': ["'self'", 'data:', 'https:'],
+          'connect-src': ["'self'"],
+          'frame-ancestors': ["'none'"],
+          'object-src': ["'none'"],
+          'base-uri': ["'self'"],
+        },
+      },
+      hsts: { maxAge: 15_552_000, includeSubDomains: true, preload: false },
+      referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    }),
+  );
 
   // ── CORS ──
   // Mobile apps don't enforce CORS, but our admin dashboard / Swagger UI does.

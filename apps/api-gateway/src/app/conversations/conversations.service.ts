@@ -152,6 +152,25 @@ export class ConversationsService {
   }
 
   /**
+   * Count this user's calls that are in PENDING or ACTIVE state. Used by
+   * call.service to refuse a new /calls/start while another one is still
+   * in progress — without this, a flaky mobile retry loop or a stolen
+   * JWT can dial two SIP legs at once, both bill, both confuse the user.
+   *
+   * Cheap query: hit covered by `idx_conversations_status_active`
+   * (partial index on status IN ('pending', 'active')) — a few µs
+   * regardless of total conversation table size.
+   */
+  async countActiveForUser(userId: string): Promise<number> {
+    return this.conversations.count({
+      where: [
+        { userId, status: ConversationStatus.PENDING },
+        { userId, status: ConversationStatus.ACTIVE },
+      ],
+    });
+  }
+
+  /**
    * Find conversations that look like zombies — pending/active but no update
    * for `staleMinutes`. Watchdog cron (Phase 8) marks them failed.
    */

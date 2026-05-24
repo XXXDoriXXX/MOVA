@@ -68,10 +68,31 @@ export class LakeraGuardService {
    * @param opts.cacheTtlMs — when set, cache result under sha256(text) hash
    *                          for the given TTL. Skip caching for distinct
    *                          one-off content (default behavior).
+   * @param opts.failOpen   — per-call override of the global
+   *                          `LAKERA_FAIL_OPEN` env. The right value
+   *                          depends on what we're checking:
+   *
+   *                            * Prompts being SENT to the LLM
+   *                              (`user_input_transcribed`, system
+   *                              prompts, suggestions) → pass `false`
+   *                              so a Lakera outage doesn't let
+   *                              prompt-injection through to the LLM.
+   *                              Better to refuse the turn than to let
+   *                              "ignore previous instructions" land.
+   *
+   *                            * Mid-call STT transcripts being
+   *                              SCREENED (audit-only, not blocking
+   *                              an active turn) → pass `true` so a
+   *                              transient Lakera blip doesn't kill
+   *                              an in-progress call.
+   *
+   *                          When omitted, the env-level default
+   *                          (LAKERA_FAIL_OPEN) is used — typically
+   *                          `true` in dev, `false` in prod.
    */
   async check(
     text: string,
-    opts: { cacheTtlMs?: number } = {},
+    opts: { cacheTtlMs?: number; failOpen?: boolean } = {},
   ): Promise<SafetyCheckResult> {
     if (!this.apiKey) {
       // Service disabled — pass everything. Log at debug so it's visible
@@ -93,7 +114,12 @@ export class LakeraGuardService {
       }
     }
 
-    const result = await this.callLakera(text);
+    // Per-call failOpen override wins over the env-level default.
+    // The callLakera helper consults this resolved value, not the
+    // class field, so each call site sees its requested semantics
+    // without thread/race surprises.
+    const effectiveFailOpen = opts.failOpen ?? this.failOpen;
+    const result = await this.callLakera(text, effectiveFailOpen);
 
     if (cacheKey && cache && opts.cacheTtlMs && !result.passthrough) {
       // Cache only OK / blocked results, NEVER cache fail-open passes —
@@ -109,7 +135,10 @@ export class LakeraGuardService {
     return { safe: result.safe, reasons: result.reasons };
   }
 
-  private async callLakera(text: string): Promise<SafetyCheckResult & { passthrough: boolean }> {
+  private async callLakera(
+    text: string,
+    failOpen: boolean,
+  ): Promise<SafetyCheckResult & { passthrough: boolean }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -173,7 +202,7 @@ export class LakeraGuardService {
       return { safe: !flagged, reasons, passthrough: false };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (this.failOpen) {
+      if (failOpen) {
         this.logger.warn(`Lakera check failed (fail-open): ${message}`);
         return { safe: true, reasons: [], passthrough: true };
       }

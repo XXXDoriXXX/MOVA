@@ -63,7 +63,15 @@ async function bootstrap(): Promise<void> {
 
   const config = app.get<ConfigService<AppEnv, true>>(ConfigService);
 
-  app.use(helmet({ contentSecurityPolicy: false }));
+  // agent-worker exposes only /health, /metrics. Helmet defaults
+  // (default CSP + same-origin) are fine. HSTS for parity with
+  // sibling services.
+  app.use(
+    helmet({
+      hsts: { maxAge: 15_552_000, includeSubDomains: true, preload: false },
+      referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    }),
+  );
 
   const port = config.get('PORT', { infer: true });
   await app.listen(port);

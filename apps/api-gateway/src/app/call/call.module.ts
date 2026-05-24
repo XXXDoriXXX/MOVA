@@ -9,10 +9,11 @@ import { UsersModule } from '../users/users.module';
 import { CallController } from './call.controller';
 import { CallGateway } from './call.gateway';
 import { CallService } from './call.service';
+import { VoicesController } from './voices.controller';
 
 @Module({
   imports: [SharedRedisModule, ConversationsModule, BillingModule, TemplatesModule, UsersModule],
-  controllers: [CallController],
+  controllers: [CallController, VoicesController],
   providers: [CallService, CallGateway],
 })
 export class CallModule {}

@@ -4,6 +4,7 @@ import {
   HealthCheckResult,
   HealthCheckService,
   HealthIndicatorResult,
+  TypeOrmHealthIndicator,
 } from '@nestjs/terminus';
 import type { Redis } from 'ioredis';
 
@@ -28,6 +29,7 @@ import { REDIS_CLIENT } from '@mova-back/shared-redis';
 export class HealthController {
   constructor(
     private readonly health: HealthCheckService,
+    private readonly db: TypeOrmHealthIndicator,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
   ) {}
 
@@ -48,14 +50,26 @@ export class HealthController {
   @Get('ready')
   @HealthCheck()
   ready(): Promise<HealthCheckResult> {
-    return this.health.check([() => this.pingRedis()]);
+    // Readiness must reflect every dep we hard-require to serve a request.
+    // Without the Postgres ping, a downed DB still passes /ready → the LB
+    // keeps routing traffic → every request 500s. With the ping, /ready
+    // 503s within a few seconds of a Postgres outage, the LB drops the
+    // pod, and recovery is instant once Postgres comes back. Terminus's
+    // pingCheck wraps a `SELECT 1` with a 1s timeout by default.
+    return this.health.check([
+      () => this.pingRedis(),
+      () => this.db.pingCheck('database', { timeout: 2000 }),
+    ]);
   }
 
   @Public()
   @Get()
   @HealthCheck()
   check(): Promise<HealthCheckResult> {
-    return this.health.check([() => this.pingRedis()]);
+    return this.health.check([
+      () => this.pingRedis(),
+      () => this.db.pingCheck('database', { timeout: 2000 }),
+    ]);
   }
 
   private async pingRedis(): Promise<HealthIndicatorResult> {

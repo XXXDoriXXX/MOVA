@@ -3,8 +3,9 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+import { UserOrIpThrottlerGuard } from './common/user-or-ip-throttler.guard';
 import { SentryGlobalFilter, SentryModule } from '@sentry/nestjs/setup';
 import KeyvRedis from '@keyv/redis';
 import { LoggerModule } from 'nestjs-pino';
@@ -82,10 +83,41 @@ import { UsersModule } from './users/users.module';
     ThrottlerModule.forRootAsync({
       inject: [ConfigService, REDIS_CLIENT],
       useFactory: (config: ConfigService<AppEnv, true>, redis: Redis) => ({
+        // Named throttlers. Routes opt into a specific bucket via
+        // @Throttle({ <name>: { limit, ttl } }). The `default` bucket is
+        // applied globally by ThrottlerGuard when a route has no @Throttle
+        // override — it's the safety net catching every endpoint we forgot
+        // to gate explicitly. The `auth` and `call` buckets exist as the
+        // canonical names for per-endpoint overrides below.
+        //
+        // Why three named buckets (instead of relying on @Throttle args
+        // alone): SkipThrottle / Throttle decorators apply PER NAMED
+        // bucket, so the only way to truly opt OUT of the default
+        // (e.g. for an idempotent GET) without disabling `auth` is to
+        // use SkipThrottle('default') — which requires the bucket to
+        // be named in the first place.
         throttlers: [
           {
+            name: 'default',
             ttl: config.get('RATE_LIMIT_TTL', { infer: true }) * 1000, // ms
             limit: config.get('RATE_LIMIT_DEFAULT', { infer: true }),
+          },
+          {
+            // Auth endpoints (login, register, refresh, change-password):
+            // 5 attempts per 15 min per IP. Stops credential-stuffing and
+            // brute-force without locking out a forgetful user permanently.
+            name: 'auth',
+            ttl: 15 * 60 * 1000,
+            limit: 5,
+          },
+          {
+            // /calls/start: 10 per hour per AUTHED USER (see UserOrIpTracker).
+            // 10/h is generous for real use (one call every 6 min average)
+            // and tight enough to prevent a stolen JWT from burning a
+            // user's monthly balance in seconds.
+            name: 'call',
+            ttl: 60 * 60 * 1000,
+            limit: 10,
           },
         ],
         storage: new ThrottlerStorageRedisService(redis),
@@ -131,7 +163,7 @@ import { UsersModule } from './users/users.module';
     // GUARDS execute top-to-bottom in this list (NestJS order):
     //   1. Throttler — rate limit BEFORE auth, so abuse is cheap to block.
     //   2. JwtAuthGuard — globally enforces JWT, except @Public() routes.
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: UserOrIpThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
   ],
 })

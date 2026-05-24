@@ -4,6 +4,7 @@ import {
   HealthCheckResult,
   HealthCheckService,
   HealthIndicatorResult,
+  TypeOrmHealthIndicator,
 } from '@nestjs/terminus';
 import type { Redis } from 'ioredis';
 
@@ -23,6 +24,7 @@ import { REDIS_CLIENT } from '@mova-back/shared-redis';
 export class HealthController {
   constructor(
     private readonly health: HealthCheckService,
+    private readonly db: TypeOrmHealthIndicator,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
   ) {}
 
@@ -35,13 +37,24 @@ export class HealthController {
   @Get('ready')
   @HealthCheck()
   ready(): Promise<HealthCheckResult> {
-    return this.health.check([() => this.pingRedis()]);
+    // agent-worker reads Postgres at boot (settings-sync hydrate) and
+    // per-call (provider-incident writes). A downed DB means new calls
+    // start with stale config and incident audit silently drops, so
+    // /ready should 503 — k8s-equivalent LB removes the pod and the
+    // call gets routed to a healthy peer.
+    return this.health.check([
+      () => this.pingRedis(),
+      () => this.db.pingCheck('database', { timeout: 2000 }),
+    ]);
   }
 
   @Get()
   @HealthCheck()
   check(): Promise<HealthCheckResult> {
-    return this.health.check([() => this.pingRedis()]);
+    return this.health.check([
+      () => this.pingRedis(),
+      () => this.db.pingCheck('database', { timeout: 2000 }),
+    ]);
   }
 
   private async pingRedis(): Promise<HealthIndicatorResult> {

@@ -33,6 +33,14 @@ export interface AgentContext {
   userRole: string;
   callReason: string;
   config?: AgentConfigDto;
+  /**
+   * Hard upper bound on call duration, set by billing eligibility at
+   * call dispatch time. agent-worker's deadline-watchdog uses this to
+   * force-end the call at the cap so a crashed/leaked SIP participant
+   * never accrues unbounded telco/LLM charges. Optional for back-compat
+   * with legacy contexts; missing/0 disables the watchdog.
+   */
+  maxCallDurationSeconds?: number;
 }
 
 @Injectable()

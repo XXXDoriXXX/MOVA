@@ -1,0 +1,55 @@
+# Promtail: scrapes Docker container logs and ships them to Loki.
+#
+# Mounts (in docker-compose):
+#   - /var/run/docker.sock — to discover containers
+#   - /var/lib/docker/containers — to read their JSON log files
+#
+# We pin to Mova containers only (container_label_com.docker.compose
+# project = mova-back) so a developer's other projects on the same
+# host don't pollute Loki.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    backoff_config:
+      min_period: 500ms
+      max_period: 5s
+      max_retries: 10
+
+scrape_configs:
+  - job_name: mova-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+        filters:
+          - name: label
+            values: ['com.docker.compose.project=mova-back']
+
+    relabel_configs:
+      # __meta_docker_container_name comes in as "/mova_api_gateway".
+      # Strip the leading slash to get a clean target label.
+      - source_labels: [__meta_docker_container_name]
+        regex: '/(.+)'
+        target_label: container
+
+      # Compose service name (e.g. "api-gateway") is the most useful
+      # label for Grafana dashboards — much shorter than the full
+      # container_name.
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        target_label: service
+
+      # The image label is handy for distinguishing dev (mova-back-*)
+      # vs prod (ghcr.io/.../mova-*) at a glance.
+      - source_labels: [__meta_docker_container_label_org_opencontainers_image_source]
+        target_label: image_source
+
+      # Standard log target — every container in the project flows
+      # into a single Loki stream identified by {service="..."}.
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        target_label: job

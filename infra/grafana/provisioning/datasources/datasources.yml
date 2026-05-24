@@ -1,0 +1,42 @@
+# Grafana datasource provisioning. Lives under
+# /etc/grafana/provisioning/datasources/ in the container; auto-loaded
+# at boot. No need to click through the UI for first-time setup.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    # Stable uid — referenced by dashboard JSON (datasource.uid="prometheus").
+    # Without it Grafana would auto-generate a UUID on first boot and the
+    # provisioned dashboards would render with "Datasource not found".
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Match prometheus.yml scrape_interval so step calculations
+      # don't over-/under-shoot in dashboard queries.
+      timeInterval: 15s
+      # Alert rules live in prometheus.yml — expose them in Grafana
+      # so the "Alerts" tab is populated.
+      manageAlerts: false
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      maxLines: 1000
+
+  - name: Alertmanager
+    uid: alertmanager
+    type: alertmanager
+    access: proxy
+    url: http://alertmanager:9093
+    editable: false
+    jsonData:
+      implementation: prometheus
+      handleGrafanaManagedAlerts: false

@@ -54,6 +54,19 @@ interface InitiateCallResult {
  *   - If anything between billing pre-check and SIP dispatch fails, the
  *     reservation is NOT held (we don't decrement balance until call ends).
  */
+/**
+ * Drop keys whose value is `undefined` so spreading the result doesn't
+ * overwrite an already-set field with undefined. Used when merging the
+ * dto.config / user.preferred* / template.default* precedence chain.
+ */
+function prune<T extends Record<string, unknown>>(obj: T): Partial<T> {
+  const out: Partial<T> = {};
+  for (const k of Object.keys(obj) as Array<keyof T>) {
+    if (obj[k] !== undefined) out[k] = obj[k];
+  }
+  return out;
+}
+
 @Injectable()
 export class CallService {
   private readonly logger = new Logger(CallService.name);
@@ -133,6 +146,57 @@ export class CallService {
       template?.defaultStyleId ??
       DEFAULT_STYLE_ID;
 
+    // Resolve effective TTS + LLM provider/voice/model with explicit
+    // precedence so a user's PATCH /v1/auth/me preferences actually take
+    // effect on the next call:
+    //
+    //   1. dto.config.{tts,llm}.*    — request-time override (mobile may
+    //                                   pass it in /calls/start)
+    //   2. user.preferred*           — saved profile preference
+    //   3. template.default*         — template's built-in defaults
+    //   4. (factory env defaults)    — handled inside agent-worker
+    //
+    // Without this merge the factory only ever saw `dto.config` and the
+    // saved preference was effectively dead — `preferredVoice` writes
+    // succeeded but were never read on the call path.
+    const dtoCfg = (dto.config ?? {}) as {
+      tts?: { provider?: string; voice?: string };
+      llm?: { provider?: string; model?: string };
+    } & Record<string, unknown>;
+    const mergedTts = {
+      provider:
+        dtoCfg.tts?.provider ??
+        user?.preferredTtsProvider ??
+        template?.defaultTtsProvider ??
+        undefined,
+      voice:
+        dtoCfg.tts?.voice ??
+        user?.preferredVoice ??
+        template?.defaultVoice ??
+        undefined,
+    };
+    const mergedLlm = {
+      provider:
+        dtoCfg.llm?.provider ??
+        user?.preferredLlmProvider ??
+        template?.defaultLlmProvider ??
+        undefined,
+      model:
+        dtoCfg.llm?.model ??
+        user?.preferredLlmModel ??
+        template?.defaultLlmModel ??
+        undefined,
+    };
+    // Drop empty slices so the agent-worker factory's `agentConfig?.tts?.provider || env(...)`
+    // fallback still triggers for unset fields instead of resolving to undefined.
+    const mergedConfig: Record<string, unknown> = { ...dtoCfg };
+    if (mergedTts.provider || mergedTts.voice) {
+      mergedConfig.tts = { ...(dtoCfg.tts ?? {}), ...prune(mergedTts) };
+    }
+    if (mergedLlm.provider || mergedLlm.model) {
+      mergedConfig.llm = { ...(dtoCfg.llm ?? {}), ...prune(mergedLlm) };
+    }
+
     const agentContext = {
       conversationId: conversation.id,
       userId,
@@ -154,7 +218,7 @@ export class CallService {
       userName: dto.userName ?? user?.name ?? null,
       userRole: dto.userRole ?? null,
       callReason: dto.callReason ?? null,
-      config: dto.config ?? null,
+      config: mergedConfig,
       maxCallDurationSeconds: eligibility.maxCallDurationSeconds,
       createdAt: new Date().toISOString(),
     };

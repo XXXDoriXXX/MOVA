@@ -10,6 +10,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { timingSafeEqual } from 'node:crypto';
+import * as bcrypt from 'bcrypt';
 
 import type { AppEnv } from '@mova-back/shared-config';
 import { UserRole } from '@mova-back/shared-database';
@@ -21,24 +22,35 @@ import type { AuthenticatedUser, JwtPayload } from '@mova-back/shared-auth';
  *   1. A regular user JWT whose payload's role === ADMIN. Used by humans
  *      who logged into the mobile app with an admin-flagged account.
  *
- *   2. A bearer token equal to the `ADMIN_PASSWORD` env var. Used by the
- *      standalone admin web UI (apps/admin), which has no user session
- *      and instead authenticates with a shared password from .env.
+ *   2. A bearer token compared against either:
+ *      - ADMIN_PASSWORD_HASH (preferred, bcrypt hash) — production path.
+ *        Even if the .env file leaks, an attacker still has to crack
+ *        the bcrypt hash before they can call the admin API.
+ *      - ADMIN_PASSWORD (legacy plaintext) — dev only. Logs a
+ *        deprecation warning at startup-equivalent (first match) so
+ *        ops sees they should migrate.
  *
  * When the password path matches, we inject a synthetic admin into
  * `request.user` so downstream code (audit logs, role helpers) treats
  * it like any other authenticated admin — minus a real DB user id.
  *
  * Constant-time compare guards against timing attacks on the password
- * check; the JWT path delegates to `JwtService.verifyAsync` which
- * already does it.
+ * check. The JWT path delegates to `JwtService.verifyAsync` which
+ * already does it. bcrypt.compare is constant-time by construction.
  *
- * If ADMIN_PASSWORD is not set, the password path is disabled (returns
- * 503 with a clear hint) — the JWT path still works for admin DB users.
+ * If neither password env is set, the password path is disabled
+ * (returns 503 with a clear hint) — the JWT path still works for
+ * admin DB users.
+ *
+ * To generate a hash:
+ *   node -e "console.log(require('bcrypt').hashSync(process.argv[1], 12))" 'mypassword'
  */
 @Injectable()
 export class AdminAccessGuard implements CanActivate {
   private readonly logger = new Logger(AdminAccessGuard.name);
+  /** One-shot guard so the plaintext-password deprecation log fires
+   *  ONCE per process, not on every admin request. */
+  private plaintextWarnLogged = false;
 
   constructor(
     private readonly jwt: JwtService,
@@ -57,10 +69,38 @@ export class AdminAccessGuard implements CanActivate {
       throw new UnauthorizedException('Bearer token required');
     }
 
+    const adminPasswordHash = this.config.get('ADMIN_PASSWORD_HASH', { infer: true }) as
+      | string
+      | undefined;
     const adminPassword = this.config.get('ADMIN_PASSWORD', { infer: true });
 
-    // Path 1 — shared-password bearer for the admin UI.
+    // Path 1a — hashed-password bearer (preferred). bcrypt.compare
+    // is itself constant-time; no extra padding needed.
+    if (typeof adminPasswordHash === 'string' && adminPasswordHash.length > 0) {
+      try {
+        if (await bcrypt.compare(token, adminPasswordHash)) {
+          request.user = SYNTHETIC_ADMIN;
+          return true;
+        }
+      } catch (err) {
+        // Malformed hash in env. Don't 500 — log and fall through to
+        // the plaintext path / JWT path so the operator can still get
+        // in via JWT to fix it.
+        this.logger.error(
+          `ADMIN_PASSWORD_HASH bcrypt.compare failed: ${(err as Error).message}. ` +
+            `Regenerate with: node -e "console.log(require('bcrypt').hashSync(process.argv[1],12))" 'password'`,
+        );
+      }
+    }
+
+    // Path 1b — plaintext bearer (legacy). Emit deprecation once.
     if (typeof adminPassword === 'string' && adminPassword.length > 0) {
+      if (!this.plaintextWarnLogged) {
+        this.plaintextWarnLogged = true;
+        this.logger.warn(
+          `ADMIN_PASSWORD is set as plaintext. Migrate to ADMIN_PASSWORD_HASH (bcrypt) — see admin-access.guard.ts header for the one-liner.`,
+        );
+      }
       if (compareSafe(token, adminPassword)) {
         request.user = SYNTHETIC_ADMIN;
         return true;

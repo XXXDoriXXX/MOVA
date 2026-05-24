@@ -32,11 +32,21 @@ import {
 /**
  * Auth endpoints.
  *
- * Rate-limit policy:
- *   - register / login: 10 req/min per IP (override of global 100/min).
- *     Prevents credential-stuffing without blocking legitimate retries.
- *   - refresh: at global rate (frequent on mobile-side timer expiry).
- *   - change-password, delete-account: very low (5 req/min) — privileged ops.
+ * Rate-limit policy (uses the `auth` named bucket from app.module —
+ * configured as 5 requests per 15 min per IP):
+ *   - register / login: `auth` bucket. Tight enough to break a serial
+ *     credential-stuffing bot (no more than 20 attempts/h), permissive
+ *     enough that a forgetful human can retry a few times in a
+ *     reasonable session.
+ *   - refresh: `auth` bucket too — a leaked refresh token would
+ *     otherwise be replayable forever; capping the rotation rate caps
+ *     the blast radius.
+ *   - change-password, delete-account: lower bucket (5/min via @Throttle)
+ *     — privileged ops, single user, no need for sustained throughput.
+ *
+ * Tracker note: these endpoints are pre-auth (no req.user), so
+ * UserOrIpThrottlerGuard falls back to req.ip — the right scope for
+ * pre-account brute-force defence.
  */
 @ApiTags('auth')
 @Controller('auth')
@@ -49,7 +59,7 @@ export class AuthController {
   @Public()
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
-  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Throttle({ auth: { limit: 5, ttl: 15 * 60 * 1000 } })
   @ApiOperation({ summary: 'Register a new user account' })
   register(
     @Body() dto: RegisterDto,
@@ -65,7 +75,7 @@ export class AuthController {
   @Public()
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Throttle({ auth: { limit: 5, ttl: 15 * 60 * 1000 } })
   @ApiOperation({ summary: 'Authenticate with email + password' })
   login(
     @Body() dto: LoginDto,
@@ -81,6 +91,7 @@ export class AuthController {
   @Public()
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
+  @Throttle({ auth: { limit: 30, ttl: 15 * 60 * 1000 } })
   @ApiOperation({ summary: 'Rotate refresh token + issue new access token' })
   refresh(
     @Body() dto: RefreshDto,

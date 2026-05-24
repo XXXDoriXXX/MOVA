@@ -189,6 +189,19 @@ export class BillingService {
   async assertEligible(userId: string): Promise<EligibilityResult> {
     const result = await this.checkEligibility(userId);
     if (!result.allowed) {
+      // Structured log so support sees the user's full billing snapshot
+      // at the moment of refusal. Without these fields, the typical
+      // ticket "I have credits but I can't call" requires us to fish
+      // through subscription state by hand.
+      this.logger.warn({
+        msg: 'billing.assertEligible.refused',
+        userId,
+        planCode: result.summary.plan.code,
+        balanceCents: result.summary.balanceCents,
+        freeSecondsUsed: result.summary.freeSecondsUsed,
+        freeSecondsPerMonth: result.summary.plan.freeSecondsPerMonth,
+        pricePerSecondCents: result.summary.plan.pricePerSecondCents,
+      });
       throw new InsufficientBalanceError(
         { secondsNeeded: 1, costCents: result.summary.plan.pricePerSecondCents },
         {
@@ -213,13 +226,28 @@ export class BillingService {
     costCents: number;
     source: UsageSource;
   }): Promise<UsageRecord> {
-    return this.usage.save({
+    const record = await this.usage.save({
       userId: input.userId,
       conversationId: input.conversationId,
       secondsBilled: input.secondsBilled,
       costCents: input.costCents,
       source: input.source,
     });
+    // Structured log: every billable event leaves a key-value trail
+    // queryable by log aggregator (Loki/Elastic). "billing.recordUsage"
+    // is the single search anchor; userId / conversationId / amounts
+    // are fields, not string-interpolated, so a regex isn't needed for
+    // RCA on "I was charged $X" reports.
+    this.logger.log({
+      msg: 'billing.recordUsage',
+      userId: input.userId,
+      conversationId: input.conversationId,
+      secondsBilled: input.secondsBilled,
+      costCents: input.costCents,
+      source: input.source,
+      usageRecordId: record.id,
+    });
+    return record;
   }
 
   /**
@@ -278,7 +306,22 @@ export class BillingService {
             .execute();
 
     const updated = (result.raw as Subscription[])[0];
-    if (updated) return updated;
+    if (updated) {
+      // Structured log on the success path so RCA on cost incidents
+      // has the {before, after} pair without needing to JOIN payment
+      // history. costCents=0 free-tier ticks log too — they're often
+      // the canary for "free tier exhausted, why did paid kick in?".
+      this.logger.log({
+        msg: 'billing.applyCharge',
+        userId: input.userId,
+        source: input.source,
+        secondsCharged: seconds,
+        costCents: cost,
+        balanceCentsAfter: updated.balanceCents,
+        freeSecondsUsedAfter: updated.freeSecondsUsed,
+      });
+      return updated;
+    }
 
     // affected === 0. Distinguish "no subscription" from "insufficient funds"
     // so the call-orchestrator can surface the right error code.
@@ -287,9 +330,24 @@ export class BillingService {
       relations: { plan: true },
     });
     if (!existing) {
+      this.logger.warn({
+        msg: 'billing.applyCharge.missingSubscription',
+        userId: input.userId,
+        source: input.source,
+        costCents: cost,
+      });
       throw new SubscriptionNotFoundError(input.userId);
     }
     if (input.source === UsageSource.PAID) {
+      this.logger.warn({
+        msg: 'billing.applyCharge.insufficientBalance',
+        userId: input.userId,
+        secondsNeeded: seconds,
+        costCents: cost,
+        balanceCentsBefore: existing.balanceCents,
+        freeSecondsRemaining:
+          existing.plan.freeSecondsPerMonth - existing.freeSecondsUsed,
+      });
       throw new InsufficientBalanceError(
         { secondsNeeded: seconds, costCents: cost },
         {
@@ -301,6 +359,11 @@ export class BillingService {
     }
     // FREE branch with affected=0 should be impossible — the UPDATE has no
     // narrow predicate beyond userId. Treat as inconsistency.
+    this.logger.error({
+      msg: 'billing.applyCharge.freeBranchAffectedZero',
+      userId: input.userId,
+      secondsCharged: seconds,
+    });
     throw new SubscriptionNotFoundError(input.userId);
   }
 

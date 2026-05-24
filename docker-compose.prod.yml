@@ -1,0 +1,55 @@
+# Production compose override.
+#
+# Merged on top of docker-compose.yml when the deploy workflow runs:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# What changes vs. the base:
+#
+#   - Each of the three Mova services swaps `build:` for `image:`
+#     pinned to a GHCR tag. The tag is supplied via $IMAGE_TAG env
+#     (CI sets it to ${{ github.sha }} per push) so a deploy pulls
+#     the EXACT build that passed CI, not a moving `latest`.
+#
+#   - The dev-mode bind-mounts of source code (from
+#     docker-compose.override.yml) are NOT applied here. Compose
+#     auto-merges .override.yml ONLY for the implicit two-file lookup
+#     — once we pass `-f` explicitly, the override is skipped, and
+#     the runtime sees only base + prod = what we want.
+#
+# Required env on the VPS:
+#   IMAGE_TAG    e.g. "abc123..." (git sha) or "latest"
+#   GHCR_OWNER   e.g. "xxxdorixxx" — lowercased github username/org
+
+services:
+  api-gateway:
+    # Set image explicitly. Compose's behaviour when both `build:` and
+    # `image:` are present is to use the image if it exists locally
+    # OR can be pulled; only build it as a last resort. The deploy
+    # workflow runs `docker compose pull` first, which fails fast if
+    # GHCR is unreachable — so on a healthy deploy we always run the
+    # pinned image, never an accidentally-rebuilt local one.
+    image: ghcr.io/${GHCR_OWNER}/mova-api-gateway:${IMAGE_TAG:-latest}
+    # Pin restart policy here too in case the base ever loosens it.
+    restart: unless-stopped
+
+  realtime-service:
+    image: ghcr.io/${GHCR_OWNER}/mova-realtime-service:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+
+  agent-worker:
+    image: ghcr.io/${GHCR_OWNER}/mova-agent-worker:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+
+  # migrations also runs the api-gateway image (the migration CLI
+  # lives in the same dist tree). Override to pull from GHCR.
+  migrations:
+    image: ghcr.io/${GHCR_OWNER}/mova-api-gateway:${IMAGE_TAG:-latest}
+
+  # Grafana is exposed at /grafana/ behind nginx basic-auth. The
+  # base compose binds 127.0.0.1:3030; nginx mova.conf.template
+  # routes /grafana/* to that. Override to set the root-url env so
+  # Grafana's own redirect / asset URLs include the prefix.
+  grafana:
+    environment:
+      GF_SERVER_ROOT_URL: "https://${MOVA_DOMAIN}/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"

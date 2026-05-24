@@ -72,6 +72,53 @@ export class GoogleCloudTts extends tts.TTS {
       pitch: opts.pitch ?? 0,
       speakingRate: opts.speakingRate ?? 1,
     };
+    // Fire-and-forget validation. The synthesize HTTP call would already
+    // surface a 400 "Voice X does not exist", but it surfaces inside the
+    // StreamAdapter → EventEmitter chain (hard to catch cleanly, and we
+    // discover it only when the first turn ends in silence). Probing the
+    // /voices endpoint at construction means the operator sees a clear
+    // error in the agent-worker log the moment the session is created,
+    // BEFORE the SIP leg has had time to start ringing. We deliberately
+    // don't await — failure to validate shouldn't block call setup if
+    // Google's voices endpoint blips; the real synth call will retry.
+    void this.validateVoice().catch(() => {
+      /* swallowed — logged inside */
+    });
+  }
+
+  private async validateVoice(): Promise<void> {
+    try {
+      const url = `https://texttospeech.googleapis.com/v1/voices?languageCode=${encodeURIComponent(
+        this.opts.languageCode,
+      )}&key=${encodeURIComponent(this.opts.apiKey)}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        // Network / auth issue — log a hint but don't fail. The first
+        // synthesize() will surface a more specific error if relevant.
+        process.stderr.write(
+          `[GoogleCloudTts] voice-list probe got HTTP ${res.status}; skipping validation.\n`,
+        );
+        return;
+      }
+      const payload = (await res.json()) as {
+        voices?: Array<{ name?: string }>;
+      };
+      const names = (payload.voices ?? [])
+        .map((v) => v.name)
+        .filter((n): n is string => !!n);
+      if (!names.includes(this.opts.voiceName)) {
+        const suggestions = names.slice(0, 5).join(', ');
+        process.stderr.write(
+          `[GoogleCloudTts] CONFIGURED VOICE NOT AVAILABLE: "${this.opts.voiceName}" not in Google Cloud TTS voice list for ${this.opts.languageCode}. ` +
+            `Calls will fail. Try one of: ${suggestions || '(none returned)'}. ` +
+            `Update GOOGLE_TTS_VOICE in .env (recreate the container — env_file is read at start).\n`,
+        );
+      }
+    } catch (err) {
+      process.stderr.write(
+        `[GoogleCloudTts] voice-list probe failed: ${(err as Error).message}\n`,
+      );
+    }
   }
 
   synthesize(

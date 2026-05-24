@@ -19,6 +19,7 @@ import { CallControlAction } from '@mova-back/shared-realtime';
 import { AgentFactory, AgentContext } from './agent/agent.factory';
 import { AgentCallHandler } from './agent-call.handler';
 import { CallEventPublisher } from './events/call-event.publisher';
+import { StyleResolverService } from './suggestions/style-resolver.service';
 import { SuggestionsService } from './suggestions/suggestions.service';
 
 interface ActiveSession {
@@ -102,6 +103,7 @@ export class AgentRunnerService
     private readonly agentFactory: AgentFactory,
     private readonly publisher: CallEventPublisher,
     private readonly suggestions: SuggestionsService,
+    private readonly styleResolver: StyleResolverService,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
   ) {
     this.subscriber = this.redis.duplicate();
@@ -368,6 +370,7 @@ export class AgentRunnerService
         this.redis,
         this.publisher,
         this.suggestions,
+        this.styleResolver,
         (closedRoomName: string) => {
           const session = this.activeSessions.get(closedRoomName);
           if (session?.conversationId) {

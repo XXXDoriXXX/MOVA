@@ -746,6 +746,26 @@ export class AgentCallHandler {
       }
     });
 
+    // `speech_created` fires the instant the SDK creates a SpeechHandle for
+    // an AI reply — i.e. the LLM has produced (or is producing) text and a
+    // TTS task is being scheduled. This is the most reliable "AI is
+    // responding" signal across SDK versions. We rely on it primarily;
+    // `conversation_item_added` below is a backup that still records
+    // text + emits ai.text.final, but its delivery is version-fragile
+    // (some SDK versions ship items with non-text content arrays that
+    // hit our `if (!text) return` early exit, leaving the watchdog armed
+    // and triggering a spurious "Перепрошую…" fallback while the real
+    // AI reply is already playing out the speakers).
+    sessionEmitter.on('speech_created', (ev: Record<string, unknown>) => {
+      // Only AI-initiated replies stand the watchdog down — say()/manual
+      // utterances aren't a response to interlocutor input. SpeechSource
+      // values per SDK: 'generate_reply' | 'say' | 'tool_response'.
+      const source = (ev['source'] as string) ?? '';
+      if (source === 'generate_reply' || source === 'tool_response') {
+        this.clearResponseWatchdog();
+      }
+    });
+
     sessionEmitter.on('conversation_item_added', (ev: Record<string, unknown>) => {
       const item = ev['item'] as
         | {
@@ -946,6 +966,21 @@ export class AgentCallHandler {
     this.clearResponseWatchdog();
     if (!this.session) return;
     if (this.state !== 'active') return;
+    // If the SIP participant has just hung up, LiveKit Agents starts
+    // draining the session asynchronously — any new say() call will
+    // throw "cannot schedule new speech, the agent is draining". That
+    // exception bubbles into safeSay → triggers our fatal-end branch
+    // and emits a phantom TTS_UNAVAILABLE modal even though the call
+    // is already ending for a non-TTS reason (participant disconnect).
+    // If there's no remote participant present anymore, skip the
+    // fallback — the regular RoomEvent.Disconnected flow will end the
+    // call with the correct reason.
+    if (!this.room || this.room.remoteParticipants.size === 0) {
+      this.logger.debug(
+        `[AI fallback] Skipped — no remote participants (room draining).`,
+      );
+      return;
+    }
     const lines = AgentCallHandler.FALLBACK_LINES_UA;
     const line = lines[this.fallbackCursor % lines.length]!;
     this.fallbackCursor += 1;

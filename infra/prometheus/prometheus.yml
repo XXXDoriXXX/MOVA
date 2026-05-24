@@ -19,6 +19,12 @@ global:
   external_labels:
     cluster: mova-local
 
+# Accept remote-write from Tempo's metrics_generator (service-graph
+# + span-metrics → exposed as Prometheus series). The default
+# remote_write_receiver is OFF in Prometheus; flip it on via the
+# `--web.enable-remote-write-receiver` flag (set in docker-compose
+# command).
+
 # Alert rules — separate file so an alert tweak doesn't risk
 # breaking the scrape config (and vice versa). Hot-reload on file
 # change (Prometheus's SIGHUP / web --enable-lifecycle).

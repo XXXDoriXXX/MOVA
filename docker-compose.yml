@@ -223,6 +223,108 @@ services:
     networks:
       - mova_network
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # Observability stack — Prometheus + Grafana + Loki + promtail + Alertmanager
+  #
+  # All ports bound to 127.0.0.1 so they're only reachable from the host (nginx
+  # exposes Grafana externally with auth in prod). The internal mova_network
+  # carries scrape + log push traffic.
+  #
+  # Operator setup:
+  #   - To enable Telegram alerts, create a TELEGRAM_BOT_TOKEN file under
+  #     ./infra/alertmanager/secrets/telegram_bot_token (one line, no newline)
+  #     and set TELEGRAM_CHAT_ID env. See infra/alertmanager/alertmanager.yml.
+  #   - Grafana default login admin / admin (change on first boot or via
+  #     GF_SECURITY_ADMIN_PASSWORD env).
+  # ──────────────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: mova_prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - mova_network
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: mova_alertmanager
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    volumes:
+      - ./infra/alertmanager:/etc/alertmanager:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+    networks:
+      - mova_network
+
+  loki:
+    image: grafana/loki:latest
+    container_name: mova_loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./infra/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "127.0.0.1:3100:3100"
+    networks:
+      - mova_network
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: mova_promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./infra/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      - loki
+    networks:
+      - mova_network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mova_grafana
+    restart: unless-stopped
+    environment:
+      # Override admin password by setting GF_SECURITY_ADMIN_PASSWORD in your
+      # local .env (compose auto-loads root .env). Falls back to "admin".
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Disable anonymous access by default — but make it a single env flip
+      # for dev convenience.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      # Datasource UIDs are referenced in dashboard JSON files. Pin them
+      # rather than let Grafana auto-generate UUIDs which would break
+      # dashboard provisioning on first boot.
+      GF_DATASOURCES_DEFAULT_DATASOURCE_UID: "prometheus"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3030:3000"
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - mova_network
+
 networks:
   mova_network:
     driver: bridge
@@ -230,3 +332,7 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  prometheus_data:
+  alertmanager_data:
+  loki_data:
+  grafana_data:

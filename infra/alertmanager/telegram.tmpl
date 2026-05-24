@@ -1,0 +1,13 @@
+{{/* Telegram message template for Mova alerts. Uses HTML parse mode. */}}
+{{ define "telegram.mova" -}}
+{{ range .Alerts -}}
+{{ if eq .Status "firing" }}🔥{{ else }}✅{{ end }} <b>{{ .Labels.alertname }}</b>
+<i>severity:</i> {{ .Labels.severity }}
+<i>component:</i> {{ .Labels.component }}
+{{ if .Annotations.summary }}
+<b>Summary:</b> {{ .Annotations.summary }}
+{{ end }}{{ if .Annotations.description }}
+{{ .Annotations.description }}
+{{ end }}
+{{ end }}
+{{- end }}

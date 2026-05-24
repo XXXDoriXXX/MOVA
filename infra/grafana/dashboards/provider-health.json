@@ -1,0 +1,103 @@
+{
+  "annotations": { "list": [] },
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Provider health scores (current)",
+      "type": "bargauge",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "mova_provider_health",
+          "refId": "A",
+          "legendFormat": "{{ type }} / {{ provider }}"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 30 },
+              { "color": "green", "value": 70 }
+            ]
+          }
+        }
+      },
+      "options": { "orientation": "horizontal", "displayMode": "lcd" }
+    },
+    {
+      "title": "Health score over time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "mova_provider_health",
+          "refId": "A",
+          "legendFormat": "{{ type }} / {{ provider }}"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "min": 0, "max": 100 } }
+    },
+    {
+      "title": "Provider latency p95 (5 min)",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, type, provider) (rate(mova_provider_latency_seconds_bucket[5m])))",
+          "refId": "A",
+          "legendFormat": "{{ type }} / {{ provider }}"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "title": "Provider latency p99 (5 min)",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, type, provider) (rate(mova_provider_latency_seconds_bucket[5m])))",
+          "refId": "A",
+          "legendFormat": "{{ type }} / {{ provider }}"
+        }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "title": "TTS error events (Loki, last hour)",
+      "type": "logs",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 17 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "expr": "{service=\"agent-worker\"} |~ \"(?i)tts.*(error|fail|quota|timeout|unavailable)\"",
+          "refId": "A"
+        }
+      ],
+      "options": { "showTime": true, "wrapLogMessage": true }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["mova", "providers"],
+  "templating": { "list": [] },
+  "time": { "from": "now-3h", "to": "now" },
+  "title": "Mova — Provider Health",
+  "uid": "mova-provider-health",
+  "version": 1,
+  "weekStart": ""
+}

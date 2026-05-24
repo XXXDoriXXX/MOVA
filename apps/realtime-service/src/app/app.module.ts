@@ -12,6 +12,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { CallModule } from './call/call.module';
 import { HealthModule } from './health/health.module';
+import { RealtimeMetricsModule } from './metrics/metrics.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { HealthModule } from './health/health.module';
     EventEmitterModule.forRoot({ wildcard: false }),
 
     HealthModule,
+    RealtimeMetricsModule,
     CallModule,
   ],
   controllers: [AppController],

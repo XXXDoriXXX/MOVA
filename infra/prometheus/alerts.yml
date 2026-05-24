@@ -1,0 +1,162 @@
+# Prometheus alert rules for Mova.
+#
+# Philosophy: every alert should be ACTIONABLE. Pure "thing went up"
+# alerts that don't tell you what to do at 3am are noise. Each rule's
+# annotation gives the on-call a one-line "what now".
+#
+# Severity convention:
+#   critical → page (Telegram → wake someone up). User-visible incident.
+#   warning  → ticket / morning review. Degraded but not down.
+#
+# All `for: <duration>` thresholds picked so a single flapping data
+# point doesn't fire. 2× the scrape interval (15s) is the floor — under
+# that and you alert on jitter.
+
+groups:
+  - name: mova-call-flow
+    rules:
+      # The agent-worker watchdog (heartbeat-watchdog.service in
+      # realtime-service) increments `mova_call_errors_total{code="AGENT_LOST"}`
+      # whenever an active call's agent-pod stops heartbeating.
+      # ≥3 in 5 min implies systemic agent-worker problem, not a
+      # one-off pod hiccup.
+      - alert: AgentLostBurst
+        expr: increase(mova_call_errors_total{code="AGENT_LOST"}[5m]) > 3
+        for: 1m
+        labels:
+          severity: critical
+          component: agent-worker
+        annotations:
+          summary: '≥3 calls dropped with AGENT_LOST in 5 min'
+          description: |
+            agent-worker pods are dying mid-call. Check pod restarts /
+            OOM kills in dozzle; verify Redis connectivity from
+            agent-worker; check `mova_provider_health` for cascading
+            external-provider failure.
+
+      # Call.error events tagged with TTS_UNAVAILABLE / TTS_DEGRADED —
+      # either a provider quota is exhausted or fallback adapter is
+      # firing constantly.
+      - alert: TtsFailureRateHigh
+        expr: |
+          (
+            sum(rate(mova_call_errors_total{code=~"TTS_.*"}[5m]))
+            /
+            clamp_min(sum(rate(mova_calls_started_total[5m])), 0.001)
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: tts
+        annotations:
+          summary: '>10% of calls hit a TTS error'
+          description: |
+            Likely TTS provider quota exhausted (ElevenLabs / Gemini)
+            or API key rotated. Check `mova_provider_health{type="tts"}`
+            and the relevant provider's dashboard. FallbackTts will
+            cover individual utterances but sustained failure means
+            primary needs swapping in TTS_PROVIDER env.
+
+      # Active call gauge unchanged for 30 min — strongest signal
+      # something is zombie. Either the gauge syncer (api-gateway
+      # ActiveCallsGauge cron) is broken, OR there's a stuck call
+      # that conversation-watchdog isn't catching.
+      - alert: ActiveCallsStuck
+        expr: changes(mova_active_calls[30m]) == 0 and mova_active_calls > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: lifecycle
+        annotations:
+          summary: 'mova_active_calls gauge is frozen with >0 calls'
+          description: |
+            Active calls counter hasn't moved in 30 min. Check
+            ConversationWatchdog logs; manually inspect conversation
+            rows with status=active in Postgres; LiveKit rooms via
+            SIP-orphan watchdog logs.
+
+  - name: mova-providers
+    rules:
+      # Per-provider health score < 30 sustained = ProviderRegistry
+      # has marked that provider as failing. Fallback adapter
+      # handles the call-level impact, but it's still a "tell ops"
+      # event because cost spikes on the secondary.
+      - alert: ProviderHealthLow
+        expr: mova_provider_health < 30
+        for: 5m
+        labels:
+          severity: warning
+          component: providers
+        annotations:
+          summary: 'Provider {{ $labels.type }}/{{ $labels.provider }} health < 30'
+          description: |
+            ProviderRegistry has marked this provider degraded.
+            Check provider's status page; verify API key still valid;
+            consider explicitly swapping primary via env.
+
+      # p95 provider latency > 3s for 10 min — usually means the
+      # provider's edge is throttling us. Audio-perceptible.
+      - alert: ProviderLatencyHigh
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, type, provider) (
+              rate(mova_provider_latency_seconds_bucket[5m])
+            )
+          ) > 3
+        for: 10m
+        labels:
+          severity: warning
+          component: providers
+        annotations:
+          summary: 'p95 latency >3s for {{ $labels.type }}/{{ $labels.provider }}'
+          description: |
+            Calls are sluggish on this provider. The user will hear
+            long pauses between turns. Consider switching primary or
+            cutting traffic if SLA permits.
+
+  - name: mova-system
+    rules:
+      # Service down — any of our scrape targets unhealthy for 1 min.
+      - alert: ServiceDown
+        expr: up{job=~"api-gateway|realtime-service|agent-worker"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: '{{ $labels.job }}'
+        annotations:
+          summary: '{{ $labels.job }} is DOWN'
+          description: |
+            Prometheus can't reach /metrics on {{ $labels.job }}.
+            Check container status, recent deploys, dozzle logs.
+
+      # Event loop blocked >100ms — Node is doing CPU-bound work on
+      # the main thread; everything else (HTTP, Redis ack, heartbeat)
+      # is queued. Calls will feel laggy or drop AGENT_LOST.
+      - alert: EventLoopLagHigh
+        expr: nodejs_eventloop_lag_p99_seconds > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: '{{ $labels.service }}'
+        annotations:
+          summary: '{{ $labels.service }} event loop p99 > 100ms'
+          description: |
+            Node main thread is starved. Likely a CPU-bound op or
+            sync IO in a hot path. Heap inspection time.
+
+      # Memory >800MB — our containers run at ~250MB nominal;
+      # 800MB means leak. agent-worker LiveKit Rust client allocates
+      # native buffers, hard to spot in heap snapshots.
+      - alert: HighMemoryUsage
+        expr: process_resident_memory_bytes > 800 * 1024 * 1024
+        for: 10m
+        labels:
+          severity: warning
+          component: '{{ $labels.service }}'
+        annotations:
+          summary: '{{ $labels.service }} RSS > 800MB'
+          description: |
+            Memory leak suspected. Restart the affected pod
+            (zero-downtime via blue-green deploy if available),
+            then take a heap snapshot for post-mortem.

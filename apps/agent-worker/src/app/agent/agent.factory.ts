@@ -92,15 +92,24 @@ export class AgentFactory {
     const ttsResolved = this.ttsFactory.resolve(context.config);
 
     sttResolved.stt.on('error', this.createErrorHandler('STT'));
-    llmResolved.llm.on('error', this.createErrorHandler('LLM'));
     ttsResolved.tts.on('error', this.createErrorHandler('TTS'));
 
     const minEndpointingDelay = context.config?.tts?.minEndpointingDelay ?? 500;
     const maxEndpointingDelay = context.config?.tts?.maxEndpointingDelay ?? 1500;
 
+    // IMPORTANT: the session is built WITHOUT an llm. We do NOT want
+    // LiveKit's STT→LLM→TTS auto-pipeline — that auto-speaks every
+    // reply, which fights the preview-before-speak gate (and trying to
+    // intercept ttsNode broke the stream lifecycle with
+    // "WritableStream is closed"). With no llm, the framework does STT
+    // only and never auto-generates; `session.say()` still works for
+    // TTS. AgentCallHandler generates each reply itself (via
+    // SuggestionsService.generateReply), shows it as a candidate, and
+    // speaks it through session.say() on accept. llmResolved is still
+    // returned for provenance + so the handler knows which provider to
+    // ask for the manual generation.
     const session = new voice.AgentSession({
       stt: sttResolved.stt,
-      llm: llmResolved.llm,
       tts: ttsResolved.tts,
       vad,
       voiceOptions: {

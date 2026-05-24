@@ -62,6 +62,16 @@ export const AiTextFinalEvent = baseEvent.extend({
 });
 
 /**
+ * Emitted the moment agent-worker kicks off reply generation, before any
+ * text exists. Mobile shows a "typing"/thinking indicator until the
+ * candidate (or final) arrives. Carries no payload — it's a pure signal.
+ */
+export const AiThinkingEvent = baseEvent.extend({
+  type: z.literal('ai.thinking'),
+  data: z.object({}).strict(),
+});
+
+/**
  * Emitted by agent-worker after the LLM has produced a reply, BUT
  * before TTS plays it. The mobile UI shows this as a candidate
  * bubble so the user can read what's about to be spoken and either:
@@ -204,6 +214,7 @@ export const InternalCallEventSchema = z.discriminatedUnion('type', [
   TranscriptFinalEvent,
   TranscriptPartialEvent,
   AiTextFinalEvent,
+  AiThinkingEvent,
   AiTextCandidateEvent,
   AiTtsEndEvent,
   UserSpokeEvent,
@@ -224,6 +235,7 @@ export type InternalCallEventType = InternalCallEvent['type'];
 export type TranscriptFinal = z.infer<typeof TranscriptFinalEvent>;
 export type TranscriptPartial = z.infer<typeof TranscriptPartialEvent>;
 export type AiTextFinal = z.infer<typeof AiTextFinalEvent>;
+export type AiThinking = z.infer<typeof AiThinkingEvent>;
 export type AiTextCandidate = z.infer<typeof AiTextCandidateEvent>;
 export type AiTtsEnd = z.infer<typeof AiTtsEndEvent>;
 export type UserSpoke = z.infer<typeof UserSpokeEvent>;

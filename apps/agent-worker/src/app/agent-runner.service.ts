@@ -39,6 +39,10 @@ interface CallControlMessage {
   reason?: string;
   /** Active conversation style id, wire format ("builtin:..." | "custom:..."). */
   styleId?: string;
+  /** AI candidate id for accept/cancel actions. */
+  candidateId?: string;
+  /** Auto-mode toggle payload. */
+  enabled?: boolean;
   /** Legacy shape support — old api-gateway code path. */
   roomName?: string;
 }
@@ -342,6 +346,27 @@ export class AgentRunnerService
         // we just mutate the handler's tracked id. No audio interruption,
         // no provider swap — safe to do mid-utterance.
         if (msg.styleId) await handler.setActiveStyle(msg.styleId);
+        return;
+
+      case CallControlAction.ACCEPT_AI_REPLY:
+        // Mobile tapped "Send" on the candidate preview (or its auto-mode
+        // timer elapsed and it sent automatically). Promote the pending
+        // candidate to actual TTS via the ttsNode gate.
+        if (msg.candidateId) handler.acceptAiReply(msg.candidateId);
+        return;
+
+      case CallControlAction.CANCEL_AI_REPLY:
+        // User dismissed the candidate before the timer fired. Drop
+        // without speaking — the agent waits for the next interlocutor
+        // turn (which produces a fresh candidate).
+        if (msg.candidateId) handler.cancelAiReply(msg.candidateId);
+        return;
+
+      case CallControlAction.SET_AUTO_MODE:
+        // Per-call toggle — sensitive calls may want manual every time.
+        // Lives on the agent instance only; not persisted to the user
+        // profile because different calls warrant different control.
+        if (typeof msg.enabled === 'boolean') handler.setAutoMode(msg.enabled);
         return;
 
       default:

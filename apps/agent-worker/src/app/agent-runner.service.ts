@@ -140,6 +140,22 @@ export class AgentRunnerService
     }
   }
 
+  /**
+   * Per-session stop() deadline during shutdown drain. Beyond this, we
+   * stop waiting and forcibly proceed to subscriber.quit() — the SIP
+   * leg of any laggard call eventually gets reaped by the SIP-orphan
+   * watchdog (realtime-service Phase 2.2) or LiveKit's own idle
+   * timeout, but the pod itself MUST exit promptly so k8s / docker
+   * compose / systemd don't escalate to SIGKILL (which would skip our
+   * call.ended emit AND leak the LiveKit room).
+   *
+   * 25s leaves enough headroom for a polite say("goodbye") + the 3×
+   * deleteRoom retries (200+800+2400ms backoff) + cleanup. Past that,
+   * the call clearly isn't shutting down gracefully — better to cut
+   * losses than block the deploy.
+   */
+  private static readonly SHUTDOWN_DRAIN_TIMEOUT_MS = 25_000;
+
   async onApplicationShutdown(signal?: string): Promise<void> {
     this.logger.log(`🛑 [Shutdown] signal=${signal}; draining ${this.activeSessions.size} sessions`);
     try {
@@ -149,7 +165,33 @@ export class AgentRunnerService
       // best-effort
     }
 
-    await Promise.all([...this.activeSessions.values()].map((s) => s.handler.stop()));
+    // Race the drain against a hard timeout. Promise.all naturally
+    // resolves when every session stop() resolves; the timeout
+    // resolves to a sentinel after SHUTDOWN_DRAIN_TIMEOUT_MS so we
+    // never block longer than that. We DO NOT reject — even partial
+    // drain is better than no drain.
+    const drainStart = Date.now();
+    const stopAll = Promise.allSettled(
+      [...this.activeSessions.values()].map((s) => s.handler.stop()),
+    );
+    let drainTimer: NodeJS.Timeout | null = null;
+    const drainTimeout = new Promise<'timeout'>((resolve) => {
+      drainTimer = setTimeout(
+        () => resolve('timeout'),
+        AgentRunnerService.SHUTDOWN_DRAIN_TIMEOUT_MS,
+      );
+    });
+    const result = await Promise.race([stopAll, drainTimeout]);
+    if (drainTimer) clearTimeout(drainTimer);
+    if (result === 'timeout') {
+      this.logger.warn(
+        `[Shutdown] Drain exceeded ${AgentRunnerService.SHUTDOWN_DRAIN_TIMEOUT_MS}ms — ${this.activeSessions.size} session(s) still active, proceeding to forced shutdown. SIP-orphan cron will reap any leaked LiveKit rooms.`,
+      );
+    } else {
+      this.logger.log(
+        `[Shutdown] Drain completed in ${Date.now() - drainStart}ms.`,
+      );
+    }
     this.activeSessions.clear();
     this.conversationIndex.clear();
 

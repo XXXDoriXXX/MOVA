@@ -94,6 +94,20 @@ const ENTITIES = [
             idle_in_transaction_session_timeout: 30_000,
             connectionTimeoutMillis: 5_000,
           },
+          // Boot-time retry. Without this, a Neon serverless cold start
+          // (8-12s wake from suspend) that lands during a deploy makes
+          // the first 1-2 connection attempts fail → NestJS bootstrap
+          // throws → container exits non-zero → docker compose / k8s
+          // restart-loops the pod until Postgres happens to be warm.
+          // 10 attempts × 3s = 30s window covers cold-start, transient
+          // network blip, and Neon's pooler restarting. The TypeORM
+          // wrapper applies these specifically to the initial connect;
+          // runtime query failures still raise normally.
+          retryAttempts: 10,
+          retryDelay: 3000,
+          // Verbose retry log so an operator watching the boot output
+          // sees "still trying to connect to DB" instead of silent hang.
+          verboseRetryLog: true,
         };
       },
     }),

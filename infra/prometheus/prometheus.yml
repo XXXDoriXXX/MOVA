@@ -1,0 +1,64 @@
+# Prometheus scrape + alert config for the Mova stack.
+#
+# Lives in `./infra/prometheus/prometheus.yml`, mounted at
+# `/etc/prometheus/prometheus.yml` in the prometheus container.
+#
+# Notes:
+#   - 15s global scrape — fine-grained enough for call-flow alerting
+#     (we care about a stuck call within a minute) without blowing
+#     up TSDB cardinality.
+#   - Targets use the docker compose service names; Prometheus runs
+#     on the same `mova_network` so DNS just works.
+#   - We scrape `/metrics` on each service's HTTP port. agent-worker
+#     uses 3001, api-gateway 3000, realtime-service 3002 — set in
+#     each app's main.ts via `PORT` env.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: mova-local
+
+# Alert rules — separate file so an alert tweak doesn't risk
+# breaking the scrape config (and vice versa). Hot-reload on file
+# change (Prometheus's SIGHUP / web --enable-lifecycle).
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+# Alertmanager wiring. Same docker network. Path = / so default route
+# applies. The /-/healthy probe on Alertmanager is what Prometheus
+# uses to know the AM is reachable.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+scrape_configs:
+  # Self-scrape — answers "is Prometheus itself collecting?"
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Mova services. Each app exposes /metrics on its API port,
+  # registered via @willsoto/nestjs-prometheus.
+  - job_name: api-gateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['api-gateway:3000']
+        labels:
+          service: api-gateway
+
+  - job_name: realtime-service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['realtime-service:3002']
+        labels:
+          service: realtime-service
+
+  - job_name: agent-worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['agent-worker:3001']
+        labels:
+          service: agent-worker

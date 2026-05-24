@@ -2,6 +2,8 @@ import { Inject, Logger, OnModuleDestroy, UseFilters } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { BaseWsExceptionFilter, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
+import { InjectMetric } from '@willsoto/nestjs-prometheus';
+import type { Counter, Gauge } from 'prom-client';
 import type { Redis } from 'ioredis';
 import type { Server, Socket } from 'socket.io';
 
@@ -92,6 +94,10 @@ export class CallGateway implements OnModuleDestroy {
     private readonly bridge: RealtimeBridgeService,
     private readonly replay: ReplayService,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
+    @InjectMetric('mova_ws_connections')
+    private readonly wsConnections: Gauge<string>,
+    @InjectMetric('mova_ws_messages_total')
+    private readonly wsMessages: Counter<string>,
   ) {}
 
   afterInit(server: Server): void {
@@ -106,6 +112,11 @@ export class CallGateway implements OnModuleDestroy {
   }
 
   async handleConnection(socket: Socket): Promise<void> {
+    // Increment first so the gauge is correct even if the rest of
+    // handleConnection throws — handleDisconnect always runs and
+    // decrements regardless of the failure path. Without this
+    // ordering, a thrown error here would leave the gauge stuck high.
+    this.wsConnections.inc();
     const data = sockData(socket);
     const { userId, conversationId, lastStreamId } = data;
 
@@ -115,6 +126,12 @@ export class CallGateway implements OnModuleDestroy {
     const liveBuffer: ServerEvent[] = [];
     let liveOpen = false;
     const unsubscribe = this.bridge.attach(conversationId, (event: ServerEvent) => {
+      // mova_ws_messages_total{direction="outbound"}: bumped here at the
+      // main hot-path (one per published event per subscribed socket).
+      // We deliberately don't count buffered-then-flushed events twice;
+      // the metric reflects "send attempts to a connected client",
+      // which is what the dashboards care about.
+      this.wsMessages.inc({ direction: 'outbound' });
       if (liveOpen) {
         socket.emit('event', event);
       } else {
@@ -173,6 +190,11 @@ export class CallGateway implements OnModuleDestroy {
   }
 
   handleDisconnect(socket: Socket): void {
+    // Always decrement, even if auth bounced this socket before
+    // attaching the bridge — we incremented unconditionally in
+    // handleConnection so we must decrement unconditionally here
+    // to keep the gauge honest.
+    this.wsConnections.dec();
     const data = socket.data as Partial<SocketData> | undefined;
     if (data?.unsubscribeBridge) {
       data.unsubscribeBridge();
@@ -204,6 +226,10 @@ export class CallGateway implements OnModuleDestroy {
   // rate-limiting before dispatch, which is easier with raw .on().
   private bindCommandHandler(socket: Socket): void {
     socket.on('command', async (raw: unknown) => {
+      // Count BEFORE rate-limit check so the metric reflects raw
+      // client traffic (rate-limited attempts still cost CPU + are
+      // a useful signal of misbehaving clients).
+      this.wsMessages.inc({ direction: 'inbound' });
       try {
         if (!this.allowCommand(socket.id)) {
           socket.emit('event', this.buildRateLimitedEvent());

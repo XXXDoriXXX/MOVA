@@ -69,6 +69,12 @@ export const CallControlAction = {
   CHANGE_VOICE: 'change_voice',
   CHANGE_MODEL: 'change_model',
   CHANGE_STYLE: 'change_style',
+  /** Promote a pending AI candidate reply to actual TTS. */
+  ACCEPT_AI_REPLY: 'accept_ai_reply',
+  /** Drop a pending AI candidate without speaking it. */
+  CANCEL_AI_REPLY: 'cancel_ai_reply',
+  /** Toggle per-call "auto-accept candidates after timer" mode. */
+  SET_AUTO_MODE: 'set_auto_mode',
 } as const;
 
 export type CallControlAction = (typeof CallControlAction)[keyof typeof CallControlAction];

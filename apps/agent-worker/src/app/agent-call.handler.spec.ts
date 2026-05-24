@@ -65,8 +65,28 @@ jest.mock('@livekit/rtc-node', () => {
 });
 
 jest.mock('@livekit/rtc-ffi-bindings', () => ({
-  ParticipantKind: { SIP: 1, STANDARD: 0 },
+  ParticipantKind: { SIP: 1, STANDARD: 0, CONNECTOR: 2 },
 }));
+
+// Mock @livekit/agents directly — its room_io.ts module-init does
+// `Object.values(ParticipantKind)` on a non-mockable internal import
+// that escapes the rtc-ffi-bindings mock above when GatedAgent forces
+// a runtime resolution of voice.Agent. We only need the .Agent class
+// to be a constructable stub (the spec never actually starts a real
+// session — see bindSessionEvents flow tests that work off the fake
+// EventEmitter).
+jest.mock('@livekit/agents', () => {
+  class Agent {
+    constructor(_opts: unknown) {}
+    async ttsNode(_text: unknown, _ms: unknown): Promise<null> {
+      return null;
+    }
+    static default = {
+      ttsNode: async () => null,
+    };
+  }
+  return { voice: { Agent } };
+});
 
 const fakeDeleteRoom = jest.fn().mockResolvedValue(undefined);
 jest.mock('livekit-server-sdk', () => {
@@ -135,6 +155,10 @@ function makeHarness(opts: {
     }),
     createAgent: jest.fn().mockReturnValue({}),
     getInitialGreeting: jest.fn().mockReturnValue('Привіт'),
+    // Handler now instantiates GatedAgent itself and only asks the
+    // factory for the assembled prompt string. The actual prompt
+    // content isn't asserted here (covered by agent.factory.spec).
+    buildSystemPrompt: jest.fn().mockReturnValue('test system prompt'),
   } as unknown as jest.Mocked<AgentFactory>;
 
   const publisher = { publish: jest.fn().mockResolvedValue(undefined) };

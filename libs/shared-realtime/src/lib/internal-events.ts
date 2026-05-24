@@ -61,6 +61,30 @@ export const AiTextFinalEvent = baseEvent.extend({
   }),
 });
 
+/**
+ * Emitted by agent-worker after the LLM has produced a reply, BUT
+ * before TTS plays it. The mobile UI shows this as a candidate
+ * bubble so the user can read what's about to be spoken and either:
+ *   - accept (or let the auto-mode timer elapse) → TTS plays
+ *   - cancel → TTS skipped, candidate disappears
+ *
+ * `autoAcceptInMs` is what the agent intends to wait before
+ * auto-accepting; null means "manual mode — wait for explicit
+ * user action". Mobile drives a countdown ring from this value.
+ */
+export const AiTextCandidateEvent = baseEvent.extend({
+  type: z.literal('ai.text.candidate'),
+  data: z.object({
+    /** Unique id the user references in accept/cancel commands. */
+    candidateId: z.string().min(1),
+    text: z.string().min(1),
+    llmProvider: z.string().min(1),
+    llmModel: z.string().min(1),
+    /** ms until auto-accept; null in manual mode. */
+    autoAcceptInMs: z.number().int().nonnegative().nullable(),
+  }),
+});
+
 export const AiTtsEndEvent = baseEvent.extend({
   type: z.literal('ai.tts.end'),
   data: z.object({
@@ -180,6 +204,7 @@ export const InternalCallEventSchema = z.discriminatedUnion('type', [
   TranscriptFinalEvent,
   TranscriptPartialEvent,
   AiTextFinalEvent,
+  AiTextCandidateEvent,
   AiTtsEndEvent,
   UserSpokeEvent,
   SuggestionsGeneratedEvent,
@@ -199,6 +224,7 @@ export type InternalCallEventType = InternalCallEvent['type'];
 export type TranscriptFinal = z.infer<typeof TranscriptFinalEvent>;
 export type TranscriptPartial = z.infer<typeof TranscriptPartialEvent>;
 export type AiTextFinal = z.infer<typeof AiTextFinalEvent>;
+export type AiTextCandidate = z.infer<typeof AiTextCandidateEvent>;
 export type AiTtsEnd = z.infer<typeof AiTtsEndEvent>;
 export type UserSpoke = z.infer<typeof UserSpokeEvent>;
 export type SuggestionsGenerated = z.infer<typeof SuggestionsGeneratedEvent>;

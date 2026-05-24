@@ -131,6 +131,26 @@ export class AgentCallHandler {
   private heartbeatFailures = 0;
   private static readonly HEARTBEAT_FAIL_ALARM = 3;
 
+  /**
+   * Hard call-duration deadline. Armed in start() once we have an
+   * actual session. Fires CallErrorCode.CALL_TIMEOUT and tears down via
+   * the standard stop() path so the post-call sheet and billing both
+   * see a clean end. Without this, a crashed/leaked SIP participant
+   * keeps the LiveKit room alive (~5 min idle timeout) and bills the
+   * user / our telco trunk for the whole window.
+   *
+   * Default cap is enforced by billing eligibility per plan
+   * (`maxCallDurationSeconds`), passed through agentContext. Free-tier
+   * users get a tight cap (e.g. 5 min), paid plans a generous one
+   * (e.g. 60 min) — both are upper bounds, not nominal call lengths.
+   */
+  private callDeadlineTimer: NodeJS.Timeout | null = null;
+  /** Fallback when context has no maxCallDurationSeconds (legacy call
+   *  context, mis-configured plan, etc.). 1 hour ceiling — high enough
+   *  to never trip a real conversation, low enough to bound runaway
+   *  spend at one user-hour of telco/LLM cost. */
+  private static readonly DEFAULT_CALL_DEADLINE_MS = 60 * 60 * 1000;
+
   /** Rolling buffer of recent messages — feeds SuggestionsService context. */
   private readonly recentMessages: Array<{
     role: 'interlocutor' | 'ai' | 'user_typed';
@@ -399,11 +419,13 @@ export class AgentCallHandler {
       }
       // Greeting done — promote to active. Start the idle-probe timer
       // so a non-responsive interlocutor doesn't strand the call in
-      // silence, and arm the STT-stall watchdog now that SIP audio is
-      // expected to be flowing.
+      // silence, arm the STT-stall watchdog now that SIP audio is
+      // expected to be flowing, and arm the hard call-duration deadline
+      // so a leaked / crashed session can't run indefinitely.
       this.state = 'active';
       this.armIdleProbe();
       this.armSttStall();
+      this.armCallDeadline();
 
       this.logger.log(
         `🎉 [Call Lifecycle] Connection sequence completed in ${Date.now() - callStartTime}ms`,
@@ -675,6 +697,7 @@ export class AgentCallHandler {
     this.clearResponseWatchdog();
     this.clearIdleProbe();
     this.clearSttStall();
+    this.clearCallDeadline();
     if (this.session) {
       try {
         this.session.close();
@@ -1218,6 +1241,64 @@ export class AgentCallHandler {
     // sttStalledEmitted is intentionally NOT reset — we don't want to
     // flap the banner every 30s if the connection is genuinely flaky.
     this.armSttStall();
+  }
+
+  // ─── Hard call-duration deadline ───────────────────────
+
+  private armCallDeadline(): void {
+    this.clearCallDeadline();
+    const cap = this.userContext.maxCallDurationSeconds;
+    // cap can legitimately be 0 (BillingService returns 0 when the user
+    // has zero remaining balance) — in that case the call should already
+    // have been refused upstream by assertEligible, so reaching here
+    // implies a bug. Defaulting to DEFAULT_CALL_DEADLINE_MS keeps us safe
+    // either way: even a buggy upstream can't strand a session forever.
+    const deadlineMs =
+      cap && cap > 0
+        ? cap * 1000
+        : AgentCallHandler.DEFAULT_CALL_DEADLINE_MS;
+    this.callDeadlineTimer = setTimeout(() => {
+      void this.fireCallDeadline(deadlineMs);
+    }, deadlineMs);
+    this.logger.log(
+      `[Deadline] Armed call-duration watchdog: ${Math.round(deadlineMs / 1000)}s`,
+    );
+  }
+
+  private clearCallDeadline(): void {
+    if (this.callDeadlineTimer) {
+      clearTimeout(this.callDeadlineTimer);
+      this.callDeadlineTimer = null;
+    }
+  }
+
+  /**
+   * Fire the deadline: emit a system-initiated CALL_TIMEOUT and run the
+   * same teardown path as user-stop. We deliberately do NOT call
+   * `stop()` here because stop()'s state guard would short-circuit
+   * (we already moved to 'ending' via beginEnd) AND its own emitTyped
+   * would double-fire call.ended with the wrong reason. Instead we
+   * inline the two teardown steps (deleteRoom + cleanup) that the
+   * stop() path is responsible for.
+   */
+  private async fireCallDeadline(deadlineMs: number): Promise<void> {
+    if (this.state !== 'active') return;
+    const durationMs = this.callStartTime ? Date.now() - this.callStartTime : deadlineMs;
+    this.logger.warn(
+      `[Deadline] Call exceeded max duration (${Math.round(deadlineMs / 1000)}s) — force-ending.`,
+    );
+    this.beginEnd('system', 'timeout', CallErrorCode.CALL_TIMEOUT);
+    this.emitTyped({
+      type: 'call.ended',
+      data: {
+        endedBy: 'system',
+        reason: 'timeout',
+        errorCode: CallErrorCode.CALL_TIMEOUT,
+        durationMs,
+      },
+    });
+    await this.deleteRoomWithRetry();
+    this.cleanup();
   }
 
   /**

@@ -16,10 +16,13 @@
 # Operator: put basic-auth creds for Grafana at
 # /etc/nginx/.htpasswd-grafana (use `htpasswd -c`).
 
-upstream mova_api {
-    server 127.0.0.1:3000;
-    keepalive 32;
-}
+# mova_api upstream is defined OUT-OF-LINE in
+# /etc/nginx/conf.d/mova-active-upstream.conf so the blue-green switch
+# script (infra/vps/switch-color.sh) can rewrite the target port
+# (3000=blue, 3010=green) and `nginx -s reload` without touching this
+# main site config. bootstrap.sh seeds the include file with the
+# default 3000 target on first install.
+include /etc/nginx/conf.d/mova-active-upstream.conf;
 
 upstream mova_ws {
     server 127.0.0.1:3002;

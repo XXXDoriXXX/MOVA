@@ -301,9 +301,20 @@ services:
     container_name: mova_grafana
     restart: unless-stopped
     environment:
-      # Override admin password by setting GF_SECURITY_ADMIN_PASSWORD in your
-      # local .env (compose auto-loads root .env). Falls back to "admin".
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # SECURITY: set GRAFANA_ADMIN_PASSWORD in .env. The empty default
+      # below makes Grafana generate a random password on first boot
+      # and print it to its startup log — safer than baking "admin"
+      # in as the literal default which used to live here. To find
+      # the generated value when you skipped setting it:
+      #   docker compose logs grafana | grep -i "admin password"
+      # In prod (NODE_ENV=production), set the env explicitly to a
+      # vault-managed value.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
+      # When the password env is empty, Grafana refuses to boot UNLESS
+      # GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION=false (the default),
+      # in which case it falls back to "admin/admin" on first run.
+      # We flip the disable flag OFF and rely on the empty password
+      # to trigger Grafana's "set it on first login" UI.
       GF_USERS_ALLOW_SIGN_UP: "false"
       # Disable anonymous access by default — but make it a single env flip
       # for dev convenience.

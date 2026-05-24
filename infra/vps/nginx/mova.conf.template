@@ -1,0 +1,144 @@
+# nginx site config for the Mova API gateway + WebSocket realtime + Grafana.
+# bootstrap.sh substitutes __MOVA_DOMAIN__ before placing this at
+# /etc/nginx/sites-available/mova. certbot then injects the SSL cert
+# config block in-place, so don't pre-write listen 443 here.
+#
+# Three upstreams:
+#   - REST (api-gateway:3000)       — at /v1/, /docs
+#   - WebSocket (realtime:3002)     — at /ws/   (with Upgrade headers)
+#   - Grafana   (grafana:3030)      — at /grafana/  + basic-auth gate
+#
+# Why one vhost instead of three subdomains:
+#   - One Let's Encrypt cert for all three saves cert-renewal lifecycle
+#     surface area.
+#   - Mobile clients only need to know one hostname.
+#
+# Operator: put basic-auth creds for Grafana at
+# /etc/nginx/.htpasswd-grafana (use `htpasswd -c`).
+
+upstream mova_api {
+    server 127.0.0.1:3000;
+    keepalive 32;
+}
+
+upstream mova_ws {
+    server 127.0.0.1:3002;
+    keepalive 32;
+}
+
+upstream mova_grafana {
+    server 127.0.0.1:3030;
+    keepalive 8;
+}
+
+# HTTP server block — certbot will copy this and add 443+SSL automatically.
+server {
+    server_name __MOVA_DOMAIN__;
+    listen 80;
+    listen [::]:80;
+
+    # ACME challenge for cert renewal lives at /.well-known/acme-challenge/
+    # and is handled by certbot's webroot plugin automatically.
+
+    # Body size: file uploads (audit-log exports etc.) — bump if needed.
+    client_max_body_size 25M;
+
+    # Hide upstream node identity — never leak that we're running Express.
+    server_tokens off;
+
+    # ── REST API (api-gateway) ─────────────────────────────────
+    location /v1/ {
+        proxy_pass http://mova_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 75s;
+        # Stream LLM chunked responses without buffering — the
+        # eligibility-check returns small JSON but we'll plug
+        # /v1/conversations/:id/stream here later for log replay.
+        proxy_buffering off;
+    }
+
+    # Swagger UI for ops + integration partners.
+    location /docs {
+        proxy_pass http://mova_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # ── WebSocket (realtime-service) ───────────────────────────
+    # Socket.IO needs both /socket.io/ AND the Upgrade dance. Setting
+    # `proxy_read_timeout 1d` because a live call is exactly a
+    # long-lived WS — default 60s would drop the connection mid-call.
+    location /socket.io/ {
+        proxy_pass http://mova_ws;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+        proxy_buffering off;
+    }
+
+    # Plain /ws/ alias for clients that use a separate WS namespace —
+    # falls through to the same upstream.
+    location /ws/ {
+        proxy_pass http://mova_ws;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 86400s;
+    }
+
+    # ── Grafana (locked behind basic-auth) ─────────────────────
+    location /grafana/ {
+        # htpasswd file: `sudo htpasswd -c /etc/nginx/.htpasswd-grafana ops`
+        auth_basic           "Mova ops";
+        auth_basic_user_file /etc/nginx/.htpasswd-grafana;
+
+        # Strip the /grafana prefix when forwarding upstream — Grafana
+        # itself doesn't know about the path. Also set
+        # GF_SERVER_ROOT_URL=https://__MOVA_DOMAIN__/grafana/ in the
+        # grafana container env so it generates correct redirect URLs.
+        rewrite ^/grafana(/.*)$ $1 break;
+        proxy_pass http://mova_grafana;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Grafana WS (live alerts, dashboard refresh)
+    location /grafana/api/live/ {
+        auth_basic           "Mova ops";
+        auth_basic_user_file /etc/nginx/.htpasswd-grafana;
+        rewrite ^/grafana(/.*)$ $1 break;
+        proxy_pass http://mova_grafana;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+    }
+
+    # Root → 404 to fail-loud on a misconfigured DNS / CDN bot probe.
+    location = / {
+        return 404 'mova\n';
+        add_header Content-Type text/plain;
+    }
+
+    # Drop common crawler probes silently rather than 404-spam logs.
+    location ~* \.(php|aspx|env|git)$ {
+        access_log off;
+        return 404;
+    }
+}

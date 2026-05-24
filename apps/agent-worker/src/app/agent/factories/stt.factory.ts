@@ -4,6 +4,8 @@ import { stt } from '@livekit/agents';
 import * as deepgram from '@livekit/agents-plugin-deepgram';
 import { AgentConfigDto, SttProviderEnum } from '@mova-back/shared-agent';
 
+import { WhisperStt } from '../providers/whisper-stt';
+
 type DeepgramSTTOptions = NonNullable<ConstructorParameters<typeof deepgram.STT>[0]>;
 export type DeepgramSTTModel = DeepgramSTTOptions['model'];
 
@@ -107,13 +109,29 @@ export class SttFactory {
         instance.setMaxListeners(0);
         return { stt: instance, provider: 'deepgram', model };
       }
-      // TODO: case SttProviderEnum.WHISPER → new WhisperStt({...}).
-      // Implementation parked: needs an stt.SpeechStream subclass
-      // that streams audio to OpenAI's /v1/audio/transcriptions
-      // (batched, ~latency-spiky) OR to gpt-4o-realtime-preview WS
-      // (continuous, complex). Operator can stand it up by writing
-      // ~150 lines in apps/agent-worker/.../providers/whisper-stt.ts
-      // following the GoogleCloudTts plugin pattern.
+      case SttProviderEnum.OPENAI: {
+        // Whisper batched-mode STT — scaffold per Phase 12.2.
+        // Activates when `STT_PROVIDER=openai` OR
+        // `STT_FALLBACK_PROVIDER=openai` (cold-swap path above).
+        // Requires OPENAI_API_KEY env. See WhisperStt header for the
+        // latency / cost trade-off vs Deepgram.
+        const apiKey =
+          this.config.get<string>('OPENAI_API_KEY') ?? undefined;
+        if (!apiKey) {
+          throw new Error(
+            'WhisperStt requires OPENAI_API_KEY. Set it in env or use a different STT_PROVIDER.',
+          );
+        }
+        const model =
+          agentConfig?.stt?.model ||
+          this.config.get<string>('WHISPER_MODEL', 'whisper-1');
+        const language =
+          agentConfig?.stt?.language ||
+          this.config.get<string>('STT_LANGUAGE', 'uk');
+        const instance = new WhisperStt({ apiKey, model, language });
+        (instance as unknown as { setMaxListeners(n: number): void }).setMaxListeners(0);
+        return { stt: instance, provider: 'openai', model };
+      }
       default: {
         this.logger.warn(
           `⚠️ [Factory: STT] Unknown provider "${provider}", falling back to Deepgram defaults`,

@@ -1,0 +1,26 @@
+# sops creation rules.
+#
+# Any file under secrets/*.enc.* OR matching the .enc.* suffix is
+# encrypted with the listed age recipient(s). sops looks up the
+# matching recipient's private key from $SOPS_AGE_KEY_FILE (default
+# ~/.config/sops/age/keys.txt) when decrypting.
+#
+# How to add a new recipient (e.g. when onboarding a teammate):
+#   1. They generate an age key:  age-keygen -o ~/.config/sops/age/keys.txt
+#   2. They share ONLY the public key (the "age1..." line at the top of
+#      the file, also printed to stdout by age-keygen).
+#   3. Append it to `age:` below, comma-separated.
+#   4. Re-encrypt existing secret files so the new recipient can decrypt:
+#        sops updatekeys secrets/prod.env.enc
+#
+# Recipient list below is a PLACEHOLDER — replace `age1xxxxxx...` with
+# the real public key from the operator running this repo. The
+# placeholder makes the file syntactically valid so `sops --help`
+# style commands work; encryption / decryption will fail with a
+# clear "no matching key" error if you forget.
+
+creation_rules:
+  - path_regex: \.enc(\..*)?$
+    encrypted_regex: ^(.*)$
+    age: >-
+      age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

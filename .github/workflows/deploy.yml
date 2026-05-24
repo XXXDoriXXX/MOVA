@@ -123,6 +123,49 @@ jobs:
           echo "owner=$OWNER_LOWER" >> $GITHUB_OUTPUT
           echo "tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
 
+      # ── Optional: decrypt prod.env via sops + scp to VPS ─────
+      # Opt-in via SOPS_AGE_KEY secret. When unset (typical for
+      # diploma / single-operator), the operator places /opt/mova/.env
+      # by hand and this step is a no-op.
+      - name: Detect sops config
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          if [ -n "$SOPS_AGE_KEY" ] && [ -f secrets/prod.env.enc ]; then
+            echo "SOPS_READY=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install sops
+        if: ${{ env.SOPS_READY == 'true' }}
+        run: |
+          curl -fsSL -o sops https://github.com/getsops/sops/releases/latest/download/sops-linux-amd64
+          chmod +x sops
+          sudo mv sops /usr/local/bin/sops
+          sops --version
+
+      - name: Decrypt prod env + push to VPS
+        if: ${{ env.SOPS_READY == 'true' }}
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          # Place the deploy bot's age private key where sops looks
+          # by default.
+          mkdir -p "$HOME/.config/sops/age"
+          printf '%s\n' "$SOPS_AGE_KEY" > "$HOME/.config/sops/age/keys.txt"
+          chmod 600 "$HOME/.config/sops/age/keys.txt"
+          # Decrypt to a tmp file, scp over, then shred locally.
+          sops --decrypt secrets/prod.env.enc > /tmp/prod.env
+          chmod 600 /tmp/prod.env
+          # The SSH key for scp comes from the same secret as the
+          # main deploy step; reuse via stdin-into-ssh-agent.
+          eval "$(ssh-agent -s)"
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | ssh-add -
+          scp -o StrictHostKeyChecking=no -P "${{ secrets.SSH_PORT || 22 }}" \
+            /tmp/prod.env \
+            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/mova/.env"
+          shred -u /tmp/prod.env "$HOME/.config/sops/age/keys.txt"
+          ssh-agent -k
+
       - name: SSH deploy
         uses: appleboy/ssh-action@v1.2.0
         with:

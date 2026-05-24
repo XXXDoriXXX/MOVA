@@ -1,0 +1,66 @@
+# Tempo single-binary config — minimal, filesystem-backed.
+# Good for one-VPS deployment alongside Prometheus + Loki.
+#
+# Storage: local disk, /tmp/tempo (mounted as a docker volume for
+# persistence across container restarts). Retention 72h — traces are
+# debugging tools, not long-term audit, so a 3-day window is enough.
+# Crank up via `compaction_window` / `block_retention` once cold-tier
+# storage is wired (S3-compatible).
+#
+# Receivers:
+#   - otlp/grpc :4317 — what most OTel SDKs default to
+#   - otlp/http :4318 — useful when the SDK is browser-pinned
+#
+# Service-side SDK init lives in each app's instrument.ts (TODO —
+# see RUNBOOK "OpenTelemetry tracing" section for the integration
+# steps, parked because it intersects Sentry's own OTel setup and
+# needs careful provider negotiation).
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  trace_idle_period: 10s
+  max_block_bytes: 1_000_000
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 72h
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/blocks
+    wal:
+      path: /var/tempo/wal
+
+metrics_generator:
+  registry:
+    external_labels:
+      source: tempo
+      cluster: mova-local
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+        send_exemplars: true
+
+# Enable service-graph + span-metrics processors so Tempo can feed
+# Grafana's Service Graph view + RED metrics without an app-side
+# integration. Picks up traces sent via OTLP and derives metrics.
+overrides:
+  defaults:
+    metrics_generator:
+      processors: ['service-graphs', 'span-metrics']

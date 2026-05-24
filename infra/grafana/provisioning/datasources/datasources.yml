@@ -40,3 +40,29 @@ datasources:
     jsonData:
       implementation: prometheus
       handleGrafanaManagedAlerts: false
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      # Service Graph view: which services talk to which, with RED
+      # metrics (Rate / Errors / Duration) overlaid. Powered by
+      # span-metrics that Tempo's metrics_generator pushes into
+      # Prometheus via remote_write — Tempo's config has the
+      # processors enabled (infra/tempo/tempo-config.yml).
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      # Link trace IDs from log lines (Loki) → click jumps to the
+      # full trace view in Tempo. Requires the log line to carry
+      # `traceID` (set by the OTel SDK when instrumentation is on).
+      tracesToLogs:
+        datasourceUid: loki
+        tags: ['service']
+        mappedTags: [{ key: 'service.name', value: 'service' }]
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m

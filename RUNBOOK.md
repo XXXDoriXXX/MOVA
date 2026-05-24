@@ -372,6 +372,72 @@ and reference this runbook entry.
 
 ---
 
+## Enabling OpenTelemetry tracing (future)
+
+Tempo container + Grafana datasource are wired (Phase 11.1) and
+ready to receive traces. Service-side SDK init is the missing
+piece — parked because it intersects with Sentry's own OpenTelemetry
+auto-setup (both want to register the global tracer provider).
+
+To finish the wiring:
+
+1. **Disable Sentry's OTel auto-setup**:
+   ```ts
+   // apps/<service>/src/instrument.ts
+   Sentry.init({
+     ...,
+     skipOpenTelemetrySetup: true,
+   });
+   ```
+
+2. **Initialize NodeTracerProvider manually** with BOTH processors:
+   ```ts
+   import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+   import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
+   import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
+   import { Resource } from '@opentelemetry/resources';
+   import { SemanticResourceAttributes } from '@opentelemetry/semantic-conventions';
+   import { SentrySpanProcessor } from '@sentry/opentelemetry';
+   import { registerInstrumentations } from '@opentelemetry/instrumentation';
+   import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
+   // ... import the other instrumentations Sentry already pulled in
+
+   const provider = new NodeTracerProvider({
+     resource: new Resource({
+       [SemanticResourceAttributes.SERVICE_NAME]: 'api-gateway', // per-service
+     }),
+   });
+   provider.addSpanProcessor(new SentrySpanProcessor()); // → Sentry
+   provider.addSpanProcessor(
+     new BatchSpanProcessor(
+       new OTLPTraceExporter({
+         url: process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+           || 'http://tempo:4318/v1/traces',
+       }),
+     ),
+   );
+   provider.register();
+   registerInstrumentations({
+     instrumentations: [
+       new HttpInstrumentation(),
+       new NestInstrumentation(),
+       new PgInstrumentation(),
+       new IORedisInstrumentation(),
+     ],
+   });
+   ```
+
+3. **Set env on each service**:
+   ```
+   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://tempo:4318/v1/traces
+   OTEL_SERVICE_NAME=api-gateway   # or realtime-service / agent-worker
+   ```
+
+4. **Verify**: open Grafana → Explore → Tempo datasource, search recent traces.
+
+Until this is done, Sentry continues to capture errors and slow
+transactions (its native flow); Tempo just stays empty.
+
 ## Escalation
 
 For a graduation-project deployment there's one person on call (you).

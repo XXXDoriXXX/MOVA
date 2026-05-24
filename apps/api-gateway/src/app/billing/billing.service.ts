@@ -253,20 +253,34 @@ export class BillingService {
   /**
    * Atomically decrement balance / increment free-used after a call ends.
    *
-   * Concurrency model:
-   *   PAID branch — `UPDATE ... SET balanceCents = balanceCents - :cost WHERE
-   *   userId = :u AND balanceCents >= :cost`. If `affected === 0`, the user
-   *   doesn't have enough — surface `InsufficientBalanceError`, NOT a 500.
-   *   The CHECK constraint at the DB layer is a backstop; we want the typed
-   *   domain error here so the call-orchestrator can translate it into the
-   *   right WS `call.error BALANCE_EXHAUSTED`.
+   * Concurrency model — three layers prevent the same charge from
+   * being applied twice or two charges from racing past the quota cap:
    *
-   *   FREE branch — incrementing freeSecondsUsed has no negative-bound (the
-   *   counter is non-negative by CHECK). It still uses a parametrized SQL
-   *   fragment so we don't string-interpolate untrusted numbers.
+   *   1. Application gate (Phase 2.3, `countActiveForUser` in
+   *      call.service.initiateCall): a user can have AT MOST ONE call
+   *      in PENDING/ACTIVE state. Stops parallel dial → parallel
+   *      end-of-call → parallel applyCharge.
    *
-   * Input is validated upstream (Zod), but we coerce with Number() defensively
-   * because the SQL builder uses `:param` binding — never raw interpolation.
+   *   2. Cross-pod ownership (Phase 2.4, `call-owner:{roomName}`
+   *      SET NX in agent-runner): only one agent-worker pod owns a
+   *      given conversation. The end-of-call applyCharge is invoked
+   *      from that single pod's session-teardown path.
+   *
+   *   3. SQL-level CAS in both branches below: even if layers 1+2
+   *      somehow leak (rolling deploy, bug in dispatch routing) the
+   *      UPDATE's WHERE clause prevents balance going negative
+   *      (PAID branch) or free seconds exceeding cap (FREE branch).
+   *      Returning affected=0 surfaces a typed domain error instead
+   *      of corrupting state.
+   *
+   * This is why we do NOT use a distributed Redlock here. The DB row
+   * is already the serialization point; an external lock would just
+   * add a network hop and a new failure mode for zero correctness
+   * gain.
+   *
+   * Input is validated upstream (Zod), but we coerce with Number()
+   * defensively because the SQL builder uses `:param` binding —
+   * never raw interpolation.
    */
   async applyCharge(input: {
     userId: string;
@@ -290,7 +304,18 @@ export class BillingService {
       input.source === UsageSource.FREE
         ? await baseQuery
             .set({ freeSecondsUsed: () => `"freeSecondsUsed" + :seconds` })
-            .where('"userId" = :userId', { userId: input.userId })
+            // CAS defence-in-depth: even if upstream gates leak, the
+            // UPDATE fails (affected=0) instead of letting freeSecondsUsed
+            // exceed the plan cap. Sub-query joins to the plans table
+            // so the bound is enforced atomically with the increment.
+            // Layer ordering matters: subscriptions row is locked by
+            // the UPDATE; plans row read is consistent within the
+            // statement (no separate transaction needed).
+            .where(
+              '"userId" = :userId AND ' +
+                '"freeSecondsUsed" + :seconds <= (SELECT "freeSecondsPerMonth" FROM "plans" WHERE "plans"."id" = "subscriptions"."planId")',
+              { userId: input.userId },
+            )
             .setParameters({ seconds })
             .returning('*')
             .execute()
@@ -357,14 +382,29 @@ export class BillingService {
         },
       );
     }
-    // FREE branch with affected=0 should be impossible — the UPDATE has no
-    // narrow predicate beyond userId. Treat as inconsistency.
-    this.logger.error({
-      msg: 'billing.applyCharge.freeBranchAffectedZero',
+    // FREE branch with affected=0: post-CAS defence-in-depth fired.
+    // freeSecondsUsed + secondsCharged would exceed plan.freeSecondsPerMonth.
+    // Shouldn't happen given Phase 2.3 (concurrent call limit) + 2.4
+    // (cross-pod ownership) + the assertEligible pre-check, but if it
+    // does we want a typed error (mobile shows BALANCE_EXHAUSTED modal)
+    // rather than silent quota overshoot.
+    const freeUsed = existing.freeSecondsUsed;
+    const freeCap = existing.plan.freeSecondsPerMonth;
+    this.logger.warn({
+      msg: 'billing.applyCharge.freeQuotaExceeded',
       userId: input.userId,
       secondsCharged: seconds,
+      freeSecondsUsedBefore: freeUsed,
+      freeSecondsPerMonth: freeCap,
+      freeSecondsRemaining: freeCap - freeUsed,
     });
-    throw new SubscriptionNotFoundError(input.userId);
+    throw new InsufficientBalanceError(
+      { secondsNeeded: seconds, costCents: 0 },
+      {
+        secondsRemaining: freeCap - freeUsed,
+        balanceCents: existing.balanceCents,
+      },
+    );
   }
 
   /**

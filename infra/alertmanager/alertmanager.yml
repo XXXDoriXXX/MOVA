@@ -1,0 +1,45 @@
+# Alertmanager routing config.
+#
+# Default behaviour: alerts are stored in the Alertmanager UI at :9093
+# but NOT delivered anywhere. This is intentional — a fresh checkout
+# should boot cleanly without making the operator wire Telegram first.
+#
+# To enable Telegram notifications:
+#   1. Create a bot via @BotFather, save the token.
+#   2. Send /start to your bot, find your chat_id via
+#        curl https://api.telegram.org/bot<TOKEN>/getUpdates
+#   3. Copy infra/alertmanager/alertmanager.telegram.yml.example to
+#      infra/alertmanager/alertmanager.yml (this file) and replace the
+#      placeholder TELEGRAM_CHAT_ID / TELEGRAM_BOT_TOKEN values.
+#   4. Recreate the alertmanager container.
+#
+# Why a stub instead of a real receiver template with env interpolation:
+# Alertmanager doesn't expand env vars at config-load time, so a partial
+# config with $TELEGRAM_BOT_TOKEN errors out the way our first attempt
+# did. A null receiver is the simplest "the stack boots, alerts are
+# visible in the UI, the operator opts in later" contract.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'component']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: null-receiver
+
+receivers:
+  # Null receiver: accepts alerts, does nothing with them. They still
+  # appear in the Alertmanager UI (:9093) and Grafana's Alerting tab.
+  - name: null-receiver
+
+# Inhibit rule: when a service is DOWN, suppress its derived alerts
+# (event-loop / memory) — those would just stack up during a real
+# outage and bury the actually-actionable one.
+inhibit_rules:
+  - source_matchers:
+      - alertname = ServiceDown
+    target_matchers:
+      - severity =~ "warning|critical"
+    equal: ['component']

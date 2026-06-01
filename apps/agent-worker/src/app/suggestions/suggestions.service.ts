@@ -67,6 +67,29 @@ const REPLY_MAX_TOKENS = 256;
 const REPLY_TIMEOUT_MS = 8_000;
 
 /**
+ * "Reply tier" — the model the main spoken reply uses when the caller
+ * doesn't pin one. Each provider's `defaultModel` is the rock-bottom chip
+ * tier (latency over quality); for the line the other party actually
+ * hears we want one step up:
+ *   - voice-grade TTFT (still ≤1s typical)
+ *   - meaningfully better multilingual / coherence than the lite tier
+ *   - cost still in cents-per-call range
+ *
+ * Precedence at call time:
+ *   userContext.config.llm.model  (per-call override from mobile)
+ *     → userContext.template.defaultLlmModel  (template default)
+ *     → REPLY_TIER_BY_PROVIDER[selected provider]
+ *     → provider.defaultModel  (chip tier, last resort)
+ *
+ * Anthropic Haiku 4.5 is already voice-grade (TTFT ~0.7s); no bump.
+ * Groq is only used for chips, never the spoken reply; no bump.
+ */
+const REPLY_TIER_BY_PROVIDER: Partial<Record<LlmProviderEnum, string>> = {
+  [LlmProviderEnum.OPENAI]: 'gpt-4.1-mini',
+  [LlmProviderEnum.GEMINI]: 'gemini-2.5-flash',
+};
+
+/**
  * Generates 3 short reply candidates after each interlocutor turn.
  *
  * Runs in PARALLEL with the main LLM turn — does NOT block the primary
@@ -132,17 +155,20 @@ export class SuggestionsService {
   async generateReply(
     request: SuggestionsRequest,
     preferProvider?: LlmProviderEnum,
+    modelOverride?: string,
   ): Promise<string | null> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REPLY_TIMEOUT_MS);
     try {
       const { provider } = this.registry.selectLlm(preferProvider);
+      const model = this.resolveReplyModel(provider, modelOverride);
       const messages = await this.buildReplyMessages(request);
       const raw = await this.registry.runLlm(
         provider.id as LlmProviderEnum,
         (p) =>
           p.generate({
             messages,
+            model,
             maxTokens: REPLY_MAX_TOKENS,
             temperature: 0.6,
             signal: controller.signal,
@@ -173,6 +199,7 @@ export class SuggestionsService {
     request: SuggestionsRequest,
     onChunk: (cumulativeText: string) => void,
     preferProvider?: LlmProviderEnum,
+    modelOverride?: string,
     signal?: AbortSignal,
   ): Promise<string | null> {
     const controller = new AbortController();
@@ -181,6 +208,7 @@ export class SuggestionsService {
     signal?.addEventListener('abort', onAbort);
     try {
       const { provider } = this.registry.selectLlm(preferProvider);
+      const model = this.resolveReplyModel(provider, modelOverride);
       const messages = await this.buildReplyMessages(request);
       const full = await this.registry.runLlm(
         provider.id as LlmProviderEnum,
@@ -188,6 +216,7 @@ export class SuggestionsService {
           let acc = '';
           for await (const chunk of p.stream({
             messages,
+            model,
             maxTokens: REPLY_MAX_TOKENS,
             temperature: 0.6,
             signal: controller.signal,
@@ -210,6 +239,21 @@ export class SuggestionsService {
       clearTimeout(timeout);
       signal?.removeEventListener('abort', onAbort);
     }
+  }
+
+  /**
+   * Pick the model for a spoken-reply call. Honours an explicit per-call
+   * override (mobile / template), then steps up to the provider's reply
+   * tier (currently a bump above the chip-tier default for openai +
+   * gemini), and finally falls back to the provider's defaultModel.
+   */
+  private resolveReplyModel(
+    provider: { id: string; defaultModel: string },
+    modelOverride: string | undefined,
+  ): string {
+    if (modelOverride) return modelOverride;
+    const tier = REPLY_TIER_BY_PROVIDER[provider.id as LlmProviderEnum];
+    return tier ?? provider.defaultModel;
   }
 
   /** Shared prompt assembly for the main spoken reply (streaming + not). */

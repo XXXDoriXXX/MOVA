@@ -253,6 +253,21 @@ export class AgentCallHandler {
   /** Aborts the in-flight streaming generation (cancel / supersede). */
   private candidateAbort: AbortController | null = null;
 
+  /**
+   * Conversational-turn accumulator. STT segments naturally split a long
+   * utterance into several "finals" (one per inhale / clause). Without
+   * batching, every one of those kicked a fresh AI candidate that the next
+   * clause immediately superseded — the live preview card "blinked" through
+   * 3-4 partial replies before settling. We instead buffer finals here and
+   * only commit the turn (one transcript.final + one AI generation + one
+   * suggestion batch) after TURN_DEBOUNCE_MS of silence. While the turn is
+   * still accumulating, transcript.partial carries the cumulative text so
+   * the mobile chat shows ONE growing bubble per turn.
+   */
+  private turnText = '';
+  private turnDebounceTimer: NodeJS.Timeout | null = null;
+  private static readonly TURN_DEBOUNCE_MS = 1_500;
+
   constructor(
     private readonly roomName: string,
     public readonly userContext: AgentContext,
@@ -446,8 +461,9 @@ export class AgentCallHandler {
       });
       // Plain agent — the session has no llm (see AgentFactory), so the
       // framework does STT only and never auto-replies. We generate each
-      // reply ourselves in onInterlocutorFinal and speak it via
-      // session.say() on candidate-accept. No ttsNode gating needed.
+      // reply ourselves in commitTurn (after a turn-debounce groups STT
+      // segments into one logical turn) and speak it via session.say() on
+      // candidate-accept. No ttsNode gating needed.
       const agent = this.agentFactory.createAgent(this.userContext);
 
       this.bindSessionEvents(this.session);
@@ -771,6 +787,7 @@ export class AgentCallHandler {
     this.clearSttStall();
     this.clearCallDeadline();
     this.clearCandidate();
+    this.clearTurn();
     if (this.session) {
       try {
         this.session.close();
@@ -831,22 +848,15 @@ export class AgentCallHandler {
       // the next provider.failure of a different type. The flag stays
       // true so we don't re-emit STT_STALLED for every recovery cycle.
 
-      if (ev['isFinal']) {
-        this.onInterlocutorFinal(text);
-      } else {
-        this.emitTyped({
-          type: 'transcript.partial',
-          data: { text },
-        });
-        this.publishLegacyInterim('user', text);
-      }
+      this.bufferInterlocutorChunk(text, Boolean(ev['isFinal']));
     });
 
     // NOTE: conversation_item_added is intentionally NOT used to emit
     // chat events. The session has no LLM, so it never auto-generates a
-    // reply — we own the whole reply lifecycle: onInterlocutorFinal →
-    // generateAndPresentReply (preview) → resolveCandidate(accept) →
-    // onAiFinal emits ai.text.final + session.say() speaks it. Direct
+    // reply — we own the whole reply lifecycle: bufferInterlocutorChunk →
+    // commitTurn → generateAndPresentReply (preview) →
+    // resolveCandidate(accept) → onAiFinal emits ai.text.final +
+    // session.say() speaks it. Direct
     // say()s (greeting / fallback / idle-probe) emit their own
     // ai.text.final explicitly; user-typed emits user.spoke. A listener
     // here would double-publish, so it's removed entirely.
@@ -953,7 +963,7 @@ export class AgentCallHandler {
 
   /**
    * Generate the main reply for an interlocutor turn and present it as
-   * a candidate. Called (fire-and-forget) from onInterlocutorFinal.
+   * a candidate. Called (fire-and-forget) from commitTurn.
    * The session has no LLM, so nothing auto-speaks — we own the whole
    * reply lifecycle: generate → preview → (accept) speak.
    *
@@ -1303,7 +1313,60 @@ export class AgentCallHandler {
     }
   }
 
-  private onInterlocutorFinal(text: string): void {
+  /**
+   * Feed one STT chunk (partial or final) into the current turn. While the
+   * turn accumulates, transcript.partial carries the cumulative text so the
+   * mobile chat shows ONE growing bubble. On each final we also (re)arm the
+   * turn-debounce timer — the first final of a turn additionally aborts any
+   * stale candidate from the previous turn and re-emits ai.thinking so the
+   * UI immediately signals "we hear you, holding the reply".
+   */
+  private bufferInterlocutorChunk(text: string, isFinal: boolean): void {
+    const cumulative = this.turnText ? `${this.turnText} ${text}` : text;
+    // Live preview reflects the whole turn-so-far, not just the latest STT
+    // segment. Keeps the partial bubble growing across mid-utterance pauses.
+    this.emitTyped({ type: 'transcript.partial', data: { text: cumulative } });
+    this.publishLegacyInterim('user', cumulative);
+
+    if (!isFinal) return;
+
+    const firstFinalOfTurn = this.turnText === '';
+    if (firstFinalOfTurn) {
+      // Any candidate that was sitting on screen is now answering a
+      // superseded turn — drop it and let the user know we're listening.
+      this.clearCandidate();
+      this.emitTyped({ type: 'ai.thinking', data: {} });
+    }
+    this.turnText = cumulative;
+    if (this.turnDebounceTimer) clearTimeout(this.turnDebounceTimer);
+    this.turnDebounceTimer = setTimeout(
+      () => this.commitTurn(),
+      AgentCallHandler.TURN_DEBOUNCE_MS,
+    );
+  }
+
+  /** Reset turn accumulator + debounce. Called on cleanup so a call ending
+   *  mid-turn doesn't leave a timer pointing at a torn-down handler. */
+  private clearTurn(): void {
+    if (this.turnDebounceTimer) {
+      clearTimeout(this.turnDebounceTimer);
+      this.turnDebounceTimer = null;
+    }
+    this.turnText = '';
+  }
+
+  /**
+   * The debounce timer elapsed without another STT final landing — treat
+   * the accumulated text as one committed interlocutor turn: persist it,
+   * kick the AI reply, and ask for parallel quick-reply chips.
+   */
+  private commitTurn(): void {
+    this.turnDebounceTimer = null;
+    const text = this.turnText.trim();
+    this.turnText = '';
+    if (!text) return;
+    if (this.state !== 'active') return;
+
     const messageId = randomUUID();
     this.recordRecent('interlocutor', text);
 

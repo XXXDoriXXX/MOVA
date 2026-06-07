@@ -9,14 +9,14 @@ import { ConversationEventsConsumer } from './conversation-events.consumer';
 import { ConversationLifecycleService } from './conversation-lifecycle.service';
 import { ConversationsController } from './conversations.controller';
 import { ConversationsService } from './conversations.service';
+import { ConversationSearchModule } from './search/search.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Conversation, Message, Suggestion]),
     BillingModule,
-    // For UserStyleProfileService — invoked from the events consumer on every
-    // USER_TYPED message to incrementally build the per-user style profile.
     UsersModule,
+    ConversationSearchModule,
   ],
   providers: [ConversationsService, ConversationLifecycleService, ConversationEventsConsumer],
   controllers: [ConversationsController],

@@ -1,5 +1,8 @@
+import { randomUUID } from 'crypto';
+
 import {
   ConflictException,
+  Inject,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -17,6 +20,11 @@ import {
   type UserRegisteredPayload,
 } from '../billing/billing.events';
 import { UsersService } from '../users/users.service';
+import {
+  GOOGLE_TOKEN_VERIFIER,
+  InvalidGoogleTokenError,
+  type GoogleTokenVerifier,
+} from './google/google-token-verifier';
 import type {
   ChangePasswordDto,
   LoginDto,
@@ -73,6 +81,8 @@ export class AuthService {
     private readonly events: EventEmitter2,
     @InjectMetric('mova_signups_total')
     private readonly signupsCounter: Counter<string>,
+    @Inject(GOOGLE_TOKEN_VERIFIER)
+    private readonly googleVerifier: GoogleTokenVerifier,
   ) {}
 
   async register(dto: RegisterDto, ctx: ClientContext): Promise<AuthResponse> {
@@ -118,6 +128,57 @@ export class AuthService {
 
     if (!user || !passwordOk) {
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    if (user.isBlocked) {
+      throw new UnauthorizedException('Account is blocked');
+    }
+
+    return this.buildAuthResponse(user, ctx);
+  }
+
+  async googleSignIn(idToken: string, ctx: ClientContext): Promise<AuthResponse> {
+    let identity;
+    try {
+      identity = await this.googleVerifier.verify(idToken);
+    } catch (err) {
+      if (err instanceof InvalidGoogleTokenError) {
+        throw new UnauthorizedException(err.message);
+      }
+      throw err;
+    }
+
+    if (!identity.emailVerified) {
+      throw new UnauthorizedException('Google email is not verified');
+    }
+
+    let user = await this.usersService.findByGoogleId(identity.googleId);
+
+    if (!user) {
+      const existing = await this.usersService.findByEmail(identity.email);
+      if (existing) {
+        if (existing.isBlocked) {
+          throw new UnauthorizedException('Account is blocked');
+        }
+        await this.usersService.linkGoogleId(existing.id, identity.googleId);
+        user = existing;
+      } else {
+        const unguessable = await bcrypt.hash(randomUUID(), BCRYPT_COST);
+        user = await this.usersService.createFromGoogle({
+          email: identity.email,
+          googleId: identity.googleId,
+          name: identity.name ?? identity.email.split('@')[0]!,
+          passwordHash: unguessable,
+        });
+
+        const event: UserRegisteredPayload = {
+          userId: user.id,
+          email: user.email,
+          registeredAt: new Date().toISOString(),
+        };
+        await this.events.emitAsync(USER_REGISTERED_EVENT, event);
+        this.signupsCounter.inc();
+      }
     }
 
     if (user.isBlocked) {

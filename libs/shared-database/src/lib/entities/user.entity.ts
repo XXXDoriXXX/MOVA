@@ -54,6 +54,9 @@ export class User {
   @Column()
   passwordHash!: string;
 
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  googleId!: string | null;
+
   @Column()
   name!: string;
 

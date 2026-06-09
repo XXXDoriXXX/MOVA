@@ -12,6 +12,8 @@ import { MetricsModule } from '../metrics/metrics.module';
 import { UsersModule } from '../users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { FetchGoogleTokenVerifier } from './google/fetch-google-token-verifier';
+import { GOOGLE_TOKEN_VERIFIER } from './google/google-token-verifier';
 import { JwtStrategy } from './jwt.strategy';
 import { RefreshTokenService } from './refresh-token.service';
 
@@ -31,7 +33,13 @@ import { RefreshTokenService } from './refresh-token.service';
       }),
     }),
   ],
-  providers: [AuthService, JwtStrategy, RefreshTokenService, PasswordBreachService],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    RefreshTokenService,
+    PasswordBreachService,
+    { provide: GOOGLE_TOKEN_VERIFIER, useClass: FetchGoogleTokenVerifier },
+  ],
   controllers: [AuthController],
   exports: [AuthService, RefreshTokenService, JwtModule],
 })

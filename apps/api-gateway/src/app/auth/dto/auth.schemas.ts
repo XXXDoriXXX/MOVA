@@ -78,6 +78,12 @@ export const RefreshSchema = z.object({
 });
 export class RefreshDto extends createZodDto(RefreshSchema) {}
 
+// ─── Google Sign-In ─────────────────────────────────
+export const GoogleSignInSchema = z.object({
+  idToken: z.string().min(1).max(4096),
+});
+export class GoogleSignInDto extends createZodDto(GoogleSignInSchema) {}
+
 // ─── Logout ─────────────────────────────────────────
 export const LogoutSchema = z.object({
   refreshToken: z.string().min(1).max(500),

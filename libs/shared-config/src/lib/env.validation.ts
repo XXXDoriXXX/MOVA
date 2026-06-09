@@ -184,6 +184,12 @@ export const envSchema = z.object({
   RATE_LIMIT_TTL: z.coerce.number().int().positive().default(60), // seconds
   RATE_LIMIT_DEFAULT: z.coerce.number().int().positive().default(100), // req/window
 
+  // ── Google Sign-In ─────────────────────────────────
+  // Comma-separated list of Google OAuth client IDs that we accept as the
+  // `aud` of incoming ID tokens (web + ios + android). Empty disables
+  // `/auth/google` outright.
+  GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
+
   // ── Billing ────────────────────────────────────────
   FREE_SECONDS_PER_MONTH: z.coerce.number().int().positive().default(300),
   PAID_PRICE_PER_SECOND_CENTS: z.coerce.number().int().positive().default(1),

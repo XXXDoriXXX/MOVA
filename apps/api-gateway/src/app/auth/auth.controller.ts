@@ -22,6 +22,7 @@ import { AuthService, type PublicUser } from './auth.service';
 import {
   ChangePasswordDto,
   DeleteAccountDto,
+  GoogleSignInDto,
   LoginDto,
   LogoutDto,
   RefreshDto,
@@ -99,6 +100,22 @@ export class AuthController {
     @Ip() ip: string,
   ): Promise<unknown> {
     return this.authService.refresh(dto.refreshToken, {
+      userAgent: this.extractUserAgent(req),
+      ipAddress: ip,
+    });
+  }
+
+  @Public()
+  @Post('google')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ auth: { limit: 30, ttl: 15 * 60 * 1000 } })
+  @ApiOperation({ summary: 'Sign in or sign up via a Google ID token' })
+  google(
+    @Body() dto: GoogleSignInDto,
+    @Req() req: Request,
+    @Ip() ip: string,
+  ): Promise<unknown> {
+    return this.authService.googleSignIn(dto.idToken, {
       userAgent: this.extractUserAgent(req),
       ipAddress: ip,
     });

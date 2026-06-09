@@ -94,6 +94,38 @@ export class UsersService {
     await this.usersRepository.update({ id: userId }, { passwordHash });
   }
 
+  async findByGoogleId(googleId: string): Promise<User | null> {
+    return this.usersRepository.findOne({
+      where: { googleId, deletedAt: IsNull() },
+    });
+  }
+
+  async createFromGoogle(input: {
+    email: string;
+    googleId: string;
+    name: string;
+    language?: UserLanguage;
+    passwordHash: string;
+  }): Promise<User> {
+    const email = input.email.trim().toLowerCase();
+    const existing = await this.findByEmail(email);
+    if (existing) {
+      throw new ConflictException('Email already in use');
+    }
+    const user = this.usersRepository.create({
+      email,
+      googleId: input.googleId,
+      passwordHash: input.passwordHash,
+      name: input.name,
+      language: input.language ?? UserLanguage.UK,
+    });
+    return this.usersRepository.save(user);
+  }
+
+  async linkGoogleId(userId: string, googleId: string): Promise<void> {
+    await this.usersRepository.update({ id: userId }, { googleId });
+  }
+
   async softDelete(userId: string): Promise<void> {
     await this.usersRepository.softDelete({ id: userId });
   }

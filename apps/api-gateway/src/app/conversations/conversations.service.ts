@@ -179,6 +179,18 @@ export class ConversationsService {
     });
   }
 
+  async countActiveInvolving(userId: string): Promise<number> {
+    return this.conversations
+      .createQueryBuilder('c')
+      .where('c."status" IN (:...statuses)', {
+        statuses: [ConversationStatus.PENDING, ConversationStatus.ACTIVE],
+      })
+      .andWhere('(c."userId" = :userId OR c."callerUserId" = :userId)', {
+        userId,
+      })
+      .getCount();
+  }
+
   /**
    * Find conversations that look like zombies — pending/active but no update
    * for `staleMinutes`. Watchdog cron (Phase 8) marks them failed.
@@ -201,6 +213,10 @@ export class ConversationsService {
 
     const qb = this.conversations
       .createQueryBuilder('c')
+      // Only id+name are selected for the caller — never the full User row
+      // (passwordHash etc. must not leak through history serialization).
+      .leftJoin('c.caller', 'caller')
+      .addSelect(['caller.id', 'caller.name'])
       .where('c."userId" = :userId AND c."deletedAt" IS NULL', { userId: query.userId })
       .orderBy('c."startedAt"', 'DESC')
       .limit(limit + 1); // +1 to peek at "is there a next page"
@@ -234,9 +250,12 @@ export class ConversationsService {
   }
 
   async findOneForUser(userId: string, conversationId: string): Promise<Conversation> {
-    const conv = await this.conversations.findOne({
-      where: { id: conversationId, deletedAt: IsNull() },
-    });
+    const conv = await this.conversations
+      .createQueryBuilder('c')
+      .leftJoin('c.caller', 'caller')
+      .addSelect(['caller.id', 'caller.name'])
+      .where('c."id" = :id AND c."deletedAt" IS NULL', { id: conversationId })
+      .getOne();
     if (!conv || conv.userId !== userId) {
       // Same 404 in both cases — never leak existence of someone else's call.
       throw new NotFoundException('Conversation not found');

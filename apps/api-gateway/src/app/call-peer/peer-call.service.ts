@@ -21,6 +21,7 @@ import {
 import {
   type Conversation,
   ConversationEndReason,
+  ConversationStatus,
   ConversationType,
   UserLanguage,
 } from '@mova-back/shared-database';
@@ -95,13 +96,13 @@ export class PeerCallService {
       });
     }
 
-    if ((await this.conversations.countActiveForUser(callerId)) > 0) {
+    if ((await this.conversations.countActiveInvolving(callerId)) > 0) {
       throw new ConflictException({
         code: 'CALL_IN_PROGRESS',
         message: 'You are already on a call.',
       });
     }
-    if ((await this.conversations.countActiveForUser(callee.id)) > 0) {
+    if ((await this.conversations.countActiveInvolving(callee.id)) > 0) {
       throw new ConflictException({
         code: 'CALLEE_BUSY',
         message: 'User is already on a call.',
@@ -277,6 +278,15 @@ export class PeerCallService {
     if (conv.userId !== calleeId) {
       throw new ForbiddenException();
     }
+    if (conv.status === ConversationStatus.ACTIVE) {
+      return;
+    }
+    if (conv.status !== ConversationStatus.PENDING) {
+      throw new ConflictException({
+        code: 'CALL_ENDED',
+        message: 'This call is no longer ringing.',
+      });
+    }
     await this.redis.publish(
       RedisChannels.callDispatch,
       JSON.stringify({ roomName: conv.livekitRoom, conversationId: conv.id }),
@@ -293,6 +303,7 @@ export class PeerCallService {
     if (conv.userId !== calleeId) {
       throw new ForbiddenException();
     }
+    if (!this.isLive(conv)) return;
     await this.teardown(conv, ConversationEndReason.DECLINED, 'CALL_DECLINED');
     await this.publishSignal(conv.callerUserId, {
       type: 'call.declined',
@@ -306,6 +317,7 @@ export class PeerCallService {
     if (conv.callerUserId !== callerId) {
       throw new ForbiddenException();
     }
+    if (!this.isLive(conv)) return;
     await this.teardown(conv, ConversationEndReason.USER);
     await this.publishSignal(conv.userId, {
       type: 'call.cancelled',
@@ -322,6 +334,13 @@ export class PeerCallService {
       throw new NotFoundException('Call not found');
     }
     return conv;
+  }
+
+  private isLive(conv: Conversation): boolean {
+    return (
+      conv.status === ConversationStatus.PENDING ||
+      conv.status === ConversationStatus.ACTIVE
+    );
   }
 
   private async teardown(

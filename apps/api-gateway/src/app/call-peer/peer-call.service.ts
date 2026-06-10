@@ -8,6 +8,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Redis } from 'ioredis';
+import parsePhoneNumberFromString from 'libphonenumber-js';
 import { v4 as uuidv4 } from 'uuid';
 
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
@@ -38,6 +39,13 @@ interface StartPeerCallResult {
   roomName: string;
   livekitUrl: string;
   livekitToken: string;
+}
+
+export interface PeerLookupResult {
+  id: string;
+  name: string;
+  isDeafMute: boolean;
+  online: boolean;
 }
 
 const RING_TTL_SECONDS = 3600;
@@ -197,7 +205,7 @@ export class PeerCallService {
         'EX',
         RING_TTL_SECONDS,
       );
-    } catch (err) {
+    } catch {
       await this.failConversation(conversation.id);
       throw new InternalServerErrorException('Failed to save call context');
     }
@@ -211,7 +219,7 @@ export class PeerCallService {
         canPublish: true,
         canSubscribe: true,
       });
-    } catch (err) {
+    } catch {
       await this.redis.del(RedisKeys.callContext(roomName)).catch(() => undefined);
       await this.failConversation(conversation.id);
       throw new InternalServerErrorException('Failed to issue media token');
@@ -241,6 +249,26 @@ export class PeerCallService {
       roomName,
       livekitUrl: this.livekit.url,
       livekitToken,
+    };
+  }
+
+  async lookupByPhone(
+    requesterId: string,
+    rawPhone: string,
+  ): Promise<PeerLookupResult> {
+    const parsed = parsePhoneNumberFromString(rawPhone);
+    if (!parsed?.isValid()) {
+      throw new NotFoundException('User not found');
+    }
+    const user = await this.users.findActiveByPhone(parsed.number);
+    if (!user || user.isBlocked || user.id === requesterId) {
+      throw new NotFoundException('User not found');
+    }
+    return {
+      id: user.id,
+      name: user.name,
+      isDeafMute: user.isDeafMute,
+      online: await this.isOnline(user.id),
     };
   }
 

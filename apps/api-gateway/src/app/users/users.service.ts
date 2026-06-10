@@ -57,6 +57,12 @@ export class UsersService {
     });
   }
 
+  async findActiveByPhone(phoneNumber: string): Promise<User | null> {
+    return this.usersRepository.findOne({
+      where: { phoneNumber, deletedAt: IsNull() },
+    });
+  }
+
   /**
    * @deprecated kept for JwtStrategy back-compat. Prefer `findActiveById`.
    */

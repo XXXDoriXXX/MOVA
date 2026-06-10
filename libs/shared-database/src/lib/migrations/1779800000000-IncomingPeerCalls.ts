@@ -33,7 +33,7 @@ export class IncomingPeerCalls1779800000000 implements MigrationInterface {
       `ALTER TABLE "conversations" ALTER COLUMN "targetPhone" DROP NOT NULL`,
     );
     await queryRunner.query(
-      `ALTER TYPE "conversations_endreason_enum" ADD VALUE IF NOT EXISTS 'declined'`,
+      `ALTER TYPE "conversations_end_reason_enum" ADD VALUE IF NOT EXISTS 'declined'`,
     );
 
     await queryRunner.query(

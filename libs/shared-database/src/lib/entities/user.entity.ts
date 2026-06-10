@@ -101,6 +101,12 @@ export class User {
   })
   role!: UserRole;
 
+  @Index('idx_users_is_deaf_mute', ['isDeafMute'], {
+    where: '"deletedAt" IS NULL',
+  })
+  @Column({ default: true })
+  isDeafMute!: boolean;
+
   @Column({ default: false })
   isBlocked!: boolean;
 

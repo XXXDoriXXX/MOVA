@@ -24,6 +24,7 @@ interface UpdateProfileInput {
    * ConversationStylesService before this method is called. NULL clears.
    */
   preferredStyleId?: string | null;
+  isDeafMute?: boolean;
 }
 
 /**

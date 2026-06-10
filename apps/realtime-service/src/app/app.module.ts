@@ -13,6 +13,7 @@ import { AppService } from './app.service';
 import { CallModule } from './call/call.module';
 import { HealthModule } from './health/health.module';
 import { RealtimeMetricsModule } from './metrics/metrics.module';
+import { SignalModule } from './signal/signal.module';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { RealtimeMetricsModule } from './metrics/metrics.module';
     HealthModule,
     RealtimeMetricsModule,
     CallModule,
+    SignalModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_FILTER, useClass: SentryGlobalFilter }],

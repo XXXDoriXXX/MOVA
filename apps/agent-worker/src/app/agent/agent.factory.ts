@@ -28,6 +28,11 @@ export interface AgentContext {
    * mid-call via CallControlAction.CHANGE_STYLE.
    */
   activeStyleId?: string;
+  /** 'sip' for outbound PSTN calls, 'peer' for incoming app-to-app calls.
+   *  Drives interlocutor-participant detection in AgentCallHandler. */
+  callType?: 'sip' | 'peer';
+  /** Display name of the hearing caller on a peer (incoming) call. */
+  callerName?: string;
   /** Legacy fields kept for back-compat with the existing LiveKit Agents pipeline. */
   userName: string;
   userRole: string;

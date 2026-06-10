@@ -5,6 +5,7 @@ import { DataSource } from 'typeorm';
 
 import { AppSetting } from './lib/entities/app-setting.entity';
 import { AuditLog } from './lib/entities/audit-log.entity';
+import { PushToken } from './lib/entities/push-token.entity';
 import { ConversationStyle } from './lib/entities/conversation-style.entity';
 import { UserStyleProfile } from './lib/entities/user-style-profile.entity';
 import { Conversation } from './lib/entities/conversation.entity';
@@ -59,6 +60,7 @@ export const AppDataSource = new DataSource({
     AppSetting,
     UserStyleProfile,
     ConversationStyle,
+    PushToken,
   ],
   // Resolved relative to the file (not cwd) so the same data-source works
   // whether executed from source (ts-node) OR from compiled JS in dist/.

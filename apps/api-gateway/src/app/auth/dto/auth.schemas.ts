@@ -107,6 +107,7 @@ export const UpdateProfileSchema = z
     preferredLlmProvider: z.string().trim().min(1).max(50).optional(),
     preferredLlmModel: z.string().trim().min(1).max(100).optional(),
     preferredTtsProvider: z.string().trim().min(1).max(50).optional(),
+    isDeafMute: z.boolean().optional(),
   })
   .strict()
   .refine((data) => Object.keys(data).length > 0, {

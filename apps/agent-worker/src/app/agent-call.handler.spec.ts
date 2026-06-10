@@ -75,7 +75,9 @@ jest.mock('@livekit/rtc-ffi-bindings', () => ({
 // real session — flow tests work off the fake EventEmitter).
 jest.mock('@livekit/agents', () => {
   class Agent {
-    constructor(_opts: unknown) {}
+    constructor(opts: unknown) {
+      void opts;
+    }
   }
   return { voice: { Agent } };
 });

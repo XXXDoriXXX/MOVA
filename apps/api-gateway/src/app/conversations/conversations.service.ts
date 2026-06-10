@@ -6,6 +6,7 @@ import {
   Conversation,
   ConversationEndReason,
   ConversationStatus,
+  ConversationType,
   Message,
   MessageRole,
   MessageSource,
@@ -16,8 +17,10 @@ import {
 interface CreateConversationInput {
   userId: string;
   templateId?: string | null;
-  targetPhone: string;
+  targetPhone?: string | null;
   livekitRoom: string;
+  callType?: ConversationType;
+  callerUserId?: string | null;
   initialLlmProvider?: string | null;
   initialTtsProvider?: string | null;
   initialVoice?: string | null;
@@ -92,8 +95,10 @@ export class ConversationsService {
     const entity = this.conversations.create({
       userId: input.userId,
       templateId: input.templateId ?? null,
-      targetPhone: input.targetPhone,
+      targetPhone: input.targetPhone ?? null,
       livekitRoom: input.livekitRoom,
+      callType: input.callType ?? ConversationType.SIP_OUTBOUND,
+      callerUserId: input.callerUserId ?? null,
       status: ConversationStatus.PENDING,
       initialLlmProvider: input.initialLlmProvider ?? null,
       initialTtsProvider: input.initialTtsProvider ?? null,
@@ -220,6 +225,12 @@ export class ConversationsService {
     const nextCursor = hasMore ? items[items.length - 1].startedAt.toISOString() : null;
 
     return { items, nextCursor };
+  }
+
+  async findById(conversationId: string): Promise<Conversation | null> {
+    return this.conversations.findOne({
+      where: { id: conversationId, deletedAt: IsNull() },
+    });
   }
 
   async findOneForUser(userId: string, conversationId: string): Promise<Conversation> {

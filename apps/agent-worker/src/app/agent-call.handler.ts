@@ -348,7 +348,7 @@ export class AgentCallHandler {
       // dialing the trunk, with a long wait still ahead).
       this.room.on(RoomEvent.ParticipantConnected, (p: RemoteParticipant) => {
         if (this.participantAnswered) return;
-        if (p.kind !== ParticipantKind.SIP) return;
+        if (this.userContext.callType !== 'peer' && p.kind !== ParticipantKind.SIP) return;
         this.participantAnswered = true;
         this.logger.log(
           `📞 [Call Lifecycle] Interlocutor answered (identity=${p.identity})`,
@@ -387,6 +387,20 @@ export class AgentCallHandler {
       this.logger.log(`✅ [WebRTC] Agent joined room`);
 
       this.emitTyped({ type: 'call.connected', data: {} });
+
+      if (this.userContext.callType === 'peer' && !this.participantAnswered) {
+        for (const p of this.room.remoteParticipants.values()) {
+          this.participantAnswered = true;
+          this.logger.log(
+            `📞 [Call Lifecycle] Peer caller already present (identity=${p.identity})`,
+          );
+          this.emitTyped({
+            type: 'call.answered',
+            data: { participantIdentity: p.identity },
+          });
+          break;
+        }
+      }
 
       // Start the heartbeat AFTER we've successfully joined the room. The
       // realtime-service watchdog tolerates ~15s gaps, so a 5s tick gives

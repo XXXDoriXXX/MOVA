@@ -17,6 +17,7 @@ import { Suggestion } from './entities/suggestion.entity';
 import { Template } from './entities/template.entity';
 import { UsageRecord } from './entities/usage-record.entity';
 import { User } from './entities/user.entity';
+import { PushToken } from './entities/push-token.entity';
 
 /** Single source of truth for the entity list (used twice below). */
 const ENTITIES = [
@@ -35,6 +36,7 @@ const ENTITIES = [
   AppSetting,
   UserStyleProfile,
   ConversationStyle,
+  PushToken,
 ];
 
 /**

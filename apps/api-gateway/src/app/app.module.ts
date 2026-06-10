@@ -19,6 +19,8 @@ import { AdminModule } from './admin/admin.module';
 import { AuthModule } from './auth/auth.module';
 import { BillingModule } from './billing/billing.module';
 import { CallModule } from './call/call.module';
+import { PeerCallModule } from './call-peer/peer-call.module';
+import { PushModule } from './push/push.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { HealthModule } from './health/health.module';
 import { MetricsModule } from './metrics/metrics.module';
@@ -154,6 +156,8 @@ import { UsersModule } from './users/users.module';
     BillingModule,
     ConversationsModule,
     CallModule,
+    PeerCallModule,
+    PushModule,
     AdminModule,
     ScheduledModule,
   ],

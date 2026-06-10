@@ -68,6 +68,7 @@ export interface PublicUser {
    * writer lives at PATCH /v1/users/me/preferences/style.
    */
   preferredStyleId: string | null;
+  isDeafMute: boolean;
   createdAt: string;
 }
 
@@ -291,6 +292,7 @@ export class AuthService {
       preferredLlmModel: user.preferredLlmModel,
       preferredTtsProvider: user.preferredTtsProvider,
       preferredStyleId: user.preferredStyleId ?? null,
+      isDeafMute: user.isDeafMute,
       createdAt: user.createdAt.toISOString(),
     };
   }

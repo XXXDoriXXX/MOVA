@@ -24,6 +24,7 @@ interface UpdateProfileInput {
    * ConversationStylesService before this method is called. NULL clears.
    */
   preferredStyleId?: string | null;
+  isDeafMute?: boolean;
 }
 
 /**
@@ -53,6 +54,12 @@ export class UsersService {
   async findActiveById(id: string): Promise<User | null> {
     return this.usersRepository.findOne({
       where: { id, deletedAt: IsNull() },
+    });
+  }
+
+  async findActiveByPhone(phoneNumber: string): Promise<User | null> {
+    return this.usersRepository.findOne({
+      where: { phoneNumber, deletedAt: IsNull() },
     });
   }
 

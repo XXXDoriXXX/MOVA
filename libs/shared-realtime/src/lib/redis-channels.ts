@@ -28,6 +28,11 @@ export const RedisChannels = {
    *  deleted. Payload is JSON `{ key, action: 'upsert'|'delete' }`.
    *  Subscribers re-read the row from DB and mutate their `process.env`. */
   settingsUpdated: 'settings-updated',
+
+  /** api-gateway → realtime-service: per-user out-of-band signaling
+   *  (incoming peer call, cancel, decline, accept). Delivered to the
+   *  user's `/signal` socket. Payload is a `SignalEvent` JSON. */
+  userSignal: (userId: string) => `user-signal:${userId}`,
 } as const;
 
 export const RedisKeys = {
@@ -54,6 +59,11 @@ export const RedisKeys = {
 
   /** Lakera safety check cache (sha256(text) → safe/unsafe) */
   lakeraCache: (hash: string) => `lakera:${hash}`,
+
+  /** Per-user presence flag (TTL-refreshed by realtime-service `/signal`
+   *  socket heartbeats). EXISTS ⇒ the user has at least one live signaling
+   *  connection and can receive an incoming peer call. */
+  presence: (userId: string) => `presence:user:${userId}`,
 } as const;
 
 /**

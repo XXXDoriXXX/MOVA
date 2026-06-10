@@ -27,6 +27,13 @@ export const CallErrorCode = {
   // ── Rate / fair-use (recoverable) ──────────────────
   RATE_LIMITED: 'RATE_LIMITED',
 
+  // ── Peer (app-to-app) call setup (fatal) ───────────
+  CALLEE_OFFLINE: 'CALLEE_OFFLINE',
+  CALLEE_BUSY: 'CALLEE_BUSY',
+  CALLEE_UNAVAILABLE: 'CALLEE_UNAVAILABLE',
+  CALL_DECLINED: 'CALL_DECLINED',
+  CALL_UNANSWERED: 'CALL_UNANSWERED',
+
   // ── Fatal — call ends ──────────────────────────────
   BALANCE_EXHAUSTED: 'BALANCE_EXHAUSTED',
   LIVEKIT_DISCONNECTED: 'LIVEKIT_DISCONNECTED',
@@ -72,6 +79,11 @@ export const DEFAULT_ERROR_MESSAGES_UK: Readonly<Record<CallErrorCode, string>> 
   PROMPT_INJECTION: 'Підозріле повідомлення відфільтровано.',
   CONTENT_BLOCKED: 'Відповідь заблоковано модерацією.',
   RATE_LIMITED: 'Забагато запитів. Зачекайте кілька секунд.',
+  CALLEE_OFFLINE: 'Користувач зараз не в мережі.',
+  CALLEE_BUSY: 'Користувач зараз на іншому дзвінку.',
+  CALLEE_UNAVAILABLE: 'Користувач не може приймати дзвінки.',
+  CALL_DECLINED: 'Дзвінок відхилено.',
+  CALL_UNANSWERED: 'Абонент не відповів.',
   BALANCE_EXHAUSTED: 'Безкоштовний ліміт вичерпано. Поповніть баланс.',
   LIVEKIT_DISCONNECTED: 'Звʼязок з телефонною мережею втрачено.',
   AGENT_LOST: 'Внутрішня помилка. Дзвінок припинено.',

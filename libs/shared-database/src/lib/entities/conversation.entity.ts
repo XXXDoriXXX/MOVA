@@ -20,12 +20,18 @@ export enum ConversationStatus {
   FAILED = 'failed',
 }
 
+export enum ConversationType {
+  SIP_OUTBOUND = 'sip_outbound',
+  PEER_INBOUND = 'peer_inbound',
+}
+
 export enum ConversationEndReason {
   USER = 'user',
   INTERLOCUTOR = 'interlocutor',
   BALANCE = 'balance',
   FATAL_ERROR = 'fatal_error',
   TIMEOUT = 'timeout',
+  DECLINED = 'declined',
   /**
    * Force-ended by an admin (moderation, stuck-call cleanup). The audit_logs
    * row carries the actor + reason; this enum value is what shows up on the
@@ -70,6 +76,20 @@ export class Conversation {
   @JoinColumn({ name: 'userId' })
   user!: User;
 
+  @Column({
+    type: 'enum',
+    enum: ConversationType,
+    default: ConversationType.SIP_OUTBOUND,
+  })
+  callType!: ConversationType;
+
+  @Column({ type: 'uuid', nullable: true })
+  callerUserId!: string | null;
+
+  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'callerUserId' })
+  caller!: User | null;
+
   @Column({ type: 'uuid', nullable: true })
   templateId!: string | null;
 
@@ -77,9 +97,9 @@ export class Conversation {
   @JoinColumn({ name: 'templateId' })
   template!: Template | null;
 
-  /** E.164. Encrypted at rest in Phase 9. */
-  @Column({ type: 'varchar', length: 20 })
-  targetPhone!: string;
+  /** E.164. Encrypted at rest in Phase 9. Null for peer (app-to-app) calls. */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  targetPhone!: string | null;
 
   /** Unique LiveKit room id (`call-<uuid>`). */
   @Column({ type: 'varchar', length: 64 })

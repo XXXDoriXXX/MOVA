@@ -10,7 +10,7 @@ import * as silero from '@livekit/agents-plugin-silero';
 import { voice } from '@livekit/agents';
 import { EventEmitter } from 'events';
 
-import { reportError } from '@mova-back/shared-config';
+import { CallLogger, reportError } from '@mova-back/shared-config';
 import { CallErrorCode, type InternalCallEvent } from '@mova-back/shared-realtime';
 import { LlmProviderEnum } from '@mova-back/shared-agent';
 
@@ -76,6 +76,7 @@ type SaySafeResult =
 
 export class AgentCallHandler {
   private readonly logger: Logger;
+  private readonly clog: CallLogger;
   private room: Room | null = null;
   private session: voice.AgentSession | null = null;
 
@@ -295,6 +296,12 @@ export class AgentCallHandler {
     private readonly onDisconnectCb: (roomName: string) => void,
   ) {
     this.logger = new Logger(`Call-${roomName}`);
+    this.clog = new CallLogger(this.logger, {
+      conversationId: userContext.conversationId ?? null,
+      roomName,
+      userId: userContext.userId ?? null,
+      callType: userContext.callType ?? 'sip',
+    });
   }
 
   /** Convenience accessor — present when api-gateway populated context. */
@@ -311,6 +318,7 @@ export class AgentCallHandler {
     const callStartTime = Date.now();
     this.callStartTime = callStartTime;
     this.logger.log(`📞 [Call Lifecycle] Initiating connection sequence...`);
+    this.clog.event('agent.start', { callType: this.userContext.callType ?? 'sip' });
 
     // Track which step failed so the catch can pick a specific errorCode
     // instead of always reporting AGENT_LOST. Mobile maps the code to a
@@ -353,6 +361,11 @@ export class AgentCallHandler {
         this.logger.log(
           `📞 [Call Lifecycle] Interlocutor answered (identity=${p.identity})`,
         );
+        this.clog.event('agent.answered', {
+          identity: p.identity,
+          kind: String(p.kind),
+          waitedMs: Date.now() - callStartTime,
+        });
         this.emitTyped({
           type: 'call.answered',
           data: { participantIdentity: p.identity },
@@ -373,6 +386,7 @@ export class AgentCallHandler {
         }
         const durationMs = Date.now() - callStartTime;
         this.logger.log(`🚪 [Call Lifecycle] Room disconnected after ${durationMs}ms.`);
+        this.clog.event('agent.roomDisconnected', { durationMs });
         // Reason is best-effort — distinguishing interlocutor-hangup from
         // network drop needs SIP-event introspection (Phase 8 work).
         this.beginEnd('interlocutor', 'interlocutor');
@@ -385,6 +399,7 @@ export class AgentCallHandler {
 
       await this.room.connect(wsURL, token);
       this.logger.log(`✅ [WebRTC] Agent joined room`);
+      this.clog.event('agent.roomConnected', { joinMs: Date.now() - callStartTime });
 
       this.emitTyped({ type: 'call.connected', data: {} });
 
@@ -547,6 +562,7 @@ export class AgentCallHandler {
       this.logger.log(
         `🎉 [Call Lifecycle] Connection sequence completed in ${Date.now() - callStartTime}ms`,
       );
+      this.clog.event('agent.active', { setupMs: Date.now() - callStartTime });
       phase = 'done';
     } catch (error) {
       const err = error as Error;
@@ -571,10 +587,7 @@ export class AgentCallHandler {
             return CallErrorCode.AGENT_LOST;
         }
       })();
-      this.logger.error(
-        `❌ [Call Lifecycle] Fatal error during call setup (phase=${phase}, code=${errorCode}): ${err.message}`,
-        err.stack,
-      );
+      this.clog.error('agent.fatal', err, { phase, errorCode });
       this.beginEnd('system', 'fatal_error', errorCode);
       this.emitTyped({
         type: 'call.ended',
@@ -728,6 +741,7 @@ export class AgentCallHandler {
       return;
     }
     const durationMs = this.callStartTime ? Date.now() - this.callStartTime : 0;
+    this.clog.event('agent.stop', { durationMs });
     this.beginEnd('user', 'user');
     this.emitTyped({
       type: 'call.ended',
@@ -1485,6 +1499,7 @@ export class AgentCallHandler {
       conversationId: this.conversationId,
       occurredAt: new Date().toISOString(),
     } as InternalCallEvent;
+    this.clog.debug('agent.emit', { type: partial.type });
     void this.publisher.publish(event);
   }
 

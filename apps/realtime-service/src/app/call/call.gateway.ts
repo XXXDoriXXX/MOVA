@@ -8,7 +8,7 @@ import type { Redis } from 'ioredis';
 import type { Server, Socket } from 'socket.io';
 
 import { JwtPayloadSchema } from '@mova-back/shared-auth';
-import type { AppEnv } from '@mova-back/shared-config';
+import { CallLogger, type AppEnv } from '@mova-back/shared-config';
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
 import {
   CallControlAction,
@@ -40,6 +40,15 @@ interface SocketData {
 
 function sockData(socket: Socket): SocketData {
   return socket.data as SocketData;
+}
+
+function sockLog(logger: Logger, socket: Socket): CallLogger {
+  const data = socket.data as Partial<SocketData> | undefined;
+  return new CallLogger(logger, {
+    conversationId: data?.conversationId,
+    userId: data?.userId,
+    socketId: socket.id,
+  });
 }
 
 const HEARTBEAT_GRACE_MS = 60_000; // close socket if no ping for 60s
@@ -132,6 +141,15 @@ export class CallGateway implements OnModuleDestroy {
       // the metric reflects "send attempts to a connected client",
       // which is what the dashboards care about.
       this.wsMessages.inc({ direction: 'outbound' });
+      this.logger.debug({
+        msg: 'ws.event.out',
+        evt: 'ws.event.out',
+        conversationId,
+        userId,
+        socketId: socket.id,
+        type: event.type,
+        buffered: !liveOpen,
+      });
       if (liveOpen) {
         socket.emit('event', event);
       } else {
@@ -144,10 +162,12 @@ export class CallGateway implements OnModuleDestroy {
     data.unsubscribeBridge = unsubscribe;
     data.heartbeatTimer = heartbeatTimer;
 
-    this.logger.log(
-      `WS connect user=${userId} conversation=${conversationId} sid=${socket.id}` +
-        (lastStreamId ? ` lastStreamId=${lastStreamId}` : ''),
-    );
+    const clog = new CallLogger(this.logger, {
+      conversationId,
+      userId,
+      socketId: socket.id,
+    });
+    clog.event('ws.connect', { reconnect: Boolean(lastStreamId), lastStreamId });
 
     // Replay missed events on reconnect, BEFORE we emit the call.connected
     // greeting — keeps the client's view monotonic. Replay errors are
@@ -159,16 +179,10 @@ export class CallGateway implements OnModuleDestroy {
           socket.emit('event', event);
         }
         if (replayed.length > 0) {
-          this.logger.log(
-            `Replayed ${replayed.length} events to sid=${socket.id} from ${lastStreamId}`,
-          );
+          clog.event('ws.replay', { events: replayed.length, fromStreamId: lastStreamId });
         }
       } catch (err) {
-        this.logger.warn(
-          `Replay failed for sid=${socket.id}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
+        clog.error('ws.replay.failed', err, { fromStreamId: lastStreamId });
       }
     }
 
@@ -187,6 +201,7 @@ export class CallGateway implements OnModuleDestroy {
       timestamp: new Date().toISOString(),
       data: { conversationId },
     });
+    clog.event('ws.ready');
   }
 
   handleDisconnect(socket: Socket): void {
@@ -203,9 +218,7 @@ export class CallGateway implements OnModuleDestroy {
       clearTimeout(data.heartbeatTimer);
     }
     this.commandRate.delete(socket.id);
-    this.logger.log(
-      `WS disconnect user=${data?.userId} conversation=${data?.conversationId} sid=${socket.id}`,
-    );
+    sockLog(this.logger, socket).event('ws.disconnect');
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -232,21 +245,19 @@ export class CallGateway implements OnModuleDestroy {
       this.wsMessages.inc({ direction: 'inbound' });
       try {
         if (!this.allowCommand(socket.id)) {
+          sockLog(this.logger, socket).warn('ws.command.rateLimited');
           socket.emit('event', this.buildRateLimitedEvent());
           return;
         }
         const cmd = parseClientCommand(raw);
         if (!cmd) {
-          this.logger.warn(`Invalid command shape on sid=${socket.id}`);
+          sockLog(this.logger, socket).warn('ws.command.invalidShape');
           return;
         }
+        sockLog(this.logger, socket).event('ws.command', { command: cmd.type });
         await this.dispatchCommand(socket, cmd);
       } catch (err) {
-        this.logger.error(
-          `Command handler error on sid=${socket.id}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
+        sockLog(this.logger, socket).error('ws.command.handlerError', err);
       }
     });
   }
@@ -421,7 +432,18 @@ export class CallGateway implements OnModuleDestroy {
     }
 
     // Ownership check against the Redis-side call context.
-    await this.access.assertOwner(conversationId, parsed.data.sub);
+    try {
+      await this.access.assertOwner(conversationId, parsed.data.sub);
+    } catch (err) {
+      this.logger.warn({
+        msg: 'ws.auth.ownershipDenied',
+        evt: 'ws.auth.ownershipDenied',
+        conversationId,
+        userId: parsed.data.sub,
+        socketId: socket.id,
+      });
+      throw err;
+    }
 
     // Persist on the socket for later use in handlers + lifecycle.
     const data: SocketData = {
@@ -480,7 +502,9 @@ export class CallGateway implements OnModuleDestroy {
    */
   private startHeartbeat(socket: Socket): NodeJS.Timeout {
     return setTimeout(() => {
-      this.logger.warn(`Heartbeat timeout sid=${socket.id} — disconnecting`);
+      sockLog(this.logger, socket).warn('ws.heartbeat.timeout', {
+        graceMs: HEARTBEAT_GRACE_MS,
+      });
       socket.disconnect(true);
     }, HEARTBEAT_GRACE_MS);
   }

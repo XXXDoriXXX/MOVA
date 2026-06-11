@@ -25,6 +25,7 @@ import { ConversationsModule } from './conversations/conversations.module';
 import { HealthModule } from './health/health.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { ScheduledModule } from './scheduled/scheduled.module';
+import { TelemetryModule } from './telemetry/telemetry.module';
 import { TemplatesModule } from './templates/templates.module';
 import { UsersModule } from './users/users.module';
 
@@ -158,6 +159,7 @@ import { UsersModule } from './users/users.module';
     CallModule,
     PeerCallModule,
     PushModule,
+    TelemetryModule,
     AdminModule,
     ScheduledModule,
   ],

@@ -80,3 +80,24 @@ incomingSignalled → (pushSent) → start.ringing`
 у dev — у консоль (`[mova/call] <evt>`), завжди — breadcrumb у Sentry.
 Події: `call.ws.*` (in-call сокет), `signal.*` (сигналінг/presence/push),
 `call.peer.*` / `call.incoming.*` / `call.outgoing.*` (ініціація/прийом).
+
+## Клієнтська телеметрія помилок (first-party storage)
+
+Мобільний застосунок збирає помилки й шле їх нам на зберігання для
+розслідування — незалежно від Sentry.
+
+- **Збір** (`src/observability/telemetry.ts`): глобальні обробники
+  (`ErrorUtils.setGlobalHandler`, unhandled-rejection), `ErrorBoundary`,
+  `callError`, та серверні/мережеві збої axios (5xx + network) → `reportError`.
+  До кожного звіту додається трейл breadcrumb'ів, девайс/застосунок/екран,
+  `conversationId`, час. Черга з ретраями (backoff) + персист у SecureStore
+  переживає рестарт; fatal — шлеться негайно.
+- **Прийом**: `POST /v1/telemetry/client-errors` (батч, `@Public` — щоб ловити
+  й до-логін краші; `userId` чіпляється з токена, якщо валідний). Зберігає в
+  `client_error_reports` (JSONB-контекст із breadcrumbs).
+- **Розслідування**: `GET /v1/admin/client-errors?userId=&name=&fatal=&limit=&cursor=`
+  (admin-guard) або напряму SQL по таблиці `client_error_reports`.
+
+Колонки: `platform`, `appVersion`, `deviceModel`, `osVersion`, `fatal`,
+`name`, `message`, `stack`, `screen`, `context` (jsonb), `clientCreatedAt`,
+`createdAt`, `userId`.

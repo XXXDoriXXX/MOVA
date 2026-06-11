@@ -55,6 +55,16 @@ const METRIC_PROVIDERS = [
     labelNames: ['plan'],
   }),
   makeCounterProvider({
+    name: 'mova_peer_calls_total',
+    help: 'Peer (app-to-app) call lifecycle events by stage',
+    labelNames: ['event'],
+  }),
+  makeCounterProvider({
+    name: 'mova_peer_call_rejections_total',
+    help: 'Peer call setup rejections by reason code',
+    labelNames: ['reason'],
+  }),
+  makeCounterProvider({
     name: 'mova_call_errors_total',
     help: 'Total call.error events emitted to clients',
     labelNames: ['code'],

@@ -380,11 +380,23 @@ export class AgentRunnerService
     try {
       const ctx = await this.redis.get(`call:${roomName}:context`);
       if (!ctx) {
-        this.logger.warn(`Context missing for ${roomName}`);
+        this.logger.warn({
+          msg: 'agent.dispatch.contextMissing',
+          evt: 'agent.dispatch.contextMissing',
+          roomName,
+        });
         return;
       }
       const userContext = JSON.parse(ctx) as AgentContext;
       const conversationId = userContext.conversationId ?? null;
+      this.logger.log({
+        msg: 'agent.dispatch.received',
+        evt: 'agent.dispatch.received',
+        roomName,
+        conversationId,
+        userId: userContext.userId ?? null,
+        callType: userContext.callType ?? 'sip',
+      });
 
       const handler = new AgentCallHandler(
         roomName,

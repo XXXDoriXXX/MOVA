@@ -118,6 +118,18 @@ export class ConversationLifecycleService {
       summary.plan.code === PlanCode.FREE ? UsageSource.FREE : UsageSource.PAID;
     const costCents =
       source === UsageSource.PAID ? secondsBilled * summary.plan.pricePerSecondCents : 0;
+    this.logger.log({
+      msg: 'call.lifecycle.ended',
+      evt: 'call.lifecycle.ended',
+      conversationId: conversation.id,
+      userId: conversation.userId,
+      callType: conversation.callType,
+      reason: input.reason,
+      errorCode: input.errorCode,
+      secondsBilled,
+      costCents,
+      plan: summary.plan.code,
+    });
 
     let charged = true;
     if (secondsBilled > 0) {
@@ -128,13 +140,26 @@ export class ConversationLifecycleService {
           costCents,
           source,
         });
+        this.logger.debug({
+          msg: 'call.lifecycle.charged',
+          evt: 'call.lifecycle.charged',
+          conversationId: conversation.id,
+          userId: conversation.userId,
+          secondsBilled,
+          costCents,
+          source,
+        });
       } catch (err) {
         charged = false;
-        this.logger.error(
-          `applyCharge failed for conversation ${conversation.id}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
+        this.logger.error({
+          msg: 'call.lifecycle.applyChargeFailed',
+          evt: 'call.lifecycle.applyChargeFailed',
+          conversationId: conversation.id,
+          userId: conversation.userId,
+          secondsBilled,
+          costCents,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
 
       try {
@@ -148,12 +173,16 @@ export class ConversationLifecycleService {
       } catch (err) {
         // Critical: charge applied but no audit row. Reconciliation cron
         // (Phase 8) detects via Subscription-delta vs UsageRecord-SUM.
-        this.logger.error(
-          `recordUsage FAILED for conversation ${conversation.id} (charged=${charged}) — ` +
-            `manual reconciliation required: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-        );
+        this.logger.error({
+          msg: 'call.lifecycle.recordUsageFailed_NEEDS_RECONCILIATION',
+          evt: 'call.lifecycle.recordUsageFailed_NEEDS_RECONCILIATION',
+          conversationId: conversation.id,
+          userId: conversation.userId,
+          charged,
+          secondsBilled,
+          costCents,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 

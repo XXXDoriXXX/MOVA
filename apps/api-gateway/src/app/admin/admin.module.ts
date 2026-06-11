@@ -13,6 +13,7 @@ import {
 
 import { AuthModule } from '../auth/auth.module';
 import { ConversationsModule } from '../conversations/conversations.module';
+import { TelemetryModule } from '../telemetry/telemetry.module';
 import { AdminAccessGuard } from './admin-access.guard';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
@@ -41,6 +42,7 @@ import { SettingsService } from './settings/settings.service';
     ]),
     AuthModule,
     ConversationsModule,
+    TelemetryModule,
   ],
   controllers: [AdminController],
   providers: [

@@ -18,6 +18,7 @@ import { Template } from './entities/template.entity';
 import { UsageRecord } from './entities/usage-record.entity';
 import { User } from './entities/user.entity';
 import { PushToken } from './entities/push-token.entity';
+import { ClientErrorReport } from './entities/client-error-report.entity';
 
 /** Single source of truth for the entity list (used twice below). */
 const ENTITIES = [
@@ -37,6 +38,7 @@ const ENTITIES = [
   UserStyleProfile,
   ConversationStyle,
   PushToken,
+  ClientErrorReport,
 ];
 
 /**

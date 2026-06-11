@@ -15,3 +15,4 @@ export * from './lib/entities/user-style-profile.entity';
 export * from './lib/entities/conversation-style.entity';
 export * from './lib/entities/app-setting.entity';
 export * from './lib/entities/push-token.entity';
+export * from './lib/entities/client-error-report.entity';

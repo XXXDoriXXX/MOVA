@@ -12,7 +12,7 @@ import { Redis } from 'ioredis';
 import type { Counter } from 'prom-client';
 import { v4 as uuidv4 } from 'uuid';
 
-import { reportError, type AppEnv } from '@mova-back/shared-config';
+import { CallLogger, type AppEnv } from '@mova-back/shared-config';
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
 import {
   DEFAULT_STYLE_ID,
@@ -96,6 +96,13 @@ export class CallService {
 
   async initiateCall(input: InitiateCallInput): Promise<InitiateCallResult> {
     const { userId, dto } = input;
+    const startedAt = Date.now();
+    const clog = new CallLogger(this.logger, {
+      userId,
+      callType: 'sip',
+      templateId: dto.templateId ?? null,
+    });
+    clog.event('call.sip.start.requested', { targetPhone: dto.targetPhone });
 
     // 0. Concurrent-call gate. Two parallel /calls/start from the same
     //    user (flaky mobile retry loop, stolen JWT, accidental double-tap)
@@ -110,11 +117,7 @@ export class CallService {
     //    one of them gets a duplicate-room-name 409 — fail-safe.
     const activeCount = await this.conversations.countActiveForUser(userId);
     if (activeCount > 0) {
-      this.logger.warn({
-        msg: 'call.start.alreadyOnCall',
-        userId,
-        activeCount,
-      });
+      clog.warn('call.sip.start.alreadyOnCall', { activeCount });
       throw new ConflictException({
         code: 'CALL_IN_PROGRESS',
         message:
@@ -126,6 +129,10 @@ export class CallService {
     //    This avoids the cost of LiveKit room creation for a user that won't
     //    be able to talk anyway.
     const eligibility = await this.billing.assertEligible(userId);
+    clog.event('call.sip.start.eligible', {
+      plan: eligibility.summary.plan.code,
+      maxCallDurationSeconds: eligibility.maxCallDurationSeconds,
+    });
 
     // 2. Resolve template (explicit > user default > system default).
     const user = await this.users.findActiveById(userId);
@@ -149,11 +156,13 @@ export class CallService {
         initialVoice: template?.defaultVoice ?? null,
       });
     } catch (err) {
-      this.logger.error(
-        `Failed to persist Conversation: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      clog.error('call.sip.start.persistFailed', err, { roomName });
       throw new InternalServerErrorException('Failed to start call');
     }
+    clog.child({ conversationId: conversation.id, roomName }).event(
+      'call.sip.start.conversationCreated',
+      { templateResolvedId: template?.id ?? null },
+    );
 
     // 4. Stash agent context in Redis — agent-worker reads this when it picks
     //    up the call-dispatch event. TTL covers the maximum call duration so
@@ -248,20 +257,21 @@ export class CallService {
       maxCallDurationSeconds: eligibility.maxCallDurationSeconds,
       createdAt: new Date().toISOString(),
     };
+    const callLog = clog.child({ conversationId: conversation.id, roomName });
     try {
       await this.redis.set(contextKey, JSON.stringify(agentContext), 'EX', 3600);
     } catch (err) {
-      this.logger.error(
-        `Redis context save failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      callLog.error('call.sip.start.contextSaveFailed', err);
       await this.markFailed(conversation.id, 'FATAL_INTERNAL');
       throw new InternalServerErrorException('Failed to save call context');
     }
+    callLog.event('call.sip.start.contextStashed');
 
     // 5. Dial SIP. The LiveKit SDK creates a participant that joins the room
     //    once the callee picks up. agent-worker is dispatched in parallel —
     //    when both joined, the conversation starts.
     if (!this.sipTrunkId) {
+      callLog.error('call.sip.start.noTrunk', new Error('SIP trunk not configured'));
       await this.markFailed(conversation.id, 'FATAL_INTERNAL');
       throw new InternalServerErrorException('SIP trunk not configured');
     }
@@ -277,14 +287,11 @@ export class CallService {
         },
       );
       participantId = participant.participantId;
-      this.logger.log(`Call initiated. roomName=${roomName} participant=${participantId}`);
+      callLog.event('call.sip.start.dialed', { participantId });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      reportError(this.logger, 'SIP dial failed', err, {
-        conversationId: conversation.id,
-        roomName,
+      callLog.error('call.sip.start.dialFailed', err, {
         targetPhone: dto.targetPhone,
-        userId,
       });
       // Clean up the Redis context so a stale agent dispatch can't run
       // against a dead conversation.
@@ -303,6 +310,7 @@ export class CallService {
     // calls — failed-to-dispatch ones are counted via markFailed branch's
     // error metrics (Phase 8 follow-up wires the failure counter).
     this.callsStartedCounter.inc({ plan: eligibility.summary.plan.code });
+    callLog.event('call.sip.start.dispatched', { setupMs: Date.now() - startedAt });
 
     return {
       conversationId: conversation.id,

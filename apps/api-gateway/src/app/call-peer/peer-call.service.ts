@@ -7,10 +7,13 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import { Redis } from 'ioredis';
 import parsePhoneNumberFromString from 'libphonenumber-js';
+import type { Counter } from 'prom-client';
 import { v4 as uuidv4 } from 'uuid';
 
+import { CallLogger } from '@mova-back/shared-config';
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
 import {
   DEFAULT_STYLE_ID,
@@ -64,61 +67,114 @@ export class PeerCallService {
     private readonly livekit: LivekitService,
     private readonly pushTokens: PushTokenService,
     private readonly pushNotifier: PushNotifierService,
+    @InjectMetric('mova_peer_calls_total')
+    private readonly peerCalls: Counter<string>,
+    @InjectMetric('mova_peer_call_rejections_total')
+    private readonly peerRejections: Counter<string>,
   ) {}
+
+  private reject(
+    clog: CallLogger,
+    reason: string,
+    exception: ConflictException | ForbiddenException | NotFoundException,
+  ): never {
+    this.peerRejections.inc({ reason });
+    clog.warn('call.peer.start.rejected', { reason });
+    throw exception;
+  }
 
   async start(
     callerId: string,
     dto: StartPeerCallDto,
   ): Promise<StartPeerCallResult> {
+    const startedAt = Date.now();
+    const clog = new CallLogger(this.logger, {
+      callType: 'peer',
+      callerUserId: callerId,
+      calleeUserId: dto.calleeUserId,
+      templateId: dto.templateId ?? null,
+    });
+    this.peerCalls.inc({ event: 'start_requested' });
+    clog.event('call.peer.start.requested');
+
     const caller = await this.users.findActiveById(callerId);
-    if (!caller) throw new NotFoundException('Caller not found');
+    if (!caller) {
+      this.reject(clog, 'CALLER_NOT_FOUND', new NotFoundException('Caller not found'));
+    }
     if (caller.isDeafMute) {
-      throw new ForbiddenException({
-        code: 'CALLER_NOT_ELIGIBLE',
-        message: 'Only hearing users can place app calls.',
-      });
+      this.reject(
+        clog,
+        'CALLER_NOT_ELIGIBLE',
+        new ForbiddenException({
+          code: 'CALLER_NOT_ELIGIBLE',
+          message: 'Only hearing users can place app calls.',
+        }),
+      );
     }
     if (dto.calleeUserId === callerId) {
-      throw new ConflictException({
-        code: 'SELF_CALL',
-        message: 'Cannot call yourself.',
-      });
+      this.reject(
+        clog,
+        'SELF_CALL',
+        new ConflictException({ code: 'SELF_CALL', message: 'Cannot call yourself.' }),
+      );
     }
 
     const callee = await this.users.findActiveById(dto.calleeUserId);
     if (!callee || callee.isBlocked) {
-      throw new NotFoundException('Callee not found');
+      this.reject(clog, 'CALLEE_NOT_FOUND', new NotFoundException('Callee not found'));
     }
     if (!callee.isDeafMute) {
-      throw new ConflictException({
-        code: 'CALLEE_UNAVAILABLE',
-        message: 'This user cannot receive app calls.',
-      });
+      this.reject(
+        clog,
+        'CALLEE_UNAVAILABLE',
+        new ConflictException({
+          code: 'CALLEE_UNAVAILABLE',
+          message: 'This user cannot receive app calls.',
+        }),
+      );
     }
+    clog.event('call.peer.start.participantsResolved', {
+      callerName: caller.name,
+      calleeName: callee.name,
+    });
 
     if ((await this.conversations.countActiveInvolving(callerId)) > 0) {
-      throw new ConflictException({
-        code: 'CALL_IN_PROGRESS',
-        message: 'You are already on a call.',
-      });
+      this.reject(
+        clog,
+        'CALL_IN_PROGRESS',
+        new ConflictException({
+          code: 'CALL_IN_PROGRESS',
+          message: 'You are already on a call.',
+        }),
+      );
     }
     if ((await this.conversations.countActiveInvolving(callee.id)) > 0) {
-      throw new ConflictException({
-        code: 'CALLEE_BUSY',
-        message: 'User is already on a call.',
-      });
+      this.reject(
+        clog,
+        'CALLEE_BUSY',
+        new ConflictException({ code: 'CALLEE_BUSY', message: 'User is already on a call.' }),
+      );
     }
 
     const calleeTokens = await this.pushTokens.findForUser(callee.id);
     const online = await this.isOnline(callee.id);
+    clog.event('call.peer.start.calleeReachability', {
+      online,
+      pushTokens: calleeTokens.length,
+    });
     if (!online && calleeTokens.length === 0) {
-      throw new ConflictException({
-        code: 'CALLEE_OFFLINE',
-        message: 'User is offline.',
-      });
+      this.reject(
+        clog,
+        'CALLEE_OFFLINE',
+        new ConflictException({ code: 'CALLEE_OFFLINE', message: 'User is offline.' }),
+      );
     }
 
     const eligibility = await this.billing.assertEligible(callee.id);
+    clog.event('call.peer.start.eligible', {
+      plan: eligibility.summary.plan.code,
+      maxCallDurationSeconds: eligibility.maxCallDurationSeconds,
+    });
 
     const language = callee.language ?? UserLanguage.UK;
     const template = dto.templateId
@@ -126,6 +182,11 @@ export class PeerCallService {
       : await this.templates.resolveDefaultForUser(callee.id, language);
 
     const roomName = `call-${uuidv4()}`;
+    clog.event('call.peer.start.roomReserved', {
+      roomName,
+      templateResolvedId: template?.id ?? null,
+      language,
+    });
     let conversation: Conversation;
     try {
       conversation = await this.conversations.createPending({
@@ -140,11 +201,11 @@ export class PeerCallService {
         initialVoice: template?.defaultVoice ?? null,
       });
     } catch (err) {
-      this.logger.error(
-        `Failed to persist peer Conversation: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      clog.error('call.peer.start.persistFailed', err, { roomName });
       throw new InternalServerErrorException('Failed to start call');
     }
+    const callLog = clog.child({ conversationId: conversation.id, roomName });
+    callLog.event('call.peer.start.conversationCreated');
 
     const activeStyleId =
       callee.preferredStyleId ?? template?.defaultStyleId ?? DEFAULT_STYLE_ID;
@@ -206,10 +267,12 @@ export class PeerCallService {
         'EX',
         RING_TTL_SECONDS,
       );
-    } catch {
+    } catch (err) {
+      callLog.error('call.peer.start.contextSaveFailed', err);
       await this.failConversation(conversation.id);
       throw new InternalServerErrorException('Failed to save call context');
     }
+    callLog.event('call.peer.start.contextStashed', { activeStyleId });
 
     let livekitToken: string;
     try {
@@ -220,11 +283,15 @@ export class PeerCallService {
         canPublish: true,
         canSubscribe: true,
       });
-    } catch {
+    } catch (err) {
+      callLog.error('call.peer.start.tokenFailed', err);
       await this.redis.del(RedisKeys.callContext(roomName)).catch(() => undefined);
       await this.failConversation(conversation.id);
       throw new InternalServerErrorException('Failed to issue media token');
     }
+    callLog.event('call.peer.start.callerTokenIssued', {
+      identity: `peer-${caller.id}`,
+    });
 
     await this.publishSignal(callee.id, {
       type: 'call.incoming',
@@ -234,16 +301,21 @@ export class PeerCallService {
         caller: { id: caller.id, name: caller.name },
       },
     });
+    callLog.event('call.peer.start.incomingSignalled', { online });
     await this.pushNotifier.sendIncomingCall(calleeTokens, {
       conversationId: conversation.id,
       roomName,
       callerId: caller.id,
       callerName: caller.name,
     });
+    if (calleeTokens.length > 0) {
+      callLog.event('call.peer.start.pushSent', { pushTokens: calleeTokens.length });
+    }
 
-    this.logger.log(
-      `Peer call ringing conversation=${conversation.id} caller=${caller.id} callee=${callee.id}`,
-    );
+    this.peerCalls.inc({ event: 'ringing' });
+    callLog.event('call.peer.start.ringing', {
+      setupMs: Date.now() - startedAt,
+    });
 
     return {
       conversationId: conversation.id,
@@ -263,25 +335,43 @@ export class PeerCallService {
     }
     const user = await this.users.findActiveByPhone(parsed.number);
     if (!user || user.isBlocked || user.id === requesterId) {
+      this.logger.debug({
+        msg: 'call.peer.lookup.miss',
+        evt: 'call.peer.lookup.miss',
+        requesterId,
+      });
       throw new NotFoundException('User not found');
     }
+    const online = await this.isOnline(user.id);
+    this.logger.debug({
+      msg: 'call.peer.lookup.hit',
+      evt: 'call.peer.lookup.hit',
+      requesterId,
+      foundUserId: user.id,
+      isDeafMute: user.isDeafMute,
+      online,
+    });
     return {
       id: user.id,
       name: user.name,
       isDeafMute: user.isDeafMute,
-      online: await this.isOnline(user.id),
+      online,
     };
   }
 
   async answer(calleeId: string, conversationId: string): Promise<void> {
     const conv = await this.requirePeerConversation(conversationId);
+    const clog = this.callLog(conv);
     if (conv.userId !== calleeId) {
+      clog.warn('call.peer.answer.forbidden', { byUserId: calleeId });
       throw new ForbiddenException();
     }
     if (conv.status === ConversationStatus.ACTIVE) {
+      clog.event('call.peer.answer.alreadyActive');
       return;
     }
     if (conv.status !== ConversationStatus.PENDING) {
+      clog.warn('call.peer.answer.notRinging', { status: conv.status });
       throw new ConflictException({
         code: 'CALL_ENDED',
         message: 'This call is no longer ringing.',
@@ -295,35 +385,58 @@ export class PeerCallService {
       type: 'call.accepted',
       data: { conversationId: conv.id },
     });
-    this.logger.log(`Peer call accepted conversation=${conv.id}`);
+    this.peerCalls.inc({ event: 'answered' });
+    clog.event('call.peer.answer.dispatched');
   }
 
   async decline(calleeId: string, conversationId: string): Promise<void> {
     const conv = await this.requirePeerConversation(conversationId);
+    const clog = this.callLog(conv);
     if (conv.userId !== calleeId) {
+      clog.warn('call.peer.decline.forbidden', { byUserId: calleeId });
       throw new ForbiddenException();
     }
-    if (!this.isLive(conv)) return;
+    if (!this.isLive(conv)) {
+      clog.event('call.peer.decline.noop', { status: conv.status });
+      return;
+    }
     await this.teardown(conv, ConversationEndReason.DECLINED, 'CALL_DECLINED');
     await this.publishSignal(conv.callerUserId, {
       type: 'call.declined',
       data: { conversationId: conv.id },
     });
-    this.logger.log(`Peer call declined conversation=${conv.id}`);
+    this.peerCalls.inc({ event: 'declined' });
+    clog.event('call.peer.decline.done');
   }
 
   async cancel(callerId: string, conversationId: string): Promise<void> {
     const conv = await this.requirePeerConversation(conversationId);
+    const clog = this.callLog(conv);
     if (conv.callerUserId !== callerId) {
+      clog.warn('call.peer.cancel.forbidden', { byUserId: callerId });
       throw new ForbiddenException();
     }
-    if (!this.isLive(conv)) return;
+    if (!this.isLive(conv)) {
+      clog.event('call.peer.cancel.noop', { status: conv.status });
+      return;
+    }
     await this.teardown(conv, ConversationEndReason.USER);
     await this.publishSignal(conv.userId, {
       type: 'call.cancelled',
       data: { conversationId: conv.id },
     });
-    this.logger.log(`Peer call cancelled conversation=${conv.id}`);
+    this.peerCalls.inc({ event: 'cancelled' });
+    clog.event('call.peer.cancel.done', { wasActive: conv.status === ConversationStatus.ACTIVE });
+  }
+
+  private callLog(conv: Conversation): CallLogger {
+    return new CallLogger(this.logger, {
+      conversationId: conv.id,
+      roomName: conv.livekitRoom,
+      userId: conv.userId,
+      callerUserId: conv.callerUserId,
+      callType: 'peer',
+    });
   }
 
   private async requirePeerConversation(
@@ -348,6 +461,7 @@ export class PeerCallService {
     reason: ConversationEndReason,
     errorCode?: string,
   ): Promise<void> {
+    this.callLog(conv).event('call.peer.teardown', { reason, errorCode });
     await this.livekit.deleteRoom(conv.livekitRoom);
     await this.redis
       .del(RedisKeys.callContext(conv.livekitRoom))
@@ -383,8 +497,26 @@ export class PeerCallService {
       timestamp: new Date().toISOString(),
       ...event,
     };
-    await this.redis
-      .publish(RedisChannels.userSignal(userId), JSON.stringify(envelope))
-      .catch(() => undefined);
+    try {
+      const delivered = await this.redis.publish(
+        RedisChannels.userSignal(userId),
+        JSON.stringify(envelope),
+      );
+      this.logger.debug({
+        msg: 'call.peer.signalPublished',
+        evt: 'call.peer.signalPublished',
+        signal: event.type,
+        toUserId: userId,
+        subscribers: delivered,
+      });
+    } catch (err) {
+      this.logger.warn({
+        msg: 'call.peer.signalPublishFailed',
+        evt: 'call.peer.signalPublishFailed',
+        signal: event.type,
+        toUserId: userId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }

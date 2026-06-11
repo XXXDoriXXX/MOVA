@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { Redis } from 'ioredis';
 
+import { reportError } from '@mova-back/shared-config';
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
 import {
   parseInternalCallEvent,
@@ -103,15 +104,34 @@ export class ConversationEventsConsumer implements OnModuleInit, OnModuleDestroy
     try {
       parsed = JSON.parse(raw);
     } catch {
-      this.logger.warn(`Invalid JSON on ${channel}`);
+      this.logger.warn({ msg: 'consumer.invalidJson', evt: 'consumer.invalidJson', channel });
       return;
     }
     const event = parseInternalCallEvent(parsed);
     if (!event) {
-      this.logger.warn(`Invalid event shape on ${channel}: ${raw.slice(0, 200)}`);
+      this.logger.warn({
+        msg: 'consumer.invalidShape',
+        evt: 'consumer.invalidShape',
+        channel,
+        rawHead: raw.slice(0, 200),
+      });
       return;
     }
-    await this.dispatch(event);
+    this.logger.debug({
+      msg: 'consumer.event',
+      evt: 'consumer.event',
+      conversationId: event.conversationId,
+      type: event.type,
+      streamId: event.streamId,
+    });
+    try {
+      await this.dispatch(event);
+    } catch (err) {
+      reportError(this.logger, 'consumer.dispatchFailed', err, {
+        conversationId: event.conversationId,
+        type: event.type,
+      });
+    }
   }
 
   private async dispatch(event: InternalCallEvent): Promise<void> {
@@ -216,6 +236,15 @@ export class ConversationEventsConsumer implements OnModuleInit, OnModuleDestroy
   }
 
   private async onCallEnded(event: CallEnded): Promise<void> {
+    this.logger.log({
+      msg: 'consumer.callEnded',
+      evt: 'consumer.callEnded',
+      conversationId: event.conversationId,
+      reason: event.data.reason,
+      endedBy: event.data.endedBy,
+      errorCode: event.data.errorCode,
+      durationMs: event.data.durationMs,
+    });
     await this.lifecycle.endCall({
       conversationId: event.conversationId,
       endedAt: new Date(event.occurredAt),

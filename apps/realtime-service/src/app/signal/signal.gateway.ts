@@ -4,6 +4,9 @@ import { JwtService } from '@nestjs/jwt';
 import { BaseWsExceptionFilter, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
 import type { Server, Socket } from 'socket.io';
 
+import { InjectMetric } from '@willsoto/nestjs-prometheus';
+import type { Counter, Gauge } from 'prom-client';
+
 import { JwtPayloadSchema } from '@mova-back/shared-auth';
 import type { AppEnv } from '@mova-back/shared-config';
 import { SIGNAL_NAMESPACE, type SignalEvent } from '@mova-back/shared-realtime';
@@ -36,6 +39,10 @@ export class SignalGateway implements OnModuleDestroy {
     private readonly config: ConfigService<AppEnv, true>,
     private readonly presence: PresenceService,
     private readonly bridge: SignalBridgeService,
+    @InjectMetric('mova_signal_connections')
+    private readonly signalConnections: Gauge<string>,
+    @InjectMetric('mova_signal_events_total')
+    private readonly signalEvents: Counter<string>,
   ) {}
 
   afterInit(server: Server): void {
@@ -49,9 +56,19 @@ export class SignalGateway implements OnModuleDestroy {
 
   async handleConnection(socket: Socket): Promise<void> {
     const data = sockData(socket);
+    this.signalConnections.inc();
     await this.presence.markOnline(data.userId);
 
     data.unsubscribe = this.bridge.attach(data.userId, (event: SignalEvent) => {
+      this.signalEvents.inc({ type: event.type });
+      this.logger.log({
+        msg: 'signal.deliver',
+        evt: 'signal.deliver',
+        signal: event.type,
+        userId: data.userId,
+        socketId: socket.id,
+        conversationId: (event.data as { conversationId?: string }).conversationId,
+      });
       socket.emit('signal', event);
     });
     data.presenceTimer = setInterval(() => {
@@ -63,16 +80,27 @@ export class SignalGateway implements OnModuleDestroy {
       socket.emit('pong');
     });
 
-    this.logger.log(`Signal connect user=${data.userId} sid=${socket.id}`);
+    this.logger.log({
+      msg: 'signal.connect',
+      evt: 'signal.connect',
+      userId: data.userId,
+      socketId: socket.id,
+    });
   }
 
   async handleDisconnect(socket: Socket): Promise<void> {
     const data = socket.data as Partial<SignalSocketData> | undefined;
     if (data?.unsubscribe) data.unsubscribe();
     if (data?.presenceTimer) clearInterval(data.presenceTimer);
+    this.signalConnections.dec();
     if (data?.userId) {
       await this.presence.markOffline(data.userId).catch(() => undefined);
-      this.logger.log(`Signal disconnect user=${data.userId} sid=${socket.id}`);
+      this.logger.log({
+        msg: 'signal.disconnect',
+        evt: 'signal.disconnect',
+        userId: data.userId,
+        socketId: socket.id,
+      });
     }
   }
 

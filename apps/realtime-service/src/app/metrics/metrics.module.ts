@@ -33,6 +33,15 @@ const METRIC_PROVIDERS = [
     help: 'WS messages by direction (inbound = from client, outbound = to client)',
     labelNames: ['direction'],
   }),
+  makeGaugeProvider({
+    name: 'mova_signal_connections',
+    help: 'Currently connected /signal (presence) clients',
+  }),
+  makeCounterProvider({
+    name: 'mova_signal_events_total',
+    help: 'Out-of-band signaling events delivered to /signal clients by type',
+    labelNames: ['type'],
+  }),
 ];
 
 @Global()

@@ -2,7 +2,13 @@ import { randomUUID } from 'crypto';
 
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Room, RoomEvent, type RemoteParticipant } from '@livekit/rtc-node';
+import {
+  Room,
+  RoomEvent,
+  DisconnectReason,
+  type RemoteParticipant,
+  type Participant,
+} from '@livekit/rtc-node';
 import { ParticipantKind } from '@livekit/rtc-ffi-bindings';
 import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
 import { Redis } from 'ioredis';
@@ -207,6 +213,14 @@ export class AgentCallHandler {
    *  only learn the line dropped via the room-level Disconnected (which the
    *  agent gets when IT leaves) and idle-probe a draining session. */
   private interlocutorIdentity: string | null = null;
+  /** Last SIP call status we logged, so attribute-change spam doesn't
+   *  re-log the same value. */
+  private lastSipStatus: string | null = null;
+  /** LiveKit publishes the real SIP leg state here. A SIP participant joins
+   *  the room at DIAL time ("dialing" / "ringing"); the phone is only truly
+   *  answered once this reads "active". Gating call.answered on presence
+   *  (as we did before) reports a ringing phone as connected. */
+  private static readonly SIP_STATUS_ATTR = 'sip.callStatus';
   private static readonly IDLE_FIRST_MS = 18_000;
   private static readonly IDLE_FOLLOWUP_MS = 25_000;
   /** After this many unanswered probes we give up and end the call so
@@ -353,30 +367,41 @@ export class AgentCallHandler {
 
       phase = 'room_connect';
       this.room = new Room();
-      // The SIP participant joins the room only after the trunk reports
-      // that the called phone actually picked up. Surfacing this as a
-      // separate event lets the mobile UI keep a ringing-loader on screen
-      // until there's a real interlocutor — instead of swapping to the
-      // chat the moment the agent is ready (which is hundreds of ms after
-      // dialing the trunk, with a long wait still ahead).
+      // A remote participant appearing means different things per call type:
+      // a peer caller joining IS the answer, but a SIP participant joins at
+      // DIAL time and only counts as answered once sip.callStatus === 'active'
+      // (tracked separately via ParticipantAttributesChanged below). We record
+      // its identity immediately so a disconnect during ringing is still
+      // attributable.
       this.room.on(RoomEvent.ParticipantConnected, (p: RemoteParticipant) => {
-        if (this.participantAnswered) return;
-        if (this.userContext.callType !== 'peer' && p.kind !== ParticipantKind.SIP) return;
-        this.participantAnswered = true;
-        this.interlocutorIdentity = p.identity;
-        this.logger.log(
-          `📞 [Call Lifecycle] Interlocutor answered (identity=${p.identity})`,
-        );
-        this.clog.event('agent.answered', {
-          identity: p.identity,
-          kind: String(p.kind),
-          waitedMs: Date.now() - callStartTime,
-        });
-        this.emitTyped({
-          type: 'call.answered',
-          data: { participantIdentity: p.identity },
-        });
+        this.handleInterlocutorPresent(p, false);
       });
+      // SIP leg state transitions: dialing → ringing → active → hangup. This
+      // is the ONLY truthful "did the phone ring / was it picked up" signal,
+      // and the one missing from the logs before. We log every change and
+      // promote to answered only on "active".
+      this.room.on(
+        RoomEvent.ParticipantAttributesChanged,
+        (changed: Record<string, string>, p: Participant) => {
+          if (p.kind !== ParticipantKind.SIP) return;
+          const status =
+            changed[AgentCallHandler.SIP_STATUS_ATTR] ?? this.sipStatusOf(p);
+          if (!status || status === this.lastSipStatus) return;
+          this.lastSipStatus = status;
+          this.logger.log(
+            `📡 [Call Lifecycle] SIP status → ${status} (identity=${p.identity}).`,
+          );
+          this.clog.event('agent.sip.status', {
+            identity: p.identity,
+            sipStatus: status,
+            statusCode: changed['sip.callStatusCode'] ?? null,
+            sinceDialMs: this.callStartTime ? Date.now() - this.callStartTime : 0,
+          });
+          if (status === 'active') {
+            this.markInterlocutorAnswered(p, false);
+          }
+        },
+      );
       this.room.on(RoomEvent.Disconnected, () => {
         // If we already started tearing down (user pressed end_call,
         // start() failed, fatal mid-call error), the call.ended event
@@ -414,12 +439,19 @@ export class AgentCallHandler {
           return;
         }
         const durationMs = Date.now() - callStartTime;
+        const reasonName = this.disconnectReasonName(p);
+        const wasAnswered = this.participantAnswered;
+        const sipStatus = this.sipStatusOf(p) ?? this.lastSipStatus;
         this.logger.log(
-          `🚪 [Call Lifecycle] Interlocutor disconnected (identity=${p.identity}) after ${durationMs}ms.`,
+          `🚪 [Call Lifecycle] Interlocutor disconnected (identity=${p.identity}) ` +
+            `reason=${reasonName} answered=${wasAnswered} sipStatus=${sipStatus ?? 'n/a'} after ${durationMs}ms.`,
         );
         this.clog.event('agent.interlocutorDisconnected', {
           identity: p.identity,
           durationMs,
+          disconnectReason: reasonName,
+          sipStatus: sipStatus ?? null,
+          wasAnswered,
         });
         this.beginEnd('interlocutor', 'interlocutor');
         this.emitTyped({
@@ -436,33 +468,15 @@ export class AgentCallHandler {
       this.emitTyped({ type: 'call.connected', data: {} });
 
       // The interlocutor can already be in the room by the time we finish
-      // connecting — for peer calls the caller joins first, and for SIP a
-      // fast trunk answer can beat the agent's own join. RoomEvent.
-      // ParticipantConnected only fires for participants that arrive AFTER us,
-      // so without this sweep call.answered never fires (mobile stays stuck on
-      // "ringing") and interlocutorIdentity is never set (so the disconnect
-      // handler can't end the call).
+      // connecting — for peer calls the caller joins first, and for SIP the
+      // leg can be mid-dial. ParticipantConnected only fires for participants
+      // that arrive AFTER us, so without this sweep we'd miss them entirely.
+      // handleInterlocutorPresent records the identity and, for SIP, only
+      // marks answered if the leg is ALREADY active.
       if (!this.participantAnswered) {
         for (const p of this.room.remoteParticipants.values()) {
-          if (this.userContext.callType !== 'peer' && p.kind !== ParticipantKind.SIP) {
-            continue;
-          }
-          this.participantAnswered = true;
-          this.interlocutorIdentity = p.identity;
-          this.logger.log(
-            `📞 [Call Lifecycle] Interlocutor already present (identity=${p.identity})`,
-          );
-          this.clog.event('agent.answered', {
-            identity: p.identity,
-            kind: String(p.kind),
-            waitedMs: Date.now() - callStartTime,
-            alreadyPresent: true,
-          });
-          this.emitTyped({
-            type: 'call.answered',
-            data: { participantIdentity: p.identity },
-          });
-          break;
+          this.handleInterlocutorPresent(p, true);
+          if (this.interlocutorIdentity) break;
         }
       }
 
@@ -897,6 +911,71 @@ export class AgentCallHandler {
     }
     this.state = 'ended';
     this.onDisconnectCb(this.roomName);
+  }
+
+  private sipStatusOf(p: Participant): string | undefined {
+    return p.attributes?.[AgentCallHandler.SIP_STATUS_ATTR];
+  }
+
+  private disconnectReasonName(p: Participant): string {
+    const code = p.disconnectReason;
+    if (code === undefined || code === null) return 'UNKNOWN';
+    return DisconnectReason[code] ?? String(code);
+  }
+
+  /**
+   * A remote participant is in the room. Peer callers count as answered the
+   * moment they join; SIP legs are only answered once sip.callStatus reads
+   * "active" — before that they're still dialing/ringing. Either way we pin
+   * interlocutorIdentity so a disconnect is attributable.
+   */
+  private handleInterlocutorPresent(p: Participant, alreadyPresent: boolean): void {
+    if (this.participantAnswered) return;
+    const isPeer = this.userContext.callType === 'peer';
+    if (!isPeer && p.kind !== ParticipantKind.SIP) return;
+
+    this.interlocutorIdentity = p.identity;
+
+    if (isPeer) {
+      this.markInterlocutorAnswered(p, alreadyPresent);
+      return;
+    }
+
+    const status = this.sipStatusOf(p);
+    if (status) this.lastSipStatus = status;
+    this.clog.event('agent.sip.present', {
+      identity: p.identity,
+      sipStatus: status ?? null,
+      alreadyPresent,
+    });
+    if (status === 'active') {
+      this.markInterlocutorAnswered(p, alreadyPresent);
+      return;
+    }
+    this.logger.log(
+      `📲 [Call Lifecycle] SIP leg ${status ?? 'dialing'} (identity=${p.identity}) — waiting for pickup.`,
+    );
+  }
+
+  private markInterlocutorAnswered(p: Participant, alreadyPresent: boolean): void {
+    if (this.participantAnswered) return;
+    this.participantAnswered = true;
+    this.interlocutorIdentity = p.identity;
+    const waitedMs = this.callStartTime ? Date.now() - this.callStartTime : 0;
+    this.logger.log(
+      `📞 [Call Lifecycle] Interlocutor answered (identity=${p.identity}) after ${waitedMs}ms.`,
+    );
+    this.clog.event('agent.answered', {
+      identity: p.identity,
+      kind: String(p.kind),
+      sipStatus: this.sipStatusOf(p) ?? null,
+      waitedMs,
+      alreadyPresent,
+    });
+    this.emitTyped({
+      type: 'call.answered',
+      data: { participantIdentity: p.identity },
+    });
   }
 
   /**

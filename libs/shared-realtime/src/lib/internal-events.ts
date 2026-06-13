@@ -168,17 +168,26 @@ export const CallEndedEvent = baseEvent.extend({
   data: z.object({
     /** Who hung up. `admin` is moderation/force-end by an operator. */
     endedBy: z.enum(['user', 'interlocutor', 'system', 'admin']),
-    /** Why. */
+    /** Why. `no_answer` = the leg rang but was never picked up (rejected /
+     *  unavailable / rang out) — distinct from `interlocutor` (answered, then
+     *  hung up). */
     reason: z.enum([
       'user',
       'interlocutor',
+      'no_answer',
       'balance',
       'fatal_error',
       'timeout',
       'admin',
     ]),
-    /** Optional error code (mirrors CallErrorCode) when reason=fatal_error. */
+    /** Optional error code (mirrors CallErrorCode) — set for reason=fatal_error
+     *  AND for reason=no_answer (CALL_DECLINED / CALL_UNANSWERED / ...) so the
+     *  client can show a precise message. */
     errorCode: z.string().optional(),
+    /** Whether the call was ever actually answered (SIP active / peer joined).
+     *  Drives billing (unanswered ⇒ 0s) and the end-screen wording. Optional
+     *  for back-compat; consumers treat absence as "unknown / assume answered". */
+    wasAnswered: z.boolean().optional(),
     /** Wall-clock duration of the call in ms, measured by the agent from
      *  the moment it joined the LiveKit room to the moment it left.
      *  Optional for back-compat with older producers — consumers should

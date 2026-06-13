@@ -33,6 +33,13 @@ export enum ConversationEndReason {
   TIMEOUT = 'timeout',
   DECLINED = 'declined',
   /**
+   * The call reached the callee but was never answered — it rang out, was
+   * rejected, or the line was unavailable. Distinct from INTERLOCUTOR (a real
+   * conversation that the other party hung up) so history and billing can tell
+   * "nobody picked up" from "they talked then hung up". Never billed.
+   */
+  NO_ANSWER = 'no_answer',
+  /**
    * Force-ended by an admin (moderation, stuck-call cleanup). The audit_logs
    * row carries the actor + reason; this enum value is what shows up on the
    * conversation row and in the mobile history banner.
@@ -115,9 +122,16 @@ export class Conversation {
   @Column({ type: 'timestamptz', default: () => 'now()' })
   startedAt!: Date;
 
-  /** Set when SIP callee answers and joins the room. */
+  /** Set when the agent joins the LiveKit room and starts dialing (call.connected).
+   *  This is NOT the pickup time — the SIP leg is still ringing here. */
   @Column({ type: 'timestamptz', nullable: true })
   connectedAt!: Date | null;
+
+  /** Set when the interlocutor actually answers (SIP callStatus=active / peer
+   *  joins). Null means the call was never answered — billing charges 0 and the
+   *  end reason is NO_ANSWER. The single source of truth for billable duration. */
+  @Column({ type: 'timestamptz', nullable: true })
+  answeredAt!: Date | null;
 
   @Column({ type: 'timestamptz', nullable: true })
   endedAt!: Date | null;

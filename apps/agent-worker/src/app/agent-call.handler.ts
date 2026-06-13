@@ -96,6 +96,7 @@ export class AgentCallHandler {
   private endReason:
     | 'user'
     | 'interlocutor'
+    | 'no_answer'
     | 'balance'
     | 'fatal_error'
     | 'timeout'
@@ -416,14 +417,27 @@ export class AgentCallHandler {
           return;
         }
         const durationMs = Date.now() - callStartTime;
-        this.logger.log(`🚪 [Call Lifecycle] Room disconnected after ${durationMs}ms.`);
-        this.clog.event('agent.roomDisconnected', { durationMs });
-        // Reason is best-effort — distinguishing interlocutor-hangup from
-        // network drop needs SIP-event introspection (Phase 8 work).
-        this.beginEnd('interlocutor', 'interlocutor');
+        const wasAnswered = this.participantAnswered;
+        this.logger.log(
+          `🚪 [Call Lifecycle] Room disconnected after ${durationMs}ms (answered=${wasAnswered}).`,
+        );
+        this.clog.event('agent.roomDisconnected', { durationMs, wasAnswered });
+        // If the room drops before anyone answered, it's a "no answer" outcome,
+        // not an interlocutor hang-up. When it was answered we can't tell a
+        // clean hang-up from a network drop here (no SIP code on the room
+        // event), so keep the neutral 'interlocutor' reason.
+        const reason = wasAnswered ? 'interlocutor' : 'no_answer';
+        const errorCode = wasAnswered ? undefined : CallErrorCode.CALL_UNANSWERED;
+        this.beginEnd('interlocutor', reason, errorCode);
         this.emitTyped({
           type: 'call.ended',
-          data: { endedBy: 'interlocutor', reason: 'interlocutor', durationMs },
+          data: {
+            endedBy: 'interlocutor',
+            reason,
+            ...(errorCode ? { errorCode } : {}),
+            wasAnswered,
+            durationMs,
+          },
         });
         this.cleanup();
       });
@@ -446,17 +460,26 @@ export class AgentCallHandler {
           `🚪 [Call Lifecycle] Interlocutor disconnected (identity=${p.identity}) ` +
             `reason=${reasonName} answered=${wasAnswered} sipStatus=${sipStatus ?? 'n/a'} after ${durationMs}ms.`,
         );
+        const cls = this.classifyInterlocutorEnd(reasonName, wasAnswered);
         this.clog.event('agent.interlocutorDisconnected', {
           identity: p.identity,
           durationMs,
           disconnectReason: reasonName,
           sipStatus: sipStatus ?? null,
           wasAnswered,
+          endReason: cls.reason,
+          errorCode: cls.errorCode ?? null,
         });
-        this.beginEnd('interlocutor', 'interlocutor');
+        this.beginEnd(cls.endedBy, cls.reason, cls.errorCode);
         this.emitTyped({
           type: 'call.ended',
-          data: { endedBy: 'interlocutor', reason: 'interlocutor', durationMs },
+          data: {
+            endedBy: cls.endedBy,
+            reason: cls.reason,
+            ...(cls.errorCode ? { errorCode: cls.errorCode } : {}),
+            wasAnswered,
+            durationMs,
+          },
         });
         this.cleanup();
       });
@@ -924,6 +947,48 @@ export class AgentCallHandler {
   }
 
   /**
+   * Translate an interlocutor disconnect into a precise call-end classification.
+   * An answered leg dropping is a normal hang-up; a leg that drops while still
+   * ringing is a "no answer" outcome whose flavour (rejected / unavailable /
+   * trunk failure) the mobile end screen renders as a specific message.
+   */
+  private classifyInterlocutorEnd(
+    reasonName: string,
+    wasAnswered: boolean,
+  ): {
+    endedBy: 'interlocutor' | 'system';
+    reason: 'interlocutor' | 'no_answer' | 'fatal_error';
+    errorCode?: string;
+  } {
+    if (wasAnswered) {
+      return { endedBy: 'interlocutor', reason: 'interlocutor' };
+    }
+    switch (reasonName) {
+      case 'USER_REJECTED':
+        return {
+          endedBy: 'interlocutor',
+          reason: 'no_answer',
+          errorCode: CallErrorCode.CALL_DECLINED,
+        };
+      case 'SIP_TRUNK_FAILURE':
+      case 'JOIN_FAILURE':
+        return {
+          endedBy: 'system',
+          reason: 'fatal_error',
+          errorCode: CallErrorCode.LIVEKIT_DISCONNECTED,
+        };
+      case 'USER_UNAVAILABLE':
+      case 'CONNECTION_TIMEOUT':
+      default:
+        return {
+          endedBy: 'interlocutor',
+          reason: 'no_answer',
+          errorCode: CallErrorCode.CALL_UNANSWERED,
+        };
+    }
+  }
+
+  /**
    * A remote participant is in the room. Peer callers count as answered the
    * moment they join; SIP legs are only answered once sip.callStatus reads
    * "active" — before that they're still dialing/ringing. Either way we pin
@@ -987,7 +1052,14 @@ export class AgentCallHandler {
    */
   private beginEnd(
     endedBy: 'user' | 'interlocutor' | 'system' | 'admin',
-    reason: 'user' | 'interlocutor' | 'balance' | 'fatal_error' | 'timeout' | 'admin',
+    reason:
+      | 'user'
+      | 'interlocutor'
+      | 'no_answer'
+      | 'balance'
+      | 'fatal_error'
+      | 'timeout'
+      | 'admin',
     errorCode?: string,
   ): void {
     if (this.endedBy === null) {

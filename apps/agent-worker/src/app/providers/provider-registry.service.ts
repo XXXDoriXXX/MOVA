@@ -84,10 +84,12 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
     CircuitBreaker<any[], any>
   >();
 
-  /** Default fallback order — adjusted at runtime by health scores. */
+  /** Default fallback order — adjusted at runtime by health scores. Gemini
+   *  is the primary (routed via the LiveKit Inference Gateway, no OpenAI key
+   *  required); OpenAI stays available as a fallback when its key is set. */
   private readonly defaultLlmOrder: LlmProviderEnum[] = [
-    LlmProviderEnum.OPENAI,
     LlmProviderEnum.GEMINI,
+    LlmProviderEnum.OPENAI,
     LlmProviderEnum.ANTHROPIC,
     LlmProviderEnum.GROQ,
   ];

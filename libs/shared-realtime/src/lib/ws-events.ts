@@ -212,6 +212,7 @@ export const ServerEvent = {
       reason: z.enum([
         'user',
         'interlocutor',
+        'no_answer',
         'balance',
         'fatal_error',
         'timeout',
@@ -219,6 +220,17 @@ export const ServerEvent = {
       ]),
       durationSeconds: z.number().int().nonnegative(),
       endedBy: z.enum(['user', 'system', 'interlocutor', 'admin']),
+      /**
+       * Specific cause, mirrors CallErrorCode. Present for failures and for
+       * `no_answer` (CALL_DECLINED / CALL_UNANSWERED / CALLEE_UNAVAILABLE /
+       * LIVEKIT_DISCONNECTED). Lets the end screen show a precise, friendly
+       * message + a "redial" action instead of a generic line.
+       */
+      errorCode: z.string().optional(),
+      /** True only if the call was actually answered. The client uses this to
+       *  word the end screen ("nobody answered" vs "call ended") and to decide
+       *  whether to offer a redial. */
+      wasAnswered: z.boolean().optional(),
     }),
   }),
 

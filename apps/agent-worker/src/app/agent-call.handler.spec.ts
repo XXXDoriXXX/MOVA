@@ -348,6 +348,27 @@ describe('AgentCallHandler — lifecycle guards', () => {
     expect(lastCallEnded(publisher)).toBeUndefined();
   });
 
+  it('SIP interlocutor already in the room on join emits call.answered + can disconnect', async () => {
+    const { handler, publisher } = makeHarness();
+    // A fast SIP answer can join the room before the agent finishes
+    // connecting — RoomEvent.ParticipantConnected then never fires for it.
+    participantsMap.set('phone-101', { kind: 1, identity: 'phone-101' });
+    await handler.start();
+
+    const answered = publisher.publish.mock.calls
+      .map(([ev]) => ev as InternalCallEvent)
+      .find((ev) => ev.type === 'call.answered');
+    expect(answered).toBeDefined();
+
+    // ...and the disconnect handler now has the identity to end the call.
+    fakeRoomEmitters[0]!.emit('participantDisconnected', { identity: 'phone-101' });
+    await new Promise((r) => setImmediate(r));
+
+    const ended = lastCallEnded(publisher);
+    expect(ended).toBeDefined();
+    expect(ended!.data.endedBy).toBe('interlocutor');
+  });
+
   it('call-deadline timer force-ends call with CALL_TIMEOUT', async () => {
     jest.useFakeTimers();
     try {

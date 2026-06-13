@@ -202,6 +202,11 @@ export class AgentCallHandler {
   /** Cleared when the SIP participant joins; before that, idle probes
    *  are pointless — nobody's on the line yet. */
   private participantAnswered = false;
+  /** Identity of the interlocutor (SIP phone / peer caller) once answered.
+   *  Used to end the call promptly when THEY disconnect — without this we
+   *  only learn the line dropped via the room-level Disconnected (which the
+   *  agent gets when IT leaves) and idle-probe a draining session. */
+  private interlocutorIdentity: string | null = null;
   private static readonly IDLE_FIRST_MS = 18_000;
   private static readonly IDLE_FOLLOWUP_MS = 25_000;
   /** After this many unanswered probes we give up and end the call so
@@ -358,6 +363,7 @@ export class AgentCallHandler {
         if (this.participantAnswered) return;
         if (this.userContext.callType !== 'peer' && p.kind !== ParticipantKind.SIP) return;
         this.participantAnswered = true;
+        this.interlocutorIdentity = p.identity;
         this.logger.log(
           `📞 [Call Lifecycle] Interlocutor answered (identity=${p.identity})`,
         );
@@ -396,6 +402,32 @@ export class AgentCallHandler {
         });
         this.cleanup();
       });
+      // The interlocutor leaving (phone hung up / peer caller left) while the
+      // agent is still in the room does NOT raise RoomEvent.Disconnected — the
+      // agent only gets that when IT leaves. Without handling this we keep the
+      // call alive and idle-probe a draining session (LiveKit Agents closes
+      // the session on participant disconnect), which throws "agent is
+      // draining" and pages on a benign hang-up. End the call promptly here.
+      this.room.on(RoomEvent.ParticipantDisconnected, (p: RemoteParticipant) => {
+        if (this.state === 'ending' || this.state === 'ended') return;
+        if (!this.interlocutorIdentity || p.identity !== this.interlocutorIdentity) {
+          return;
+        }
+        const durationMs = Date.now() - callStartTime;
+        this.logger.log(
+          `🚪 [Call Lifecycle] Interlocutor disconnected (identity=${p.identity}) after ${durationMs}ms.`,
+        );
+        this.clog.event('agent.interlocutorDisconnected', {
+          identity: p.identity,
+          durationMs,
+        });
+        this.beginEnd('interlocutor', 'interlocutor');
+        this.emitTyped({
+          type: 'call.ended',
+          data: { endedBy: 'interlocutor', reason: 'interlocutor', durationMs },
+        });
+        this.cleanup();
+      });
 
       await this.room.connect(wsURL, token);
       this.logger.log(`✅ [WebRTC] Agent joined room`);
@@ -406,6 +438,7 @@ export class AgentCallHandler {
       if (this.userContext.callType === 'peer' && !this.participantAnswered) {
         for (const p of this.room.remoteParticipants.values()) {
           this.participantAnswered = true;
+          this.interlocutorIdentity = p.identity;
           this.logger.log(
             `📞 [Call Lifecycle] Peer caller already present (identity=${p.identity})`,
           );
@@ -1240,6 +1273,15 @@ export class AgentCallHandler {
     this.clearIdleProbe();
     if (!this.session) return;
     if (this.state !== 'active') return;
+    // The interlocutor may have hung up moments before this timer fired. If
+    // they're gone the LiveKit Agents session is draining and any say() throws
+    // "cannot schedule new speech, the agent is draining" — a benign race we
+    // must not report as an error. Stand down; the ParticipantDisconnected /
+    // Disconnected flow ends the call with the right reason.
+    if (!this.room || this.room.remoteParticipants.size === 0) {
+      this.clog.debug('agent.idleProbe.skippedDraining');
+      return;
+    }
     if (this.idleProbeCount >= AgentCallHandler.IDLE_MAX_PROBES) {
       // We've prompted enough times with no answer — give up and end
       // the call so we don't keep talking to dead air on the user's

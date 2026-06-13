@@ -148,6 +148,14 @@ export class ConversationEventsConsumer implements OnModuleInit, OnModuleDestroy
         return this.onSuggestionsGenerated(event);
       case 'call.connected':
         return this.conversations.markConnected(event.conversationId, new Date(event.occurredAt));
+      case 'call.answered':
+        // The interlocutor actually picked up — stamp answeredAt, the single
+        // source of truth for billable duration. A call that never reaches
+        // here is charged 0 at end time.
+        return this.conversations.markAnswered(
+          event.conversationId,
+          new Date(event.occurredAt),
+        );
       case 'call.ended':
         return this.onCallEnded(event);
       // call.tick + provider.failure + transcript.partial: realtime-service

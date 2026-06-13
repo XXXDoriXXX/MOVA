@@ -190,6 +190,12 @@ export function mapInternalToServer(event: InternalCallEvent): ServerEvent | nul
             ? Math.floor(event.data.durationMs / 1000)
             : 0,
           endedBy: event.data.endedBy,
+          // Pass the granular cause + answered flag through so the mobile end
+          // screen can show a precise message and decide on a redial CTA.
+          ...(event.data.errorCode ? { errorCode: event.data.errorCode } : {}),
+          ...(event.data.wasAnswered !== undefined
+            ? { wasAnswered: event.data.wasAnswered }
+            : {}),
         },
       };
 

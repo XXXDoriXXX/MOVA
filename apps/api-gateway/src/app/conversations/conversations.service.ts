@@ -126,9 +126,26 @@ export class ConversationsService {
   }
 
   /**
-   * Final state transition. Computes durationSeconds from startedAt..endedAt.
-   * If status was already `ended` or `failed` we DO update (allows error-
-   * reason backfill from a follow-up watchdog), but use the existing endedAt.
+   * Stamp the moment the interlocutor actually answered (SIP callStatus=active
+   * / peer joined). Idempotent — only sets the first answer time, so a replayed
+   * event can't move it. This is the single source of truth for billable
+   * duration; a call with a null answeredAt is never billed.
+   */
+  async markAnswered(conversationId: string, answeredAt: Date = new Date()): Promise<void> {
+    await this.conversations
+      .createQueryBuilder()
+      .update(Conversation)
+      .set({ answeredAt })
+      .where('id = :id AND "answeredAt" IS NULL', { id: conversationId })
+      .execute();
+  }
+
+  /**
+   * Final state transition. Bills from `answeredAt` (the real pickup), NOT from
+   * connect/dial time — a call that only rang and was never answered has a null
+   * answeredAt and therefore durationSeconds = 0 (no charge). If status was
+   * already `ended`/`failed` we DO update (allows error-reason backfill from a
+   * follow-up watchdog), but reuse the existing endedAt.
    */
   async markEnded(input: EndConversationInput): Promise<Conversation> {
     const conv = await this.conversations.findOne({ where: { id: input.conversationId } });
@@ -136,8 +153,10 @@ export class ConversationsService {
       throw new NotFoundException('Conversation not found');
     }
     const endedAt = conv.endedAt ?? input.endedAt ?? new Date();
-    const startRef = conv.connectedAt ?? conv.startedAt;
-    const durationSeconds = Math.max(0, Math.floor((endedAt.getTime() - startRef.getTime()) / 1000));
+    // Bill only the answered span. No answeredAt ⇒ never picked up ⇒ 0 seconds.
+    const durationSeconds = conv.answeredAt
+      ? Math.max(0, Math.floor((endedAt.getTime() - conv.answeredAt.getTime()) / 1000))
+      : 0;
 
     const status =
       input.reason === ConversationEndReason.FATAL_ERROR

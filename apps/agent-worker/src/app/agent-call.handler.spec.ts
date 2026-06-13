@@ -39,7 +39,15 @@ import type { SuggestionsService } from './suggestions/suggestions.service';
 
 const fakeRoomEmitters: EventEmitter[] = [];
 const fakeRoomDisconnect = jest.fn();
-let participantsMap = new Map<string, { kind: number; identity: string }>();
+let participantsMap = new Map<
+  string,
+  {
+    kind: number;
+    identity: string;
+    attributes?: Record<string, string>;
+    disconnectReason?: number;
+  }
+>();
 
 jest.mock('@livekit/rtc-node', () => {
   class FakeRoom extends EventEmitter {
@@ -60,7 +68,16 @@ jest.mock('@livekit/rtc-node', () => {
     RoomEvent: {
       ParticipantConnected: 'participantConnected',
       ParticipantDisconnected: 'participantDisconnected',
+      ParticipantAttributesChanged: 'participantAttributesChanged',
       Disconnected: 'disconnected',
+    },
+    DisconnectReason: {
+      '0': 'UNKNOWN_REASON',
+      '11': 'USER_UNAVAILABLE',
+      '12': 'USER_REJECTED',
+      UNKNOWN_REASON: 0,
+      USER_UNAVAILABLE: 11,
+      USER_REJECTED: 12,
     },
   };
 });
@@ -348,11 +365,15 @@ describe('AgentCallHandler — lifecycle guards', () => {
     expect(lastCallEnded(publisher)).toBeUndefined();
   });
 
-  it('SIP interlocutor already in the room on join emits call.answered + can disconnect', async () => {
+  it('SIP interlocutor already ACTIVE in the room on join emits call.answered + can disconnect', async () => {
     const { handler, publisher } = makeHarness();
-    // A fast SIP answer can join the room before the agent finishes
-    // connecting — RoomEvent.ParticipantConnected then never fires for it.
-    participantsMap.set('phone-101', { kind: 1, identity: 'phone-101' });
+    // A fast SIP answer can join the room (already active) before the agent
+    // finishes connecting — RoomEvent.ParticipantConnected then never fires.
+    participantsMap.set('phone-101', {
+      kind: 1,
+      identity: 'phone-101',
+      attributes: { 'sip.callStatus': 'active' },
+    });
     await handler.start();
 
     const answered = publisher.publish.mock.calls
@@ -363,6 +384,62 @@ describe('AgentCallHandler — lifecycle guards', () => {
     // ...and the disconnect handler now has the identity to end the call.
     fakeRoomEmitters[0]!.emit('participantDisconnected', { identity: 'phone-101' });
     await new Promise((r) => setImmediate(r));
+
+    const ended = lastCallEnded(publisher);
+    expect(ended).toBeDefined();
+    expect(ended!.data.endedBy).toBe('interlocutor');
+  });
+
+  it('a RINGING SIP leg does NOT emit call.answered until it goes active', async () => {
+    const { handler, publisher } = makeHarness();
+    await handler.start();
+
+    const answeredEvents = () =>
+      publisher.publish.mock.calls
+        .map(([ev]) => ev as InternalCallEvent)
+        .filter((ev) => ev.type === 'call.answered');
+
+    // SIP participant joins while still ringing — presence alone must NOT
+    // be reported as answered (this was the regression).
+    fakeRoomEmitters[0]!.emit('participantConnected', {
+      kind: 1,
+      identity: 'phone-101',
+      attributes: { 'sip.callStatus': 'ringing' },
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(answeredEvents()).toHaveLength(0);
+
+    // The phone is picked up → sip.callStatus flips to active → answered.
+    fakeRoomEmitters[0]!.emit(
+      'participantAttributesChanged',
+      { 'sip.callStatus': 'active' },
+      { kind: 1, identity: 'phone-101', attributes: { 'sip.callStatus': 'active' } },
+    );
+    await new Promise((r) => setImmediate(r));
+    expect(answeredEvents()).toHaveLength(1);
+  });
+
+  it('a SIP leg that never answers ends with the disconnect reason (no false "answered")', async () => {
+    const { handler, publisher } = makeHarness();
+    await handler.start();
+
+    fakeRoomEmitters[0]!.emit('participantConnected', {
+      kind: 1,
+      identity: 'phone-101',
+      attributes: { 'sip.callStatus': 'ringing' },
+    });
+    // Callee rejects without ever answering.
+    fakeRoomEmitters[0]!.emit('participantDisconnected', {
+      identity: 'phone-101',
+      disconnectReason: 12,
+      attributes: { 'sip.callStatus': 'hangup' },
+    });
+    await new Promise((r) => setImmediate(r));
+
+    const answered = publisher.publish.mock.calls
+      .map(([ev]) => ev as InternalCallEvent)
+      .find((ev) => ev.type === 'call.answered');
+    expect(answered).toBeUndefined();
 
     const ended = lastCallEnded(publisher);
     expect(ended).toBeDefined();

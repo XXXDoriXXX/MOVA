@@ -75,9 +75,9 @@ describe('ProviderRegistry', () => {
       expect(viaFallback).toBe(false);
     });
 
-    it('returns OpenAI by default', () => {
+    it('returns Gemini by default', () => {
       const { provider, viaFallback } = registry.selectLlm();
-      expect(provider.id).toBe(LlmProviderEnum.OPENAI);
+      expect(provider.id).toBe(LlmProviderEnum.GEMINI);
       expect(viaFallback).toBe(false);
     });
 

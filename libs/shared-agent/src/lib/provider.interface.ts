@@ -102,10 +102,12 @@ export interface ITtsProvider extends IProvider {
  *   - `auth`         → breaker opens AND alerts (config error)
  *   - `upstream`     → breaker counts toward threshold
  *   - `unsupported`  → no breaker impact (caller chose wrong model)
+ *   - `cancelled`    → caller aborted the call; health-neutral, no breaker impact
  */
 export type ProviderErrorCode =
   | 'rate_limited'
   | 'timeout'
+  | 'cancelled'
   | 'auth'
   | 'upstream'
   | 'unsupported'

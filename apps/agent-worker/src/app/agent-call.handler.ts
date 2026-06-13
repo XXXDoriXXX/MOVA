@@ -435,13 +435,29 @@ export class AgentCallHandler {
 
       this.emitTyped({ type: 'call.connected', data: {} });
 
-      if (this.userContext.callType === 'peer' && !this.participantAnswered) {
+      // The interlocutor can already be in the room by the time we finish
+      // connecting — for peer calls the caller joins first, and for SIP a
+      // fast trunk answer can beat the agent's own join. RoomEvent.
+      // ParticipantConnected only fires for participants that arrive AFTER us,
+      // so without this sweep call.answered never fires (mobile stays stuck on
+      // "ringing") and interlocutorIdentity is never set (so the disconnect
+      // handler can't end the call).
+      if (!this.participantAnswered) {
         for (const p of this.room.remoteParticipants.values()) {
+          if (this.userContext.callType !== 'peer' && p.kind !== ParticipantKind.SIP) {
+            continue;
+          }
           this.participantAnswered = true;
           this.interlocutorIdentity = p.identity;
           this.logger.log(
-            `📞 [Call Lifecycle] Peer caller already present (identity=${p.identity})`,
+            `📞 [Call Lifecycle] Interlocutor already present (identity=${p.identity})`,
           );
+          this.clog.event('agent.answered', {
+            identity: p.identity,
+            kind: String(p.kind),
+            waitedMs: Date.now() - callStartTime,
+            alreadyPresent: true,
+          });
           this.emitTyped({
             type: 'call.answered',
             data: { participantIdentity: p.identity },

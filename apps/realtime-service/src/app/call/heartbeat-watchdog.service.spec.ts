@@ -135,6 +135,65 @@ describe('HeartbeatWatchdog', () => {
     await wd.onModuleDestroy();
   });
 
+  it('a clean call.ended stops the tracker (no spurious AGENT_LOST)', async () => {
+    const redis = new FakeRedis();
+    const wd = new HeartbeatWatchdog(redis as never);
+    await wd.onModuleInit();
+    const sub = subscriberOf(wd);
+
+    // Call running: dispatch + a heartbeat arm the 15s grace window.
+    sub.emit(
+      'message',
+      RedisChannels.callDispatch,
+      JSON.stringify({ conversationId: CONV, roomName: 'room' }),
+    );
+    sub.emit('pmessage', 'heartbeat:*', `heartbeat:${CONV}`, '{"ts":1}');
+
+    // The interlocutor hangs up → agent emits a clean call.ended and stops
+    // heart-beating. The watchdog must cancel its timer, not fire AGENT_LOST.
+    sub.emit(
+      'pmessage',
+      'call-events:*',
+      RedisChannels.callEvents(CONV),
+      JSON.stringify({
+        type: 'call.ended',
+        conversationId: CONV,
+        data: { reason: 'interlocutor' },
+      }),
+    );
+
+    jest.advanceTimersByTime(30_000);
+    await Promise.resolve();
+    expect(redis.publish).not.toHaveBeenCalled();
+
+    await wd.onModuleDestroy();
+  });
+
+  it('ignores non-ended call-events (e.g. transcript) — keeps tracking', async () => {
+    const redis = new FakeRedis();
+    const wd = new HeartbeatWatchdog(redis as never);
+    await wd.onModuleInit();
+    const sub = subscriberOf(wd);
+
+    sub.emit('pmessage', 'heartbeat:*', `heartbeat:${CONV}`, '{"ts":1}');
+    sub.emit(
+      'pmessage',
+      'call-events:*',
+      RedisChannels.callEvents(CONV),
+      JSON.stringify({ type: 'transcript.final', conversationId: CONV }),
+    );
+
+    // No heartbeat after → the grace timer still fires AGENT_LOST.
+    jest.advanceTimersByTime(16_000);
+    await Promise.resolve();
+    expect(redis.publish).toHaveBeenCalledWith(
+      RedisChannels.callEvents(CONV),
+      expect.stringContaining('"errorCode":"AGENT_LOST"'),
+    );
+
+    await wd.onModuleDestroy();
+  });
+
   it('ignores malformed dispatch payloads', async () => {
     const redis = new FakeRedis();
     const wd = new HeartbeatWatchdog(redis as never);

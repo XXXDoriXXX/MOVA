@@ -45,7 +45,7 @@ import {
  *   - 401/403 → 'auth' (will open breaker AND emit critical alert)
  *   - 429    → 'rate_limited' (breaker tolerates a small burst)
  *   - 5xx / network → 'upstream'
- *   - AbortError → 'timeout' (caller-driven)
+ *   - AbortError → 'cancelled' (caller-driven; health-neutral, not a fault)
  */
 export abstract class AiSdkLlmAdapter implements ILlmProvider {
   abstract readonly id: LlmProviderEnum;
@@ -129,8 +129,12 @@ export abstract class AiSdkLlmAdapter implements ILlmProvider {
     const code = e?.statusCode ?? e?.status;
     const message = e?.message ?? String(err);
 
+    // A caller-driven abort (candidate superseded / user cancel) is NOT a
+    // provider failure — a distinct code keeps the registry from decaying
+    // health or tripping the breaker on normal supersedes. A genuinely hung
+    // provider is still caught by the breaker's 15s timeout + 60s health probe.
     if (e?.name === 'AbortError') {
-      return new ProviderError('timeout', this.id, message, err);
+      return new ProviderError('cancelled', this.id, message, err);
     }
     if (code === 401 || code === 403) {
       return new ProviderError('auth', this.id, message, err);

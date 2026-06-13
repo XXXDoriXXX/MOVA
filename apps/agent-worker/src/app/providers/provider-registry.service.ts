@@ -52,6 +52,9 @@ const BREAKER_OPTIONS: CircuitBreaker.Options = {
   volumeThreshold: 5,
   /** Cool-off before half-open. */
   resetTimeout: 30_000,
+  /** A caller-driven cancellation isn't a provider fault — don't let normal
+   *  candidate supersedes count toward the breaker and trip it. */
+  errorFilter: (err: unknown) => err instanceof ProviderError && err.code === 'cancelled',
 };
 
 /**
@@ -257,7 +260,11 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
       return result;
     } catch (err) {
       const wrapped = this.normalizeError(err, providerId);
-      await this.onFailure(providerId, wrapped, context);
+      // A cancelled call (caller aborted the stream) is health-neutral — don't
+      // decay the score or file an incident for normal candidate supersedes.
+      if (wrapped.code !== 'cancelled') {
+        await this.onFailure(providerId, wrapped, context);
+      }
       throw wrapped;
     } finally {
       endTimer();
@@ -377,6 +384,8 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
       case 'auth':
       case 'breaker_open':
         return 100;
+      case 'cancelled':
+        return 0;
       default:
         return 5;
     }

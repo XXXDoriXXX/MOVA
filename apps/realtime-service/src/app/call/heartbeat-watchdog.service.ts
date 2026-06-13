@@ -92,12 +92,19 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`Subscriber error: ${err.message}`);
     });
 
-    // Pattern subscribe for per-conversation heartbeats.
-    await this.subscriber.psubscribe('heartbeat:*');
-    this.subscriber.on('pmessage', (_pattern, channel) => {
-      const conversationId = channel.slice('heartbeat:'.length);
-      if (conversationId) {
-        this.markAlive(conversationId);
+    // Pattern subscribe for per-conversation heartbeats AND the call-events
+    // stream — the latter so a clean call.ended stops the tracker before its
+    // grace timer would otherwise fire a spurious AGENT_LOST (the agent stops
+    // heart-beating the moment the call ends normally).
+    await this.subscriber.psubscribe('heartbeat:*', 'call-events:*');
+    this.subscriber.on('pmessage', (_pattern, channel, payload) => {
+      if (channel.startsWith('heartbeat:')) {
+        const conversationId = channel.slice('heartbeat:'.length);
+        if (conversationId) this.markAlive(conversationId);
+        return;
+      }
+      if (channel.startsWith('call-events:')) {
+        this.handleCallEvent(channel, payload);
       }
     });
 
@@ -109,13 +116,15 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
     });
 
     this.logger.log(
-      `Subscribed to heartbeat:* + ${RedisChannels.callDispatch}`,
+      `Subscribed to heartbeat:* + call-events:* + ${RedisChannels.callDispatch}`,
     );
   }
 
   async onModuleDestroy(): Promise<void> {
     if (this.subscriber) {
-      await this.subscriber.punsubscribe('heartbeat:*').catch(() => undefined);
+      await this.subscriber
+        .punsubscribe('heartbeat:*', 'call-events:*')
+        .catch(() => undefined);
       await this.subscriber
         .unsubscribe(RedisChannels.callDispatch)
         .catch(() => undefined);
@@ -156,6 +165,32 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
   /** Reset the grace timer for a conversation that just heart-beat. */
   private markAlive(conversationId: string): void {
     this.armTimer(conversationId, HEARTBEAT_GRACE_MS);
+  }
+
+  /**
+   * A call.ended on the events stream means the call is over (agent hang-up,
+   * interlocutor disconnect, user end, or our own AGENT_LOST). Either way the
+   * agent will stop heart-beating, so cancel the grace timer to avoid firing
+   * a redundant AGENT_LOST after a clean end.
+   */
+  private handleCallEvent(channel: string, payload: string): void {
+    let type: string | undefined;
+    try {
+      type = (JSON.parse(payload) as { type?: string }).type;
+    } catch {
+      return;
+    }
+    if (type !== 'call.ended') return;
+    const conversationId = channel.slice('call-events:'.length);
+    if (conversationId) this.stopTracking(conversationId);
+  }
+
+  private stopTracking(conversationId: string): void {
+    const existing = this.timers.get(conversationId);
+    if (existing) {
+      clearTimeout(existing);
+      this.timers.delete(conversationId);
+    }
   }
 
   private armTimer(conversationId: string, graceMs: number): void {

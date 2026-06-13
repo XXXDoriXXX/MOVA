@@ -48,6 +48,7 @@ import {
   type AuditPage,
 } from './audit-log.service';
 import { AdminAccessGuard } from './admin-access.guard';
+import { TelemetryService } from '../telemetry/telemetry.service';
 import { findKnownSetting } from './settings/known-settings';
 import { ProviderProbeService } from './settings/provider-probe.service';
 import { SettingsService } from './settings/settings.service';
@@ -88,7 +89,26 @@ export class AdminController {
     private readonly auditLog: AuditLogService,
     private readonly settings: SettingsService,
     private readonly probe: ProviderProbeService,
+    private readonly telemetry: TelemetryService,
   ) {}
+
+  @Get('client-errors')
+  @ApiOperation({ summary: 'List recent client error reports (investigation)' })
+  listClientErrors(
+    @Query('userId') userId?: string,
+    @Query('name') name?: string,
+    @Query('fatal') fatal?: string,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+  ): Promise<unknown> {
+    return this.telemetry.list({
+      userId,
+      name,
+      fatal: fatal === undefined ? undefined : fatal === 'true',
+      limit: limit ? Number(limit) : undefined,
+      cursor,
+    });
+  }
 
   /**
    * Auth probe — the admin UI calls this on login to validate the

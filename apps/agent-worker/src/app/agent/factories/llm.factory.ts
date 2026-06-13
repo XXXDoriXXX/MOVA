@@ -128,12 +128,12 @@ export class LlmFactory {
   private requestedProviderFrom(agentConfig?: AgentConfigDto): LlmProviderEnum {
     const providerStr =
       agentConfig?.llm?.provider ||
-      this.config.get<string>('LLM_PROVIDER', 'openai');
+      this.config.get<string>('LLM_PROVIDER', 'gemini');
     const provider = providerStr.toLowerCase() as LlmProviderEnum;
-    // Unknown enum value → coerce to OpenAI (hard default). buildPluginFor
+    // Unknown enum value → coerce to Gemini (hard default). buildPluginFor
     // will also defend, but normalising here keeps logging readable.
     if (!Object.values(LlmProviderEnum).includes(provider)) {
-      return LlmProviderEnum.OPENAI;
+      return LlmProviderEnum.GEMINI;
     }
     return provider;
   }

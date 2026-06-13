@@ -59,6 +59,7 @@ jest.mock('@livekit/rtc-node', () => {
     Room: FakeRoom,
     RoomEvent: {
       ParticipantConnected: 'participantConnected',
+      ParticipantDisconnected: 'participantDisconnected',
       Disconnected: 'disconnected',
     },
   };
@@ -308,6 +309,64 @@ describe('AgentCallHandler — lifecycle guards', () => {
     expect(ended).toBeDefined();
     expect(ended!.data.endedBy).toBe('interlocutor');
     expect(ended!.data.reason).toBe('interlocutor');
+  });
+
+  it('interlocutor ParticipantDisconnected ends the call (endedBy=interlocutor)', async () => {
+    const { handler, publisher } = makeHarness();
+    await handler.start();
+
+    // Phone answers, then hangs up while the agent is still in the room.
+    fakeRoomEmitters[0]!.emit('participantConnected', {
+      kind: 1,
+      identity: 'phone-101',
+    });
+    fakeRoomEmitters[0]!.emit('participantDisconnected', {
+      identity: 'phone-101',
+    });
+    await new Promise((r) => setImmediate(r));
+
+    const ended = lastCallEnded(publisher);
+    expect(ended).toBeDefined();
+    expect(ended!.data.endedBy).toBe('interlocutor');
+    expect(ended!.data.reason).toBe('interlocutor');
+  });
+
+  it('ignores ParticipantDisconnected from a non-interlocutor identity', async () => {
+    const { handler, publisher } = makeHarness();
+    await handler.start();
+
+    fakeRoomEmitters[0]!.emit('participantConnected', {
+      kind: 1,
+      identity: 'phone-101',
+    });
+    // A different participant (e.g. the agent itself) leaving must NOT end it.
+    fakeRoomEmitters[0]!.emit('participantDisconnected', {
+      identity: 'agent-call-test',
+    });
+    await new Promise((r) => setImmediate(r));
+
+    expect(lastCallEnded(publisher)).toBeUndefined();
+  });
+
+  it('SIP interlocutor already in the room on join emits call.answered + can disconnect', async () => {
+    const { handler, publisher } = makeHarness();
+    // A fast SIP answer can join the room before the agent finishes
+    // connecting — RoomEvent.ParticipantConnected then never fires for it.
+    participantsMap.set('phone-101', { kind: 1, identity: 'phone-101' });
+    await handler.start();
+
+    const answered = publisher.publish.mock.calls
+      .map(([ev]) => ev as InternalCallEvent)
+      .find((ev) => ev.type === 'call.answered');
+    expect(answered).toBeDefined();
+
+    // ...and the disconnect handler now has the identity to end the call.
+    fakeRoomEmitters[0]!.emit('participantDisconnected', { identity: 'phone-101' });
+    await new Promise((r) => setImmediate(r));
+
+    const ended = lastCallEnded(publisher);
+    expect(ended).toBeDefined();
+    expect(ended!.data.endedBy).toBe('interlocutor');
   });
 
   it('call-deadline timer force-ends call with CALL_TIMEOUT', async () => {

@@ -75,9 +75,11 @@ jest.mock('@livekit/rtc-node', () => {
       '0': 'UNKNOWN_REASON',
       '11': 'USER_UNAVAILABLE',
       '12': 'USER_REJECTED',
+      '13': 'SIP_TRUNK_FAILURE',
       UNKNOWN_REASON: 0,
       USER_UNAVAILABLE: 11,
       USER_REJECTED: 12,
+      SIP_TRUNK_FAILURE: 13,
     },
   };
 });
@@ -314,10 +316,16 @@ describe('AgentCallHandler — lifecycle guards', () => {
     expect(ended!.data.endedBy).toBe('user');
   });
 
-  it('interlocutor disconnect (no prior stop) emits endedBy=interlocutor', async () => {
+  it('room disconnect AFTER answer (no prior stop) emits endedBy=interlocutor', async () => {
     const { handler, publisher } = makeHarness();
     await handler.start();
 
+    // Answer first so the room drop reads as a real interlocutor hang-up.
+    fakeRoomEmitters[0]!.emit('participantConnected', {
+      kind: 1,
+      identity: 'phone-101',
+      attributes: { 'sip.callStatus': 'active' },
+    });
     fakeRoomEmitters[0]!.emit('disconnected');
     // Yield so async cleanup completes.
     await new Promise((r) => setImmediate(r));
@@ -328,14 +336,29 @@ describe('AgentCallHandler — lifecycle guards', () => {
     expect(ended!.data.reason).toBe('interlocutor');
   });
 
-  it('interlocutor ParticipantDisconnected ends the call (endedBy=interlocutor)', async () => {
+  it('room disconnect BEFORE any answer emits reason=no_answer (not billed as hang-up)', async () => {
     const { handler, publisher } = makeHarness();
     await handler.start();
 
-    // Phone answers, then hangs up while the agent is still in the room.
+    fakeRoomEmitters[0]!.emit('disconnected');
+    await new Promise((r) => setImmediate(r));
+
+    const ended = lastCallEnded(publisher);
+    expect(ended).toBeDefined();
+    expect(ended!.data.reason).toBe('no_answer');
+    expect(ended!.data.wasAnswered).toBe(false);
+  });
+
+  it('an ANSWERED interlocutor hanging up ends the call (reason=interlocutor, wasAnswered=true)', async () => {
+    const { handler, publisher } = makeHarness();
+    await handler.start();
+
+    // Phone answers (sip.callStatus=active), then hangs up while the agent is
+    // still in the room. An answered hang-up is a normal 'interlocutor' end.
     fakeRoomEmitters[0]!.emit('participantConnected', {
       kind: 1,
       identity: 'phone-101',
+      attributes: { 'sip.callStatus': 'active' },
     });
     fakeRoomEmitters[0]!.emit('participantDisconnected', {
       identity: 'phone-101',
@@ -346,6 +369,7 @@ describe('AgentCallHandler — lifecycle guards', () => {
     expect(ended).toBeDefined();
     expect(ended!.data.endedBy).toBe('interlocutor');
     expect(ended!.data.reason).toBe('interlocutor');
+    expect(ended!.data.wasAnswered).toBe(true);
   });
 
   it('ignores ParticipantDisconnected from a non-interlocutor identity', async () => {
@@ -444,6 +468,34 @@ describe('AgentCallHandler — lifecycle guards', () => {
     const ended = lastCallEnded(publisher);
     expect(ended).toBeDefined();
     expect(ended!.data.endedBy).toBe('interlocutor');
+    // USER_REJECTED (12) on a never-answered leg → no_answer + CALL_DECLINED,
+    // not a generic "interlocutor hung up".
+    expect(ended!.data.reason).toBe('no_answer');
+    expect(ended!.data.errorCode).toBe('CALL_DECLINED');
+    expect(ended!.data.wasAnswered).toBe(false);
+  });
+
+  it('a SIP_TRUNK_FAILURE on a never-answered leg ends fatal (TELEPHONY)', async () => {
+    const { handler, publisher } = makeHarness();
+    await handler.start();
+
+    fakeRoomEmitters[0]!.emit('participantConnected', {
+      kind: 1,
+      identity: 'phone-101',
+      attributes: { 'sip.callStatus': 'dialing' },
+    });
+    // Trunk failure (13) before any answer → fatal_error + LIVEKIT_DISCONNECTED.
+    fakeRoomEmitters[0]!.emit('participantDisconnected', {
+      identity: 'phone-101',
+      disconnectReason: 13,
+    });
+    await new Promise((r) => setImmediate(r));
+
+    const ended = lastCallEnded(publisher);
+    expect(ended).toBeDefined();
+    expect(ended!.data.endedBy).toBe('system');
+    expect(ended!.data.reason).toBe('fatal_error');
+    expect(ended!.data.errorCode).toBe('LIVEKIT_DISCONNECTED');
   });
 
   it('call-deadline timer force-ends call with CALL_TIMEOUT', async () => {

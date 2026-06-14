@@ -172,6 +172,13 @@ export class AgentCallHandler {
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private static readonly HEARTBEAT_INTERVAL_MS = 5_000;
 
+  /** Billing-countdown tick — emits call.tick every 5s while active so the
+   *  mobile client shows a live seconds-elapsed / seconds-remaining counter.
+   *  secondsRemaining is computed against the at-start maxCallDurationSeconds
+   *  snapshot (no mid-call billing call). */
+  private usageTickInterval: NodeJS.Timeout | null = null;
+  private static readonly USAGE_TICK_INTERVAL_MS = 5_000;
+
   /** ms-since-epoch when the agent joined the LiveKit room. Stamped at
    *  the start of `start()` and used to compute durationMs for every
    *  `call.ended` emit so the post-call sheet shows a real number. */
@@ -644,6 +651,7 @@ export class AgentCallHandler {
       this.armIdleProbe();
       this.armSttStall();
       this.armCallDeadline();
+      this.armUsageTick();
 
       this.logger.log(
         `🎉 [Call Lifecycle] Connection sequence completed in ${Date.now() - callStartTime}ms`,
@@ -914,6 +922,7 @@ export class AgentCallHandler {
     this.clearIdleProbe();
     this.clearSttStall();
     this.clearCallDeadline();
+    this.clearUsageTick();
     this.clearCandidate();
     this.clearTurn();
     if (this.session) {
@@ -1946,6 +1955,38 @@ export class AgentCallHandler {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
       this.heartbeatInterval = null;
+    }
+  }
+
+  /**
+   * Emit a billing-countdown tick every 5s while the call is active. Idempotent
+   * re-arm (clears any prior timer first, per the timer contract). secondsRemaining
+   * counts down the at-start maxCallDurationSeconds snapshot the agent already
+   * holds — null when no cap was provided so the mobile counter hides rather than
+   * showing a fake number. unref()'d so it never keeps the process / Jest alive.
+   */
+  private armUsageTick(): void {
+    this.clearUsageTick();
+    const cap = this.userContext.maxCallDurationSeconds;
+    const planCode = this.userContext.planCode ?? 'free';
+    const tick = (): void => {
+      if (this.state !== 'active' || !this.callStartTime) return;
+      const secondsConnected = Math.floor((Date.now() - this.callStartTime) / 1000);
+      const secondsRemaining =
+        cap && cap > 0 ? Math.max(0, cap - secondsConnected) : null;
+      this.emitTyped({
+        type: 'call.tick',
+        data: { secondsConnected, secondsRemaining, planCode },
+      });
+    };
+    this.usageTickInterval = setInterval(tick, AgentCallHandler.USAGE_TICK_INTERVAL_MS);
+    this.usageTickInterval.unref?.();
+  }
+
+  private clearUsageTick(): void {
+    if (this.usageTickInterval) {
+      clearInterval(this.usageTickInterval);
+      this.usageTickInterval = null;
     }
   }
 

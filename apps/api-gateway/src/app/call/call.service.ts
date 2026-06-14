@@ -273,6 +273,9 @@ export class CallService {
       callReason: dto.callReason ?? null,
       config: mergedConfig,
       maxCallDurationSeconds: eligibility.maxCallDurationSeconds,
+      // Snapshot the plan at start so agent-worker can stamp it onto each
+      // usage.tick without a billing call (mirrors maxCallDurationSeconds).
+      planCode: eligibility.summary.plan.code,
       createdAt: new Date().toISOString(),
     };
     const callLog = clog.child({ conversationId: conversation.id, roomName });

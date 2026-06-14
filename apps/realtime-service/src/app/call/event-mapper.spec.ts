@@ -18,6 +18,34 @@ describe('mapInternalToServer', () => {
     });
   });
 
+  it('maps call.tick to usage.tick, carrying the at-start countdown snapshot', () => {
+    const result = mapInternalToServer({
+      type: 'call.tick',
+      conversationId: CONV_ID,
+      occurredAt: '2026-05-13T10:00:00.000Z',
+      data: { secondsConnected: 42, secondsRemaining: 558, planCode: 'paid' },
+    });
+    expect(result).toMatchObject({
+      type: 'usage.tick',
+      data: { secondsElapsed: 42, secondsRemaining: 558, planCode: 'paid' },
+    });
+  });
+
+  it('passes a null secondsRemaining through (uncapped call hides the counter)', () => {
+    const result = mapInternalToServer({
+      type: 'call.tick',
+      conversationId: CONV_ID,
+      occurredAt: '2026-05-13T10:00:00.000Z',
+      data: { secondsConnected: 7, secondsRemaining: null, planCode: 'free' },
+    });
+    if (result?.type === 'usage.tick') {
+      expect(result.data.secondsRemaining).toBeNull();
+      expect(result.data.planCode).toBe('free');
+    } else {
+      fail('expected usage.tick mapping');
+    }
+  });
+
   it('maps transcript.partial without messageId', () => {
     const result = mapInternalToServer({
       type: 'transcript.partial',

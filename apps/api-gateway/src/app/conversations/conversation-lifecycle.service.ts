@@ -141,6 +141,11 @@ export class ConversationLifecycleService {
       errorCode: input.errorCode,
     });
 
+    // Peer (app-to-app) calls bill the CALLER, not the conversation owner (the
+    // callee, whose agent runs the call). callerUserId is null for SIP calls,
+    // so this is a no-op there.
+    const billedUserId = conversation.callerUserId ?? conversation.userId;
+
     const secondsBilled = Math.max(0, conversation.durationSeconds);
     // Bill at the plan SNAPSHOTTED at call-start (initialPlanSource/Price), not
     // a fresh read — a mid-call plan switch (POST /billing/subscribe) or the
@@ -160,7 +165,7 @@ export class ConversationLifecycleService {
       pricePerSecondCents = conversation.initialPricePerSecondCents ?? 0;
       planLabel = `${conversation.initialPlanSource} (start-snapshot)`;
     } else {
-      const summary = await this.billing.getSummary(conversation.userId);
+      const summary = await this.billing.getSummary(billedUserId);
       source =
         summary.plan.code === PlanCode.FREE ? UsageSource.FREE : UsageSource.PAID;
       pricePerSecondCents = summary.plan.pricePerSecondCents;
@@ -185,7 +190,7 @@ export class ConversationLifecycleService {
     if (secondsBilled > 0) {
       try {
         await this.billing.applyCharge({
-          userId: conversation.userId,
+          userId: billedUserId,
           secondsUsed: secondsBilled,
           costCents,
           source,
@@ -214,7 +219,7 @@ export class ConversationLifecycleService {
 
       try {
         await this.billing.recordUsage({
-          userId: conversation.userId,
+          userId: billedUserId,
           conversationId: conversation.id,
           secondsBilled,
           costCents: charged ? costCents : 0,

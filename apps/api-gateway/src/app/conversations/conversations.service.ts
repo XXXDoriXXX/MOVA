@@ -24,6 +24,9 @@ interface CreateConversationInput {
   initialLlmProvider?: string | null;
   initialTtsProvider?: string | null;
   initialVoice?: string | null;
+  /** Plan/price snapshot from the eligibility check at call-start. */
+  initialPlanSource?: string | null;
+  initialPricePerSecondCents?: number | null;
 }
 
 interface EndConversationInput {
@@ -109,6 +112,8 @@ export class ConversationsService {
       initialLlmProvider: input.initialLlmProvider ?? null,
       initialTtsProvider: input.initialTtsProvider ?? null,
       initialVoice: input.initialVoice ?? null,
+      initialPlanSource: input.initialPlanSource ?? null,
+      initialPricePerSecondCents: input.initialPricePerSecondCents ?? null,
       startedAt: new Date(),
     });
     try {

@@ -20,7 +20,12 @@ import {
   RedisKeys,
 } from '@mova-back/shared-realtime';
 import type { Conversation } from '@mova-back/shared-database';
-import { ConversationEndReason, UserLanguage } from '@mova-back/shared-database';
+import {
+  ConversationEndReason,
+  PlanCode,
+  UsageSource,
+  UserLanguage,
+} from '@mova-back/shared-database';
 
 import { BillingService } from '../billing/billing.service';
 import { ConversationsService } from '../conversations/conversations.service';
@@ -154,6 +159,11 @@ export class CallService {
         initialLlmProvider: template?.defaultLlmProvider ?? null,
         initialTtsProvider: template?.defaultTtsProvider ?? null,
         initialVoice: template?.defaultVoice ?? null,
+        initialPlanSource:
+          eligibility.summary.plan.code === PlanCode.FREE
+            ? UsageSource.FREE
+            : UsageSource.PAID,
+        initialPricePerSecondCents: eligibility.summary.plan.pricePerSecondCents,
       });
     } catch (err) {
       // A ConflictException here is the atomic gate firing (createPending hit

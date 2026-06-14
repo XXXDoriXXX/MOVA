@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import type { Redis } from 'ioredis';
@@ -29,9 +35,13 @@ import { RedisChannels } from '@mova-back/shared-realtime';
  * encryption key once.
  */
 @Injectable()
-export class SettingsSyncService implements OnModuleInit {
+export class SettingsSyncService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SettingsSyncService.name);
   private crypto: SecretCrypto | null = null;
+  /** Dedicated subscriber connection (a subscribed ioredis client can't
+   *  run normal commands, so we duplicate() off the shared client).
+   *  Held on the instance so onModuleDestroy can quit() it on shutdown. */
+  private sub: Redis | null = null;
 
   constructor(
     @InjectRepository(AppSetting)
@@ -95,6 +105,7 @@ export class SettingsSyncService implements OnModuleInit {
 
   private subscribe(): void {
     const sub = this.redis.duplicate();
+    this.sub = sub;
     sub.subscribe(RedisChannels.settingsUpdated).catch((err) =>
       reportError(this.logger, 'subscribe(settings-updated) failed', err),
     );
@@ -133,6 +144,25 @@ export class SettingsSyncService implements OnModuleInit {
       }, SettingsSyncService.SETTINGS_DEBOUNCE_MS);
       this.debounceTimers.set(msg.key, t);
     });
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    // Clear any pending per-key debounce timers so they don't keep the
+    // event loop alive past shutdown.
+    for (const t of this.debounceTimers.values()) {
+      clearTimeout(t);
+    }
+    this.debounceTimers.clear();
+    // Close the dedicated subscriber connection opened in subscribe().
+    const sub = this.sub;
+    this.sub = null;
+    if (sub) {
+      try {
+        await sub.quit();
+      } catch (err) {
+        reportError(this.logger, 'Failed to quit settings-updated subscriber', err);
+      }
+    }
   }
 
   private async applyUpsert(key: string): Promise<void> {

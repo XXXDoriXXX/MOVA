@@ -311,18 +311,27 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
 
   private rankLlmProviders(prefer?: LlmProviderEnum): LlmProviderEnum[] {
     const ordered = [...this.defaultLlmOrder];
-    if (prefer && ordered.includes(prefer)) {
-      // Bring the preferred provider to the front.
-      ordered.splice(ordered.indexOf(prefer), 1);
-      ordered.unshift(prefer);
-    }
-    // Sort by health score within the (preference-respecting) order, so a
-    // degraded preferred provider yields to a healthier fallback.
-    return ordered.sort((a, b) => {
+    // Rank candidates by health score so a degraded provider yields to a
+    // healthier fallback.
+    ordered.sort((a, b) => {
       const ha = this.llmHealth.get(a)?.score ?? 0;
       const hb = this.llmHealth.get(b)?.score ?? 0;
       return hb - ha;
     });
+    // Honor the caller's preference as long as it's still usable (score >= 10,
+    // the same threshold selectLlm skips below). A usable preferred provider
+    // must NOT be demoted just because another provider scores higher —
+    // otherwise the user's explicit model choice is silently dropped and a
+    // spurious LLM_DEGRADED banner fires. Only a genuinely degraded preferred
+    // provider (score < 10) falls through to the healthiest fallback.
+    if (prefer && ordered.includes(prefer)) {
+      const preferScore = this.llmHealth.get(prefer)?.score ?? 0;
+      if (preferScore >= 10) {
+        ordered.splice(ordered.indexOf(prefer), 1);
+        ordered.unshift(prefer);
+      }
+    }
+    return ordered;
   }
 
   private onSuccess(id: LlmProviderEnum): void {

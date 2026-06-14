@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, QueryFailedError, Repository } from 'typeorm';
 
@@ -111,7 +111,31 @@ export class ConversationsService {
       initialVoice: input.initialVoice ?? null,
       startedAt: new Date(),
     });
-    return this.conversations.save(entity);
+    try {
+      return await this.conversations.save(entity);
+    } catch (err) {
+      // Partial UNIQUE index idx_conversations_active_user_unique: the user
+      // already has a live (pending/active) call. This is the DB backstop for
+      // the concurrent-call gate (CLAUDE.md rule #1) — the loser of a
+      // count-then-INSERT race lands here. Surface the same code the
+      // app-level gate returns so the contract is identical.
+      if (this.isUniqueViolation(err)) {
+        throw new ConflictException({
+          code: 'CALL_IN_PROGRESS',
+          message:
+            'Already on a call. End the current one before starting another.',
+        });
+      }
+      throw err;
+    }
+  }
+
+  /** Postgres unique_violation (SQLSTATE 23505). Mirrors BillingService. */
+  private isUniqueViolation(err: unknown): boolean {
+    return (
+      err instanceof QueryFailedError &&
+      (err as QueryFailedError & { code?: string }).code === '23505'
+    );
   }
 
   /**

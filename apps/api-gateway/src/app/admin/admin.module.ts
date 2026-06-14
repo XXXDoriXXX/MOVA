@@ -21,14 +21,6 @@ import { AuditLogService } from './audit-log.service';
 import { ProviderProbeService } from './settings/provider-probe.service';
 import { SettingsService } from './settings/settings.service';
 
-/**
- * Admin module. Imports AuthModule for RefreshTokenService (block flow
- * revokes all sessions for the target user).
- *
- * AuditLogService is co-located here because it serves the admin surface
- * primarily. If non-admin features later need to write audit rows, hoist
- * to a dedicated AuditModule and re-export.
- */
 @Module({
   imports: [
     TypeOrmModule.forFeature([

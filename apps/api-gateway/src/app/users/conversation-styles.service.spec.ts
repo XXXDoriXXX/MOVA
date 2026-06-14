@@ -116,7 +116,6 @@ describe('ConversationStylesService', () => {
         name: 'new',
       });
 
-      // Save was called with the merged shape — only name changed.
       const saved = (repo.save as jest.Mock).mock.calls[0][0];
       expect(saved.name).toBe('new');
       expect(saved.instructions).toBe('old text');
@@ -136,7 +135,6 @@ describe('ConversationStylesService', () => {
     });
 
     it('404 when the row belongs to another user', async () => {
-      // Repo filters by (id, userId) — other user's row → null.
       repo.findOne.mockResolvedValue(null);
       await expect(
         svc.update(USER_ID, `custom:${STYLE_UUID}`, { name: 'x' }),
@@ -181,7 +179,7 @@ describe('ConversationStylesService', () => {
     });
 
     it('cross-tenant: null when row exists but belongs to another user', async () => {
-      repo.findOne.mockResolvedValue(null); // filtered by (id, userId)
+      repo.findOne.mockResolvedValue(null);
       const out = await svc.resolveById(OTHER_USER, `custom:${STYLE_UUID}`);
       expect(out).toBeNull();
     });

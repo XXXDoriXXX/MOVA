@@ -9,7 +9,6 @@ import { ProviderIncident } from '@mova-back/shared-database';
 
 import { ProviderRegistry } from './provider-registry.service';
 
-/** Build a minimal mock provider. */
 function makeProvider(
   id: LlmProviderEnum,
   opts: { healthy?: boolean; defaultModel?: string } = {},
@@ -46,8 +45,6 @@ describe('ProviderRegistry', () => {
     anthropic = makeProvider(LlmProviderEnum.ANTHROPIC);
     groq = makeProvider(LlmProviderEnum.GROQ);
     gemini = makeProvider(LlmProviderEnum.GEMINI);
-    // Stub histograms + gauges — Prom-client objects are heavy; we just
-    // need the call surface for the registry to invoke without errors.
     const stubHistogram = {
       startTimer: jest.fn(() => jest.fn()),
       observe: jest.fn(),
@@ -82,10 +79,8 @@ describe('ProviderRegistry', () => {
     });
 
     it('marks viaFallback=true when preferred is degraded', async () => {
-      // Drive OpenAI's score below 10 by recording 4 upstream failures (4*25=100).
       const breaker = (registry as unknown as { llmBreakers: Map<unknown, unknown> })
         .llmBreakers as Map<LlmProviderEnum, { fire: jest.Mock }>;
-      // Inject a breaker mock that throws immediately so onFailure runs.
       breaker.set(LlmProviderEnum.OPENAI, {
         fire: jest
           .fn()
@@ -95,7 +90,6 @@ describe('ProviderRegistry', () => {
         try {
           await registry.runLlm(LlmProviderEnum.OPENAI, async () => 'x');
         } catch {
-          // expected
         }
       }
       const { provider, viaFallback } = registry.selectLlm(LlmProviderEnum.OPENAI);
@@ -106,7 +100,6 @@ describe('ProviderRegistry', () => {
 
   describe('runLlm', () => {
     it('returns the operation result on success', async () => {
-      // Need to inject a mock breaker that just runs op(provider).
       const breaker = (registry as unknown as { llmBreakers: Map<unknown, unknown> })
         .llmBreakers as Map<LlmProviderEnum, { fire: jest.Mock }>;
       breaker.set(LlmProviderEnum.OPENAI, {
@@ -143,7 +136,6 @@ describe('ProviderRegistry', () => {
           conversationId: 'conv-1',
         });
       } catch {
-        // expected
       }
 
       expect(incidents.save).toHaveBeenCalledWith(
@@ -168,7 +160,6 @@ describe('ProviderRegistry', () => {
         try {
           await registry.runLlm(LlmProviderEnum.OPENAI, async () => 'x');
         } catch {
-          // expected
         }
       }
       expect(incidents.save).toHaveBeenCalledTimes(1);

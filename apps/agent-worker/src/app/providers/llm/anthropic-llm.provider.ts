@@ -8,19 +8,6 @@ import type { AppEnv } from '@mova-back/shared-config';
 
 import { AiSdkLlmAdapter } from './ai-sdk-llm.adapter';
 
-/**
- * Anthropic Claude — primary fallback when OpenAI is degraded.
- *
- * Model selection:
- *   - default: claude-haiku-4-5 — current-gen cheapest Claude ($1/$5 per
- *     1M tok), much more capable than the retired 3.5-haiku at a similar
- *     tier. Used as a fallback when OpenAI/Gemini are degraded.
- *   - claude-sonnet-4-6 available per call for higher quality.
- *
- * Disabled when `ANTHROPIC_API_KEY` is missing. The registry detects this
- * via `healthCheck()` returning false and skips the provider in fallback
- * chains.
- */
 @Injectable()
 export class AnthropicLlmProvider extends AiSdkLlmAdapter {
   private readonly logger = new Logger(AnthropicLlmProvider.name);
@@ -40,8 +27,6 @@ export class AnthropicLlmProvider extends AiSdkLlmAdapter {
 
   protected resolveModel(modelId: string): LanguageModel {
     if (!this.client) {
-      // Returning a throwing stub keeps the type signature simple; healthCheck
-      // catches the throw and marks the provider unhealthy.
       throw new Error('Anthropic client not configured (ANTHROPIC_API_KEY missing)');
     }
     return this.client(modelId);

@@ -1,7 +1,3 @@
-/**
- * realtime-service entry point.
- * See api-gateway/main.ts for bootstrap-order rationale.
- */
 import './instrument';
 
 import { ConfigService } from '@nestjs/config';
@@ -21,9 +17,6 @@ async function bootstrap(): Promise<void> {
 
   const config = app.get<ConfigService<AppEnv, true>>(ConfigService);
 
-  // No UI on this service — pure WS gateway + /metrics + /health.
-  // Helmet defaults (including the default-src 'self' CSP) are fine
-  // as-is. Adding HSTS + tighter Referrer-Policy to match api-gateway.
   app.use(
     helmet({
       hsts: { maxAge: 15_552_000, includeSubDomains: true, preload: false },

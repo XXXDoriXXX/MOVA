@@ -104,7 +104,6 @@ describe('UserStyleProfileService', () => {
       const newest = 'наша свіжа репліка, яка має витіснити найстарішу';
       const result = await svc.recordTypedMessage(USER_ID, newest);
       expect(result?.exemplarMessages).toHaveLength(STYLE_EXEMPLAR_CAP);
-      // Oldest (index 0) is gone; newest is at the end.
       expect(result?.exemplarMessages[0].content).toBe('повідомлення номер 1');
       expect(
         result?.exemplarMessages[result.exemplarMessages.length - 1].content,
@@ -224,7 +223,7 @@ describe('appendCapped (pure helper)', () => {
     }));
     const next = appendCapped(pool, { content: 'newest', createdAt: '2026-06-01T00:00:00Z' });
     expect(next).toHaveLength(STYLE_EXEMPLAR_CAP);
-    expect(next[0].content).toBe('e1'); // e0 dropped
+    expect(next[0].content).toBe('e1');
     expect(next[next.length - 1].content).toBe('newest');
   });
 });

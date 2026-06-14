@@ -20,7 +20,6 @@ import { User } from './entities/user.entity';
 import { PushToken } from './entities/push-token.entity';
 import { ClientErrorReport } from './entities/client-error-report.entity';
 
-/** Single source of truth for the entity list (used twice below). */
 const ENTITIES = [
   User,
   RefreshToken,
@@ -66,19 +65,6 @@ const ENTITIES = [
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
-        // synchronize=true is an anti-pattern when migrations exist:
-        // TypeORM tries to align the running schema with @Entity() class
-        // shapes on every boot. With migrations already applying the
-        // canonical schema, sync's recreate-enums / drop-old-types logic
-        // collides with the migrated state and fails the app with
-        // "cannot drop type X_old because other objects depend on it".
-        //
-        // Fixed answer: NEVER auto-synchronize. The schema source of truth
-        // is `libs/shared-database/src/lib/migrations/*.ts`. If a developer
-        // genuinely needs ad-hoc dev sync (scaffolding a brand-new entity
-        // without writing a migration yet), they can flip the explicit
-        // opt-in env `DATABASE_SYNCHRONIZE=true` — but production code
-        // paths should ALWAYS leave it off.
         const synchronize =
           String(config.get<string>('DATABASE_SYNCHRONIZE') ?? 'false')
             .toLowerCase() === 'true';
@@ -98,19 +84,8 @@ const ENTITIES = [
             idle_in_transaction_session_timeout: 30_000,
             connectionTimeoutMillis: 5_000,
           },
-          // Boot-time retry. Without this, a Neon serverless cold start
-          // (8-12s wake from suspend) that lands during a deploy makes
-          // the first 1-2 connection attempts fail → NestJS bootstrap
-          // throws → container exits non-zero → docker compose / k8s
-          // restart-loops the pod until Postgres happens to be warm.
-          // 10 attempts × 3s = 30s window covers cold-start, transient
-          // network blip, and Neon's pooler restarting. The TypeORM
-          // wrapper applies these specifically to the initial connect;
-          // runtime query failures still raise normally.
           retryAttempts: 10,
           retryDelay: 3000,
-          // Verbose retry log so an operator watching the boot output
-          // sees "still trying to connect to DB" instead of silent hang.
           verboseRetryLog: true,
         };
       },

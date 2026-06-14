@@ -5,43 +5,10 @@ import {
   tts,
 } from '@livekit/agents';
 
-/**
- * Two-provider TTS wrapper with automatic per-utterance failover.
- *
- * Why this exists (real story): we hit ElevenLabs quota_exceeded —
- * the SDK returned 200 OK envelopes with audio=null, so audio just
- * went silent mid-call without any error event. Switched to Gemini —
- * hit 10 RPM rate limit, session died with recoverable: false. With
- * a fallback adapter, when primary fails or hangs we re-synthesize
- * the SAME utterance against a backup provider WITHOUT recreating
- * the AgentSession (which would interrupt audio for seconds).
- *
- * LiveKit Agents JS doesn't ship a TTS FallbackAdapter (Python only),
- * so we implement the minimum useful subset:
- *   - per-utterance failover on synthesize() error or timeout
- *   - hard cooldown after N failures in a rolling window
- *   - mid-utterance: NOT split-stream. We re-issue the whole text
- *     against secondary. Audio may pause ~half a second longer than
- *     a flawless primary call, but it doesn't garble.
- *
- * NOT included (defer to FallbackAdapter v2 if needed):
- *   - native streaming failover (we wrap chunked-only)
- *   - speech budget per provider (just cooldown-based)
- *   - parallel-race mode (try both, take first)
- */
 export interface FallbackTtsOptions {
   primary: tts.TTS;
   fallback: tts.TTS;
-  /** Hard upper bound per utterance — primary that doesn't return
-   *  the first frame by this deadline is declared dead for this
-   *  utterance, fallback takes over. Default matches our safeSay
-   *  budget in agent-call.handler. */
   primaryTimeoutMs?: number;
-  /** Number of consecutive primary failures (in `cooldownWindowMs`)
-   *  that put primary into cooldown — every subsequent utterance
-   *  goes straight to fallback for `cooldownDurationMs` without even
-   *  trying primary. Avoids burning latency on a known-broken
-   *  provider every single turn. */
   cooldownThreshold?: number;
   cooldownWindowMs?: number;
   cooldownDurationMs?: number;
@@ -62,18 +29,10 @@ export class FallbackTts extends tts.TTS {
   private readonly cooldownWindowMs: number;
   private readonly cooldownDurationMs: number;
 
-  /** Recent primary-failure timestamps (epoch ms). Trimmed each call
-   *  to entries within `cooldownWindowMs`. */
   private primaryFailures: number[] = [];
-  /** When primary is "skip" until. 0 = not in cooldown. */
   private primaryCooldownUntil = 0;
 
   constructor(opts: FallbackTtsOptions) {
-    // sampleRate / numChannels MUST match between providers — otherwise
-    // mixing their output mid-call would re-sample-rate the audio
-    // track on the fly and the SIP leg's codec wouldn't keep up.
-    // Pin to primary's settings; throw early if fallback disagrees so
-    // ops sees the config bug at boot, not as garbled audio at 3am.
     if (opts.primary.sampleRate !== opts.fallback.sampleRate) {
       throw new Error(
         `FallbackTts: sample rate mismatch primary=${opts.primary.sampleRate} fallback=${opts.fallback.sampleRate}`,
@@ -94,26 +53,12 @@ export class FallbackTts extends tts.TTS {
     this.label = `fallback<${opts.primary.label}|${opts.fallback.label}>`;
   }
 
-  /** Bubble inner-provider error events as our own — agent-call.handler
-   *  has a listener on session.tts.on('error') for the degradation
-   *  banner; we want it to still fire when EITHER provider errors.
-   *
-   *  Cast through unknown: the typed `on()` signature on TTS_base is
-   *  `<E extends keyof TTSCallbacks>(event: E, cb)`. Forwarding to
-   *  the inner providers means re-using that signature, which we
-   *  can't generalise to `string | symbol` without losing type
-   *  inference everywhere else. The inner providers ARE the same
-   *  TTS_base class — runtime contract holds. */
   override on(
     event: Parameters<tts.TTS['on']>[0],
     listener: Parameters<tts.TTS['on']>[1],
   ): this {
     super.on(event, listener);
     if (event === 'error') {
-      // TS can't narrow the union listener-type to the error variant
-      // when keyed off `event === 'error'`. Cast is safe — the
-      // EventEmitter contract is structural, and at runtime any
-      // listener registered for 'error' receives an Error.
       type ErrorListener = (err: unknown) => void;
       this.primary.on('error', listener as unknown as ErrorListener);
       this.fallback.on('error', listener as unknown as ErrorListener);
@@ -147,15 +92,12 @@ export class FallbackTts extends tts.TTS {
     throw new Error('FallbackTts: streaming mode not supported (chunked only)');
   }
 
-  // ── Cooldown bookkeeping ────────────────────────────────
-
   private isPrimaryInCooldown(): boolean {
     return Date.now() < this.primaryCooldownUntil;
   }
 
   private recordPrimaryFailure(): void {
     const now = Date.now();
-    // Trim entries outside the rolling window.
     this.primaryFailures = this.primaryFailures.filter(
       (ts) => now - ts <= this.cooldownWindowMs,
     );
@@ -170,8 +112,6 @@ export class FallbackTts extends tts.TTS {
   }
 
   private recordPrimarySuccess(): void {
-    // A single success clears recent-failure pressure — we don't want
-    // a sporadic failure-success-failure pattern to silently accumulate.
     this.primaryFailures = [];
   }
 }
@@ -209,13 +149,12 @@ class FallbackChunkedStream extends tts.ChunkedStream {
       if (!skipPrimary) {
         const primaryOk = await this.tryProvider(
           this.deps.primary,
-          /*isFallback*/ false,
+          false,
         );
         if (primaryOk) {
           this.deps.recordPrimarySuccess();
           return;
         }
-        // Primary failed — record and fall through to fallback.
         this.deps.recordPrimaryFailure();
         this.deps.logger.warn(
           `Primary TTS failed for utterance — switching to fallback for this turn.`,
@@ -227,12 +166,9 @@ class FallbackChunkedStream extends tts.ChunkedStream {
       }
       const fallbackOk = await this.tryProvider(
         this.deps.fallback,
-        /*isFallback*/ true,
+        true,
       );
       if (!fallbackOk) {
-        // Both providers failed. Throw so the base class emits an
-        // error event — the agent-call.handler safeSay timeout will
-        // also catch hangs as a backstop.
         throw new Error('FallbackTts: both primary and fallback failed');
       }
     } catch (err) {
@@ -243,16 +179,6 @@ class FallbackChunkedStream extends tts.ChunkedStream {
     }
   }
 
-  /**
-   * Drive one provider's synthesize() to completion. Returns true on
-   * success (all frames forwarded), false on failure (logged but
-   * swallowed — caller decides whether to escalate).
-   *
-   * Timeout policy: primary gets a hard `primaryTimeoutMs` budget —
-   * if it doesn't yield ANY frame by then, we treat it as broken
-   * and switch. Fallback gets no timeout (it's already our last
-   * resort; safeSay in the call handler will catch a hang anyway).
-   */
   private async tryProvider(provider: tts.TTS, isFallback: boolean): Promise<boolean> {
     let providerStream: tts.ChunkedStream;
     try {
@@ -268,10 +194,6 @@ class FallbackChunkedStream extends tts.ChunkedStream {
       return false;
     }
 
-    // Race the iterator's first frame against the timeout. After the
-    // first frame arrives we trust the stream to flow (subsequent
-    // frames inherit the same socket; if THAT hangs, safeSay's
-    // session-level timeout fires).
     let firstFrameSeen = false;
     let timer: NodeJS.Timeout | null = null;
     const timeoutPromise = isFallback
@@ -290,12 +212,9 @@ class FallbackChunkedStream extends tts.ChunkedStream {
           this.deps.logger.warn(
             `Primary TTS first-frame timeout (${this.deps.primaryTimeoutMs}ms) — switching to fallback.`,
           );
-          // Close the lagging primary stream so we don't leak the
-          // underlying HTTP connection.
           try {
             providerStream.close();
           } catch {
-            /* swallow */
           }
           return false;
         }
@@ -310,7 +229,6 @@ class FallbackChunkedStream extends tts.ChunkedStream {
       try {
         providerStream.close();
       } catch {
-        /* swallow */
       }
       return false;
     } finally {

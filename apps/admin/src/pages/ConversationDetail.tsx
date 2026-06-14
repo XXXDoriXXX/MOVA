@@ -11,19 +11,6 @@ import {
 
 const REFRESH_MS = 2_500;
 
-/**
- * Per-call detail. Shows the full transcript, meta block, and three
- * actions:
- *   - "Force end" (only when status=active) — server marks the call
- *     failed and tears down the room
- *   - "Open in Dozzle" — convenience link to the log viewer scoped
- *     to all containers; the operator greps for the conversation id
- *     to scope further
- *   - "Back"
- *
- * Polls until the call is no longer active so a live read-along is
- * possible without manual refresh.
- */
 export function ConversationDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -51,8 +38,6 @@ export function ConversationDetailPage() {
     }
     tick();
     const interval = setInterval(() => {
-      // Stop polling once the call is no longer live — saves bandwidth
-      // on the long-tail of viewing historic calls.
       if (conv && conv.status !== 'active' && conv.status !== 'pending') {
         return;
       }

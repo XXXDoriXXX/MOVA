@@ -249,14 +249,14 @@ describe('AdminService', () => {
   describe('getStats', () => {
     it('aggregates counts in parallel', async () => {
       users.count
-        .mockResolvedValueOnce(100) // totalUsers
-        .mockResolvedValueOnce(3); // blockedUsers
+        .mockResolvedValueOnce(100)
+        .mockResolvedValueOnce(3);
       subs.count.mockResolvedValueOnce(80);
       convs.count
-        .mockResolvedValueOnce(5) // activeConversations
-        .mockResolvedValueOnce(420) // totalConversations
-        .mockResolvedValueOnce(12) // callsLast24h
-        .mockResolvedValueOnce(1); // failedCallsLast24h
+        .mockResolvedValueOnce(5)
+        .mockResolvedValueOnce(420)
+        .mockResolvedValueOnce(12)
+        .mockResolvedValueOnce(1);
       incidents.count.mockResolvedValueOnce(0);
 
       const stats = await svc.getStats();
@@ -270,7 +270,6 @@ describe('AdminService', () => {
         failedCallsLast24h: 1,
         activeIncidents: 0,
       });
-      // All counts kicked off in parallel — Promise.all under the hood.
       expect(users.count).toHaveBeenCalledTimes(2);
       expect(convs.count).toHaveBeenCalledTimes(4);
     });
@@ -362,7 +361,6 @@ describe('AdminService', () => {
       expect(result.nextMessageCursor).toBeNull();
       expect(result.incidents).toBe(incs);
       expect(result.messageCount).toBe(2);
-      // withDeleted=true → soft-deleted conversations still visible to admins.
       expect(convs.findOne).toHaveBeenCalledWith(
         expect.objectContaining({ withDeleted: true }),
       );
@@ -455,7 +453,7 @@ describe('AdminService', () => {
       convs.findOne.mockResolvedValue(makeConv());
       const qb = wireQb([]);
       await svc.listConversationMessages('conv-id', { limit: 9999 });
-      expect(qb.limit).toHaveBeenCalledWith(101); // 100 + 1 for hasMore
+      expect(qb.limit).toHaveBeenCalledWith(101);
     });
   });
 
@@ -563,7 +561,6 @@ describe('AdminService', () => {
     it('marks recoveredAt + writes audit row', async () => {
       const open = makeIncident();
       const resolved = makeIncident({ recoveredAt: new Date('2026-05-14T11:00:00Z') });
-      // First findOne: before resolution. Second: after.
       incidents.findOne
         .mockResolvedValueOnce(open)
         .mockResolvedValueOnce(resolved);

@@ -45,26 +45,6 @@ interface InitiateCallResult {
   maxCallDurationSeconds: number;
 }
 
-/**
- * Orchestrates the start of a phone call:
- *   1. Eligibility check (BillingService).
- *   2. Template resolution (explicit or user default).
- *   3. Conversation row creation (status=pending).
- *   4. LiveKit SIP outbound dial.
- *   5. Redis pub/sub dispatch to agent-worker.
- *
- * Failure rollback:
- *   - If SIP dial fails after the Conversation row exists, we mark the
- *     conversation `failed` (instead of deleting) — keeps history honest
- *     and gives the user a row to see "call to X failed".
- *   - If anything between billing pre-check and SIP dispatch fails, the
- *     reservation is NOT held (we don't decrement balance until call ends).
- */
-/**
- * Drop keys whose value is `undefined` so spreading the result doesn't
- * overwrite an already-set field with undefined. Used when merging the
- * dto.config / user.preferred* / template.default* precedence chain.
- */
 function prune<T extends Record<string, unknown>>(obj: T): Partial<T> {
   const out: Partial<T> = {};
   for (const k of Object.keys(obj) as Array<keyof T>) {
@@ -109,17 +89,6 @@ export class CallService {
     });
     clog.event('call.sip.start.requested', { targetPhone: dto.targetPhone });
 
-    // 0. Concurrent-call gate. Two parallel /calls/start from the same
-    //    user (flaky mobile retry loop, stolen JWT, accidental double-tap)
-    //    must NOT both dial SIP — each leg would bill independently and
-    //    the user-side UI can't sensibly show two simultaneous calls.
-    //    We rely on the partial index `idx_conversations_status_active`
-    //    so this counts in microseconds. The race window between this
-    //    check and the createPending INSERT below is tiny but real;
-    //    Phase 3.1 Redlock around the whole initiateCall closes it
-    //    cleanly. For now the second INSERT would still create a row,
-    //    but the second SIP dial would race the first to LiveKit and
-    //    one of them gets a duplicate-room-name 409 — fail-safe.
     const activeCount = await this.conversations.countActiveForUser(userId);
     if (activeCount > 0) {
       clog.warn('call.sip.start.alreadyOnCall', { activeCount });
@@ -130,24 +99,18 @@ export class CallService {
       });
     }
 
-    // 1. Eligibility — throws InsufficientBalanceError if blocked / out of funds.
-    //    This avoids the cost of LiveKit room creation for a user that won't
-    //    be able to talk anyway.
     const eligibility = await this.billing.assertEligible(userId);
     clog.event('call.sip.start.eligible', {
       plan: eligibility.summary.plan.code,
       maxCallDurationSeconds: eligibility.maxCallDurationSeconds,
     });
 
-    // 2. Resolve template (explicit > user default > system default).
     const user = await this.users.findActiveById(userId);
     const language = user?.language ?? UserLanguage.UK;
     const template = dto.templateId
       ? await this.templates.findOneForUser(userId, dto.templateId)
       : await this.templates.resolveDefaultForUser(userId, language);
 
-    // 3. Reserve a room name + create the Conversation row up front.
-    //    Even if SIP fails, having the row gives us audit trail.
     const roomName = `call-${uuidv4()}`;
     let conversation: Conversation;
     try {
@@ -166,10 +129,6 @@ export class CallService {
         initialPricePerSecondCents: eligibility.summary.plan.pricePerSecondCents,
       });
     } catch (err) {
-      // A ConflictException here is the atomic gate firing (createPending hit
-      // the partial UNIQUE index because a concurrent request for this user
-      // already created a live row). Propagate it as the 409 CALL_IN_PROGRESS
-      // contract — do NOT swallow it into a 500.
       if (err instanceof ConflictException) {
         clog.warn('call.sip.start.alreadyOnCall', { atInsert: true });
         throw err;
@@ -182,36 +141,12 @@ export class CallService {
       { templateResolvedId: template?.id ?? null },
     );
 
-    // 4. Stash agent context in Redis — agent-worker reads this when it picks
-    //    up the call-dispatch event. TTL covers the maximum call duration so
-    //    a stuck agent still has context.
     const contextKey = RedisKeys.callContext(roomName);
-    // Resolve the active conversation style with this precedence:
-    //   1. user.preferredStyleId       (user-wide override)
-    //   2. template.defaultStyleId     (template's preference)
-    //   3. DEFAULT_STYLE_ID            (built-in PERSONAL → falls back to FRIENDLY
-    //                                   inside agent-worker when user has no profile)
-    // We do NOT validate the ID server-side here — that's the job of the
-    // PATCH endpoints. If a referenced custom style was deleted, agent-worker's
-    // StyleResolverService falls back to a built-in. Keep this path simple.
     const activeStyleId =
       user?.preferredStyleId ??
       template?.defaultStyleId ??
       DEFAULT_STYLE_ID;
 
-    // Resolve effective TTS + LLM provider/voice/model with explicit
-    // precedence so a user's PATCH /v1/auth/me preferences actually take
-    // effect on the next call:
-    //
-    //   1. dto.config.{tts,llm}.*    — request-time override (mobile may
-    //                                   pass it in /calls/start)
-    //   2. user.preferred*           — saved profile preference
-    //   3. template.default*         — template's built-in defaults
-    //   4. (factory env defaults)    — handled inside agent-worker
-    //
-    // Without this merge the factory only ever saw `dto.config` and the
-    // saved preference was effectively dead — `preferredVoice` writes
-    // succeeded but were never read on the call path.
     const dtoCfg = (dto.config ?? {}) as {
       tts?: { provider?: string; voice?: string };
       llm?: { provider?: string; model?: string };
@@ -240,8 +175,6 @@ export class CallService {
         template?.defaultLlmModel ??
         undefined,
     };
-    // Drop empty slices so the agent-worker factory's `agentConfig?.tts?.provider || env(...)`
-    // fallback still triggers for unset fields instead of resolving to undefined.
     const mergedConfig: Record<string, unknown> = { ...dtoCfg };
     if (mergedTts.provider || mergedTts.voice) {
       mergedConfig.tts = { ...(dtoCfg.tts ?? {}), ...prune(mergedTts) };
@@ -267,14 +200,11 @@ export class CallService {
           }
         : null,
       activeStyleId,
-      // Legacy fields, retained until agent-worker is fully migrated to Template.
       userName: dto.userName ?? user?.name ?? null,
       userRole: dto.userRole ?? null,
       callReason: dto.callReason ?? null,
       config: mergedConfig,
       maxCallDurationSeconds: eligibility.maxCallDurationSeconds,
-      // Snapshot the plan at start so agent-worker can stamp it onto each
-      // usage.tick without a billing call (mirrors maxCallDurationSeconds).
       planCode: eligibility.summary.plan.code,
       createdAt: new Date().toISOString(),
     };
@@ -288,9 +218,6 @@ export class CallService {
     }
     callLog.event('call.sip.start.contextStashed');
 
-    // 5. Dial SIP. The LiveKit SDK creates a participant that joins the room
-    //    once the callee picks up. agent-worker is dispatched in parallel —
-    //    when both joined, the conversation starts.
     if (!this.sipTrunkId) {
       callLog.error('call.sip.start.noTrunk', new Error('SIP trunk not configured'));
       await this.markFailed(conversation.id, 'FATAL_INTERNAL');
@@ -314,22 +241,16 @@ export class CallService {
       callLog.error('call.sip.start.dialFailed', err, {
         targetPhone: dto.targetPhone,
       });
-      // Clean up the Redis context so a stale agent dispatch can't run
-      // against a dead conversation.
       await this.redis.del(contextKey).catch(() => undefined);
       await this.markFailed(conversation.id, 'LIVEKIT_DISCONNECTED');
       throw new InternalServerErrorException(`Failed to initiate SIP call: ${message}`);
     }
 
-    // 6. Hand off to agent-worker via pub/sub.
     await this.redis.publish(
       RedisChannels.callDispatch,
       JSON.stringify({ roomName, conversationId: conversation.id }),
     );
 
-    // Metric: bump AFTER SIP dial + dispatch succeed. We count "started"
-    // calls — failed-to-dispatch ones are counted via markFailed branch's
-    // error metrics (Phase 8 follow-up wires the failure counter).
     this.callsStartedCounter.inc({ plan: eligibility.summary.plan.code });
     callLog.event('call.sip.start.dispatched', { setupMs: Date.now() - startedAt });
 

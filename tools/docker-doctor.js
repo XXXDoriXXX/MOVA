@@ -1,24 +1,5 @@
 #!/usr/bin/env node
 // @ts-check
-/**
- * Cross-platform docker-doctor. Diagnoses the most common reasons
- * `npm run docker:up` fails on a fresh checkout, with copy-pasteable
- * fixes per finding. Runs on the host (not inside containers).
- * Idempotent and side-effect-free — only inspects.
- *
- * Same surface as the original POSIX shell script, but uses only
- * Node built-ins so Windows PowerShell / cmd users don't need a
- * `sh` interpreter. Exits 0 on clean / warnings-only, 1 on errors.
- *
- * Covered failure modes:
- *   1. Docker daemon unreachable
- *   2. .npmrc missing (would cause ERESOLVE on plain `npm install`)
- *   3. .env missing or required keys empty
- *   4. SETTINGS_ENCRYPTION_KEY missing (admin Keys page disabled)
- *   5. Host port conflicts (5432 / 6379 / 3000-3002 / 5174 / 9999)
- *   6. Stale postgres / redis compose volumes from a prior killed run
- *   7. Compose containers stuck in exited state
- */
 
 'use strict';
 
@@ -52,13 +33,9 @@ const warn = (m) => {
 const hint = (m) => console.log(`  ${C.cyan}↳${C.reset} ${m}`);
 const section = (m) => console.log(`\n${C.cyan}── ${m} ──${C.reset}`);
 
-// `cwd` is whatever directory the user ran `npm run docker:doctor` from
-// — but the script lives in `<repo>/tools/`, and we want repo-relative
-// paths. Resolve via `__dirname` (the script's own location).
 const REPO_ROOT = path.resolve(__dirname, '..');
 process.chdir(REPO_ROOT);
 
-/** Run a shell command, swallow any throw, return trimmed stdout or null. */
 function tryRun(cmd, opts = {}) {
   try {
     return execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...opts }).trim();
@@ -67,13 +44,16 @@ function tryRun(cmd, opts = {}) {
   }
 }
 
-/**
- * Check if a TCP port is in use on localhost (any interface) by
- * trying to bind to it and seeing if we get EADDRINUSE. We bind to
- * 0.0.0.0 because that's where docker-compose publishes ports —
- * binding only to 127.0.0.1 would miss a service listening on
- * the LAN interface.
- */
+function ourPublishedPorts(projectName) {
+  const ports = new Set();
+  const out = tryRun(
+    `docker ps --filter "label=com.docker.compose.project=${projectName}" --format "{{.Ports}}"`,
+  );
+  if (!out) return ports;
+  for (const m of out.matchAll(/:(\d+)->/g)) ports.add(Number(m[1]));
+  return ports;
+}
+
 function isPortInUse(port) {
   return new Promise((resolve) => {
     const server = net.createServer();
@@ -89,7 +69,16 @@ function isPortInUse(port) {
 }
 
 async function main() {
-  // ── 1. Docker daemon ──
+  section('Host toolchain');
+  const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number);
+  if (nodeMajor < 20 || (nodeMajor === 20 && nodeMinor < 19)) {
+    warn(`Host Node.js is v${process.versions.node} — Nx 22 needs v20.19+ (v20 LTS matches the Docker image)`);
+    hint('Install the pinned version (see .nvmrc):  nvm install   # or download Node 20 LTS from nodejs.org');
+    hint('Docker builds always use node:20, but host-side nx/typeorm scripts may misbehave on older Node.');
+  } else {
+    ok(`Host Node.js v${process.versions.node}`);
+  }
+
   section('Docker daemon');
   const dockerVersion = tryRun('docker --version');
   if (!dockerVersion) {
@@ -105,7 +94,6 @@ async function main() {
   }
   ok(`docker daemon up (${dockerVersion.split(',')[0]})`);
 
-  // ── 2. .npmrc (peer-dep resolution mode) ──
   section('npm config');
   if (!fs.existsSync('.npmrc')) {
     warn('.npmrc missing from repo root');
@@ -121,7 +109,6 @@ async function main() {
     }
   }
 
-  // ── 3. .env ──
   section('Environment');
   if (!fs.existsSync('.env')) {
     fail('.env is missing');
@@ -146,24 +133,39 @@ async function main() {
     }
   }
 
-  // ── 4. Port conflicts ──
   section('Ports');
-  const ports = [5432, 6379, 3000, 3001, 3002, 5174, 9999];
-  for (const port of ports) {
+  const projectName = path.basename(REPO_ROOT).toLowerCase();
+  const ownPorts = ourPublishedPorts(projectName);
+  const ports = [
+    { port: 5433, svc: 'postgres', level: 'core', hint: 'Stop your local Postgres OR remap the "5433:5432" line in docker-compose.yml.' },
+    { port: 6379, svc: 'redis', level: 'core', hint: 'Stop your local Redis OR remap the "6379:6379" line in docker-compose.yml.' },
+    { port: 8001, svc: 'redis-stack (RedisInsight UI)', level: 'core', hint: 'Another redis-stack/RedisInsight is running — stop it or remap "8001:8001".' },
+    { port: 3000, svc: 'api-gateway', level: 'core', hint: 'Another dev server holds 3000 — close it or remap.' },
+    { port: 3002, svc: 'realtime-service', level: 'core', hint: 'Another dev server holds 3002 — close it or remap.' },
+    { port: 5174, svc: 'admin (dev)', level: 'core', hint: 'Another Vite/admin server holds 5174 — close it or remap.' },
+    { port: 9999, svc: 'dozzle (dev logs UI)', level: 'core', hint: 'Something holds 9999 — close it or remap.' },
+    { port: 3030, svc: 'grafana', level: 'obs', hint: 'Remap "127.0.0.1:3030:3000" in docker-compose.yml if you need Grafana.' },
+    { port: 9090, svc: 'prometheus', level: 'obs', hint: 'Remap "127.0.0.1:9090:9090" in docker-compose.yml if you need Prometheus.' },
+    { port: 9093, svc: 'alertmanager', level: 'obs', hint: 'Remap "127.0.0.1:9093:9093" in docker-compose.yml if you need Alertmanager.' },
+    { port: 3100, svc: 'loki', level: 'obs', hint: 'Remap "127.0.0.1:3100:3100" in docker-compose.yml if you need Loki.' },
+    { port: 3200, svc: 'tempo', level: 'obs', hint: 'Remap "127.0.0.1:3200:3200" in docker-compose.yml if you need Tempo.' },
+  ];
+  for (const { port, svc, level, hint: h } of ports) {
     const busy = await isPortInUse(port);
-    if (busy) {
-      fail(`Port ${port} is already in use on the host`);
-      if (port === 5432) hint('Stop your local postgres OR change the published port in docker-compose.yml.');
-      else if (port === 6379) hint('Stop your local redis OR change the published port in docker-compose.yml.');
-      else hint(`Another dev server is using ${port} — close it or remap.`);
-    } else {
-      ok(`Port ${port} is free`);
+    if (!busy) {
+      ok(`Port ${port} free (${svc})`);
+      continue;
     }
+    if (ownPorts.has(port)) {
+      ok(`Port ${port} in use by mova_* (${svc} already up — will be reused)`);
+      continue;
+    }
+    if (level === 'core') fail(`Port ${port} (${svc}) is already in use on the host`);
+    else warn(`Port ${port} (${svc}) is already in use on the host`);
+    hint(h);
   }
 
-  // ── 5. Stale volumes ──
   section('Volumes');
-  const projectName = path.basename(REPO_ROOT).toLowerCase();
   const volumeList = tryRun('docker volume ls -q');
   const ourVolumes = (volumeList ?? '')
     .split('\n')
@@ -178,7 +180,6 @@ async function main() {
     ok('No leftover compose volumes (clean slate)');
   }
 
-  // ── 6. Compose state ──
   section('Compose state');
   const exited = tryRun('docker compose ps --status exited --format {{.Service}}');
   const running = tryRun('docker compose ps --status running --format {{.Service}}');
@@ -195,7 +196,6 @@ async function main() {
     ok('No compose containers running (nothing to clean up)');
   }
 
-  // ── Summary ──
   section('Summary');
   if (errors > 0) {
     console.log(

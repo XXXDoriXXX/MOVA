@@ -16,15 +16,6 @@ export enum ClientPlatform {
   WEB = 'web',
 }
 
-/**
- * A crash / error captured on the mobile (or web) client and shipped to the
- * backend for storage + investigation. Append-only; never updated.
- *
- * `userId` is nullable — errors that happen before login (auth screen, boot)
- * still get stored, attributed to null. `context` (JSONB) carries the
- * breadcrumb trail, device/app info and any call correlation (conversationId)
- * so we can reconstruct what the user did before the failure.
- */
 @Entity('client_error_reports')
 @Index('idx_client_errors_created', ['createdAt'])
 @Index('idx_client_errors_user', ['userId'])
@@ -55,7 +46,6 @@ export class ClientErrorReport {
   @Column({ default: false })
   fatal!: boolean;
 
-  /** Error class name (e.g. "TypeError", "AxiosError"). */
   @Column({ type: 'varchar', length: 120 })
   name!: string;
 
@@ -65,16 +55,12 @@ export class ClientErrorReport {
   @Column({ type: 'text', nullable: true })
   stack!: string | null;
 
-  /** Route / screen the user was on when it happened (expo-router path). */
   @Column({ type: 'varchar', length: 120, nullable: true })
   screen!: string | null;
 
-  /** Breadcrumbs, network state, conversationId, and any extra structured
-   *  context the client attached. Shape is client-defined and best-effort. */
   @Column({ type: 'jsonb', nullable: true })
   context!: Record<string, unknown> | null;
 
-  /** Client-side timestamp of the error (the device clock may differ from ours). */
   @Column({ type: 'timestamptz', nullable: true })
   clientCreatedAt!: Date | null;
 

@@ -1,13 +1,5 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-/**
- * provider_incidents — audit log for upstream AI provider failures.
- *
- * Indexes:
- *   - by conversationId          → fast "what went wrong in call X?"
- *   - partial on (providerName) WHERE recoveredAt IS NULL → cheap "active incidents" count
- *   - by occurredAt              → time-range queries for dashboards
- */
 export class ProviderIncidents1715954400000 implements MigrationInterface {
   name = 'ProviderIncidents1715954400000';
 

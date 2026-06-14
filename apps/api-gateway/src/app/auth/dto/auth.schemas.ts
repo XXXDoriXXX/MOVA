@@ -4,17 +4,6 @@ import { z } from 'zod';
 
 import { UserLanguage } from '@mova-back/shared-database';
 
-/**
- * Auth-related DTO schemas (Zod + nestjs-zod).
- *
- * Conventions:
- *   - Email is normalized to lowercase before validation/storage.
- *   - Password constraints: 8..72 chars (bcrypt input limit), at least one
- *     letter + one digit. We deliberately do NOT enforce special chars —
- *     length entropy beats character-class entropy (NIST SP 800-63B).
- *   - Phone numbers go through libphonenumber-js for canonical E.164.
- */
-
 const EmailSchema = z
   .string()
   .trim()
@@ -36,10 +25,6 @@ const PasswordSchema = z
 
 const NameSchema = z.string().trim().min(1).max(120);
 
-/**
- * Optional E.164 phone. Accepts any phone format the user types — converts
- * to canonical E.164 (e.g. "+380501234567"). Rejects unparseable input.
- */
 const PhoneSchema = z
   .string()
   .trim()
@@ -54,10 +39,9 @@ const PhoneSchema = z
       });
       return z.NEVER;
     }
-    return parsed.number; // canonical +CCC...
+    return parsed.number;
   });
 
-// ─── Register ───────────────────────────────────────
 export const RegisterSchema = z.object({
   email: EmailSchema,
   password: PasswordSchema,
@@ -65,39 +49,33 @@ export const RegisterSchema = z.object({
 });
 export class RegisterDto extends createZodDto(RegisterSchema) {}
 
-// ─── Login ──────────────────────────────────────────
 export const LoginSchema = z.object({
   email: EmailSchema,
-  password: z.string().min(1).max(72), // no strength check on login
+  password: z.string().min(1).max(72),
 });
 export class LoginDto extends createZodDto(LoginSchema) {}
 
-// ─── Refresh ────────────────────────────────────────
 export const RefreshSchema = z.object({
   refreshToken: z.string().min(1).max(500),
 });
 export class RefreshDto extends createZodDto(RefreshSchema) {}
 
-// ─── Google Sign-In ─────────────────────────────────
 export const GoogleSignInSchema = z.object({
   idToken: z.string().min(1).max(4096),
 });
 export class GoogleSignInDto extends createZodDto(GoogleSignInSchema) {}
 
-// ─── Logout ─────────────────────────────────────────
 export const LogoutSchema = z.object({
   refreshToken: z.string().min(1).max(500),
 });
 export class LogoutDto extends createZodDto(LogoutSchema) {}
 
-// ─── Change password ────────────────────────────────
 export const ChangePasswordSchema = z.object({
   currentPassword: z.string().min(1).max(72),
   newPassword: PasswordSchema,
 });
 export class ChangePasswordDto extends createZodDto(ChangePasswordSchema) {}
 
-// ─── Update profile ─────────────────────────────────
 export const UpdateProfileSchema = z
   .object({
     name: NameSchema.optional(),
@@ -115,7 +93,6 @@ export const UpdateProfileSchema = z
   });
 export class UpdateProfileDto extends createZodDto(UpdateProfileSchema) {}
 
-// ─── Delete account ─────────────────────────────────
 export const DeleteAccountSchema = z.object({
   password: z.string().min(1).max(72),
 });

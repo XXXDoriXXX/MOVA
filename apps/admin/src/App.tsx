@@ -10,17 +10,6 @@ import { UsersPage } from './pages/Users';
 import { IncidentsPage } from './pages/Incidents';
 import { SettingsPage } from './pages/Settings';
 
-/**
- * App root. Handles three states:
- *
- *   1. Validating session  — token present in sessionStorage, calling
- *      /admin/whoami to confirm it's still valid. Spinner.
- *   2. Logged out — login form.
- *   3. Logged in — sidebar layout with the four pages.
- *
- * Mounting / 401 transitions both route through here so there's a
- * single source of truth for "is the user an admin right now".
- */
 export function App() {
   const [state, setState] = useState<
     { kind: 'loading' } | { kind: 'out' } | { kind: 'in'; user: WhoAmI }

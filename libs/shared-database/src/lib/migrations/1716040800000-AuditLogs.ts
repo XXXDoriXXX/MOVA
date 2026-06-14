@@ -1,22 +1,5 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-/**
- * audit_logs — immutable trail of sensitive admin actions.
- *
- * Why an explicit table:
- *   - Compliance retention (years) outlives log-aggregator TTLs (~30 days).
- *   - SQL queryable by actor / target / action / time without log-pipeline ops.
- *   - Schema rigor where it matters (enum-validated actions, FK on actor).
- *
- * Indexes:
- *   - by actorId             → "what did admin X do recently?"
- *   - composite (target)     → "what happened to user/conversation Y?"
- *   - by action              → coarse aggregates ("how many blocks last week?")
- *   - by createdAt           → time-range scans + cursor pagination
- *
- * No DELETE pathway exists in app code — retention is an explicit future cron.
- * `actorId` is ON DELETE SET NULL so hard user-deletes don't blow away the trail.
- */
 export class AuditLogs1716040800000 implements MigrationInterface {
   name = 'AuditLogs1716040800000';
 
@@ -48,7 +31,6 @@ export class AuditLogs1716040800000 implements MigrationInterface {
       EXCEPTION WHEN duplicate_object THEN null; END $$;
     `);
 
-    // The user_role enum already exists from InitialSchema — reuse it.
     await q.query(`
       CREATE TABLE "audit_logs" (
         "id"           uuid                              NOT NULL DEFAULT uuid_generate_v4(),

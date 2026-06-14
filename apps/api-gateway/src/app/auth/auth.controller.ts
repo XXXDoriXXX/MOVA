@@ -30,25 +30,6 @@ import {
   UpdateProfileDto,
 } from './dto/auth.schemas';
 
-/**
- * Auth endpoints.
- *
- * Rate-limit policy (uses the `auth` named bucket from app.module —
- * configured as 5 requests per 15 min per IP):
- *   - register / login: `auth` bucket. Tight enough to break a serial
- *     credential-stuffing bot (no more than 20 attempts/h), permissive
- *     enough that a forgetful human can retry a few times in a
- *     reasonable session.
- *   - refresh: `auth` bucket too — a leaked refresh token would
- *     otherwise be replayable forever; capping the rotation rate caps
- *     the blast radius.
- *   - change-password, delete-account: lower bucket (5/min via @Throttle)
- *     — privileged ops, single user, no need for sustained throughput.
- *
- * Tracker note: these endpoints are pre-auth (no req.user), so
- * UserOrIpThrottlerGuard falls back to req.ip — the right scope for
- * pre-account brute-force defence.
- */
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
@@ -135,8 +116,6 @@ export class AuthController {
   async me(@CurrentUser() user: AuthenticatedUser): Promise<PublicUser> {
     const fullUser = await this.usersService.findActiveById(user.id);
     if (!fullUser) {
-      // Token valid but user was soft-deleted in the meantime — 401, not 500.
-      // The mobile client treats 401 by purging tokens + showing login.
       throw new UnauthorizedException();
     }
     return this.authService.toPublic(fullUser);
@@ -176,8 +155,6 @@ export class AuthController {
   ): Promise<void> {
     await this.authService.deleteAccount(user.id, dto.password);
   }
-
-  // ─── helpers ────────────────────────────────────────
 
   private extractUserAgent(req: Request): string | null {
     const ua = req.headers['user-agent'];

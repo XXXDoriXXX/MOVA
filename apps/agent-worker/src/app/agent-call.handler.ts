@@ -1041,6 +1041,15 @@ export class AgentCallHandler {
       type: 'call.answered',
       data: { participantIdentity: p.identity },
     });
+    // Arm the silence/stall watchdogs the moment the leg is answered.
+    // For SIP, the greeting can finish (and run start()'s arm calls at
+    // lines 644-645) BEFORE the phone is picked up — at that point
+    // participantAnswered is still false, so those arm calls no-op and
+    // the watchdogs would otherwise never start unless a transcript
+    // happens to arrive. Both helpers self-clear and are idempotent, so
+    // re-arming here is safe even when answer preceded the greeting.
+    this.armSttStall();
+    this.armIdleProbe();
   }
 
   /**
@@ -1419,7 +1428,12 @@ export class AgentCallHandler {
     // Don't probe before the SIP leg picked up — there's literally nobody
     // on the line yet.
     if (!this.participantAnswered) return;
-    if (this.idleProbeCount >= AgentCallHandler.IDLE_MAX_PROBES) return;
+    // NOTE: we intentionally do NOT early-return when the probe cap has
+    // been reached. We still arm one final timer so fireIdleProbe re-enters
+    // and hits its `idleProbeCount >= IDLE_MAX_PROBES -> stop()` branch,
+    // ending the call instead of leaving a silent interlocutor stranded
+    // until the much-longer call-duration deadline. (fireIdleProbe's MAX
+    // branch does not re-arm, so this cannot loop.)
     const delay =
       this.idleProbeCount === 0
         ? AgentCallHandler.IDLE_FIRST_MS

@@ -49,6 +49,13 @@ export interface SettingRow {
 export class SettingsService implements OnModuleInit {
   private readonly logger = new Logger(SettingsService.name);
   private crypto: SecretCrypto | null = null;
+  /**
+   * Original process.env value captured BEFORE we first override a managed
+   * key, so deleting/rotating that key reverts to the underlying .env value
+   * (or unsets it) on every pod — rather than leaving a cleared key live
+   * until restart.
+   */
+  private readonly originalEnv = new Map<string, string | undefined>();
 
   constructor(
     @InjectRepository(AppSetting)
@@ -180,6 +187,9 @@ export class SettingsService implements OnModuleInit {
     for (const row of rows) {
       try {
         const plain = this.crypto.decrypt(row.valueEncrypted);
+        if (!this.originalEnv.has(row.key)) {
+          this.originalEnv.set(row.key, process.env[row.key]);
+        }
         process.env[row.key] = plain;
         applied += 1;
       } catch (err) {
@@ -205,10 +215,15 @@ export class SettingsService implements OnModuleInit {
         const msg = JSON.parse(raw) as { key: string; action: 'upsert' | 'delete' };
         if (!msg.key) return;
         if (msg.action === 'delete') {
-          // Best-effort — don't try to "unset" process.env, just leave
-          // the value as-is until next restart. The DB delete already
-          // means future hydration won't restore it.
-          this.logger.debug(`settings-updated: ${msg.key} deleted in DB.`);
+          // Revert process.env to its pre-override value (the underlying .env,
+          // or unset if there was none) on EVERY pod — a cleared/rotated
+          // managed key must NOT keep being served cross-pod until restart.
+          // Redis delivers this to the publisher too, so the writer pod is
+          // covered by the same path.
+          this.revertEnv(msg.key);
+          this.logger.log(
+            `settings-updated: ${msg.key} deleted — reverted process.env.`,
+          );
           return;
         }
         await this.rehydrateOne(msg.key);
@@ -218,11 +233,27 @@ export class SettingsService implements OnModuleInit {
     });
   }
 
+  /** Restore process.env[key] to its pre-override original (or unset it if
+   *  there was none), so a deleted/rotated managed key stops being served. */
+  private revertEnv(key: string): void {
+    if (this.originalEnv.has(key)) {
+      const original = this.originalEnv.get(key);
+      if (original === undefined) delete process.env[key];
+      else process.env[key] = original;
+      this.originalEnv.delete(key);
+    } else {
+      delete process.env[key];
+    }
+  }
+
   private async rehydrateOne(key: string): Promise<void> {
     if (!this.crypto) return;
     const row = await this.settings.findOne({ where: { key } });
     if (!row) return;
     try {
+      if (!this.originalEnv.has(key)) {
+        this.originalEnv.set(key, process.env[key]);
+      }
       process.env[key] = this.crypto.decrypt(row.valueEncrypted);
       this.logger.log(`Re-hydrated ${key} from settings-updated`);
     } catch (err) {

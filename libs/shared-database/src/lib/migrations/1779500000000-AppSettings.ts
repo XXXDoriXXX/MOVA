@@ -1,11 +1,5 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-/**
- * `app_setting` — admin-managed env-overlay table. See entity for the
- * full design notes. One row per overridable key (e.g. OPENAI_API_KEY).
- * Encryption is application-side (AES-256-GCM); column is plain text so
- * the DB layer never sees the secret material in column-type metadata.
- */
 export class AppSettings1779500000000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`

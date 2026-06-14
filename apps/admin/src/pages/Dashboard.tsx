@@ -13,15 +13,6 @@ import { ConversationRow } from '../components/ConversationRow';
 
 const REFRESH_MS = 3_000;
 
-/**
- * Dashboard — six stat tiles + the live "active calls" list.
- *
- * Polls /admin/stats + /admin/conversations?status=active every 3s
- * so the operator sees calls light up the moment they start (and
- * disappear the moment they end). 3s is a reasonable
- * frequency-of-change balance: shorter would hammer the API, longer
- * makes "live" feel laggy.
- */
 export function DashboardPage() {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [active, setActive] = useState<AdminConversation[]>([]);

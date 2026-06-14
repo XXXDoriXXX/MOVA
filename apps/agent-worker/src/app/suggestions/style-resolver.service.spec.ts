@@ -98,7 +98,7 @@ describe('StyleResolverService', () => {
     });
 
     it('filters by userId — cross-tenant lookup returns FRIENDLY fallback', async () => {
-      customs.findOne.mockResolvedValue(null); // simulates "not owned by USER_ID"
+      customs.findOne.mockResolvedValue(null);
       const svc = new StyleResolverService(customs, reader);
       const out = await svc.resolve(USER_ID, `custom:${CUSTOM_UUID}`);
 
@@ -132,8 +132,6 @@ describe('StyleResolverService', () => {
 
     it('unknown builtin key → FRIENDLY default', async () => {
       const svc = new StyleResolverService(customs, reader);
-      // The shape regex requires one of the three keys, so a typo like
-      // 'builtin:offcial' doesn't match — gets treated as "unknown shape".
       const out = await svc.resolve(USER_ID, 'builtin:offcial');
       expect(out).toBe(BUILTIN_STYLE_PRESETS.friendly.instructions);
     });

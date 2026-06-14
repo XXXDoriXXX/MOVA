@@ -1,25 +1,11 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-/**
- * Initial schema — users + refresh_tokens.
- *
- * Future migrations (Phase 2+): templates, plans, subscriptions, conversations,
- * messages, suggestions, usage_records, payment_events.
- *
- * Safety notes:
- *   - Uses uuid_generate_v4() — extension created defensively at the top.
- *   - All FKs ON DELETE CASCADE for refresh_tokens (user removal cascades).
- *   - Soft-delete on users via `deletedAt`; partial unique index on email
- *     enforces uniqueness only on ACTIVE rows (so a deleted user can free
- *     their email for someone else after anonymization).
- */
 export class InitialSchema1715608800000 implements MigrationInterface {
   name = 'InitialSchema1715608800000';
 
   async up(q: QueryRunner): Promise<void> {
     await q.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`);
 
-    // ── enum types (TypeORM creates them inline but explicit DDL is cleaner) ──
     await q.query(`
       DO $$ BEGIN
         CREATE TYPE "users_role_enum" AS ENUM ('admin', 'user');
@@ -31,7 +17,6 @@ export class InitialSchema1715608800000 implements MigrationInterface {
       EXCEPTION WHEN duplicate_object THEN null; END $$;
     `);
 
-    // ── users ────────────────────────────────────────
     await q.query(`
       CREATE TABLE "users" (
         "id"                    uuid                  NOT NULL DEFAULT uuid_generate_v4(),
@@ -60,7 +45,6 @@ export class InitialSchema1715608800000 implements MigrationInterface {
         WHERE "deletedAt" IS NULL
     `);
 
-    // ── refresh_tokens ───────────────────────────────
     await q.query(`
       CREATE TABLE "refresh_tokens" (
         "id"          uuid          NOT NULL DEFAULT uuid_generate_v4(),
@@ -89,7 +73,5 @@ export class InitialSchema1715608800000 implements MigrationInterface {
     await q.query(`DROP TABLE IF EXISTS "users"`);
     await q.query(`DROP TYPE IF EXISTS "users_language_enum"`);
     await q.query(`DROP TYPE IF EXISTS "users_role_enum"`);
-    // Intentionally NOT dropping uuid-ossp extension — it may be in use by
-    // other schemas. Migrations should never drop shared resources.
   }
 }

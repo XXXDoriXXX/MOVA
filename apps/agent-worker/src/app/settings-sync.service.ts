@@ -14,33 +14,10 @@ import { AppSetting } from '@mova-back/shared-database';
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
 import { RedisChannels } from '@mova-back/shared-realtime';
 
-/**
- * Bootstraps + lives-updates agent-worker's `process.env` from the
- * `app_setting` table written by the admin panel.
- *
- * Why this mirrors api-gateway's SettingsService:
- *   - Both processes need their `process.env` to reflect admin-managed
- *     overrides (LiveKit Agents OpenAI plugin, ElevenLabs adapter,
- *     Deepgram STT all read from process.env directly at construction
- *     time).
- *   - Admin only ever writes via api-gateway. agent-worker is read-only:
- *     hydrate at boot, then react to Redis `settings-updated` pub-sub
- *     so an admin save in the UI mutates this process's env within
- *     milliseconds. New AgentSession instantiations pick up the new key
- *     without a container restart.
- *
- * Disabled (degraded) when SETTINGS_ENCRYPTION_KEY is unset — same
- * pattern as the api-gateway side. The worker still runs on env-only
- * config; admin just can't manage keys until the operator sets the
- * encryption key once.
- */
 @Injectable()
 export class SettingsSyncService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SettingsSyncService.name);
   private crypto: SecretCrypto | null = null;
-  /** Dedicated subscriber connection (a subscribed ioredis client can't
-   *  run normal commands, so we duplicate() off the shared client).
-   *  Held on the instance so onModuleDestroy can quit() it on shutdown. */
   private sub: Redis | null = null;
 
   constructor(
@@ -87,20 +64,7 @@ export class SettingsSyncService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /**
-   * Per-key debounce window. settingsUpdated messages may arrive in
-   * bursts when an operator clicks "save" multiple times or when the
-   * admin UI sends optimistic updates that immediately revert. Without
-   * a debounce, each message hits Postgres for findOne + decrypts —
-   * cheap individually but easy to stack up under a rapid save loop.
-   * 500ms is below human-perceivable latency for "the change applied"
-   * and tight enough that even a true rapid sequence collapses to one
-   * DB read per key.
-   */
   private static readonly SETTINGS_DEBOUNCE_MS = 500;
-  /** Per-key debounce timers; on a fresh message we reset the timer
-   *  for that key, so only the LAST event in a burst triggers the
-   *  hydrate. */
   private readonly debounceTimers = new Map<string, NodeJS.Timeout>();
 
   private subscribe(): void {
@@ -119,13 +83,9 @@ export class SettingsSyncService implements OnModuleInit, OnModuleDestroy {
       }
       if (!msg.key || !this.crypto) return;
       if (msg.action === 'delete') {
-        // Don't debounce delete: it's a no-op on our side (we keep
-        // the in-memory env value so an in-flight call doesn't
-        // suddenly lose its provider key). Logging only.
         this.logger.debug(
           `settings-updated: ${msg.key} deleted in DB — keeping current process.env.`,
         );
-        // Drop any pending re-hydrate for this key — the row is gone.
         const pending = this.debounceTimers.get(msg.key);
         if (pending) {
           clearTimeout(pending);
@@ -133,9 +93,6 @@ export class SettingsSyncService implements OnModuleInit, OnModuleDestroy {
         }
         return;
       }
-      // upsert: debounce the actual DB read + decrypt. Resetting the
-      // timer on a fresh message is the standard "trailing edge"
-      // debounce — last event wins, intermediate writes collapse.
       const existing = this.debounceTimers.get(msg.key);
       if (existing) clearTimeout(existing);
       const t = setTimeout(() => {
@@ -147,13 +104,10 @@ export class SettingsSyncService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    // Clear any pending per-key debounce timers so they don't keep the
-    // event loop alive past shutdown.
     for (const t of this.debounceTimers.values()) {
       clearTimeout(t);
     }
     this.debounceTimers.clear();
-    // Close the dedicated subscriber connection opened in subscribe().
     const sub = this.sub;
     this.sub = null;
     if (sub) {

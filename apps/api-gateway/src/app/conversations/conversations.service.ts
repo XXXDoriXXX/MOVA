@@ -24,7 +24,6 @@ interface CreateConversationInput {
   initialLlmProvider?: string | null;
   initialTtsProvider?: string | null;
   initialVoice?: string | null;
-  /** Plan/price snapshot from the eligibility check at call-start. */
   initialPlanSource?: string | null;
   initialPricePerSecondCents?: number | null;
 }
@@ -37,9 +36,6 @@ interface EndConversationInput {
 }
 
 interface InsertMessageInput {
-  /** Optional explicit primary key. When provided (agent-worker plumbs a
-   *  pre-generated UUID), the row is saved under it so cross-event FKs
-   *  (suggestions → parent message) resolve. Omit to let the DB generate. */
   id?: string;
   conversationId: string;
   role: MessageRole;
@@ -50,7 +46,6 @@ interface InsertMessageInput {
   ttsProvider?: string | null;
   ttsVoice?: string | null;
   durationMs?: number | null;
-  /** For role=USER_TYPED: distinguishes 'typed' vs 'suggestion'. Null otherwise. */
   source?: MessageSource | null;
 }
 
@@ -71,25 +66,9 @@ export interface CursorPage<T> {
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 
-/** appendSuggestions FK-race retry budget. The parent `transcript.final`
- *  save runs concurrently and normally lands within a single round-trip;
- *  a few short retries cover the worst-case interleave without blocking. */
 const APPEND_SUGGESTIONS_MAX_RETRIES = 5;
 const APPEND_SUGGESTIONS_RETRY_DELAY_MS = 100;
 
-/**
- * Conversation + Message + Suggestion store.
- *
- * Cursor pagination strategy:
- *   - Cursor = ISO timestamp of the last item's createdAt/startedAt.
- *   - Stable as long as the index (userId, startedAt) holds. Ties on the
- *     exact same timestamp are extremely unlikely for human-paced calls;
- *     if they happen, we accept slight duplication over complex tie-breaking.
- *
- * No PII leaks:
- *   - Cross-user reads always return 404 (not 403) on findOneForUser.
- *   - DELETE soft-deletes; the audit row stays in DB indefinitely.
- */
 @Injectable()
 export class ConversationsService {
   constructor(
@@ -97,8 +76,6 @@ export class ConversationsService {
     @InjectRepository(Message) private readonly messages: Repository<Message>,
     @InjectRepository(Suggestion) private readonly suggestions: Repository<Suggestion>,
   ) {}
-
-  // ─── Lifecycle (write side, called by call orchestrator) ────────────
 
   async createPending(input: CreateConversationInput): Promise<Conversation> {
     const entity = this.conversations.create({
@@ -119,11 +96,6 @@ export class ConversationsService {
     try {
       return await this.conversations.save(entity);
     } catch (err) {
-      // Partial UNIQUE index idx_conversations_active_user_unique: the user
-      // already has a live (pending/active) call. This is the DB backstop for
-      // the concurrent-call gate (CLAUDE.md rule #1) — the loser of a
-      // count-then-INSERT race lands here. Surface the same code the
-      // app-level gate returns so the contract is identical.
       if (this.isUniqueViolation(err)) {
         throw new ConflictException({
           code: 'CALL_IN_PROGRESS',
@@ -135,7 +107,6 @@ export class ConversationsService {
     }
   }
 
-  /** Postgres unique_violation (SQLSTATE 23505). Mirrors BillingService. */
   private isUniqueViolation(err: unknown): boolean {
     return (
       err instanceof QueryFailedError &&
@@ -143,11 +114,6 @@ export class ConversationsService {
     );
   }
 
-  /**
-   * Mark a conversation `active` and set connectedAt. Idempotent — re-running
-   * on an already-active row is a no-op (we don't want a late SIP "joined"
-   * event to clobber the original timestamp).
-   */
   async markConnected(conversationId: string, connectedAt: Date = new Date()): Promise<void> {
     await this.conversations
       .createQueryBuilder()
@@ -160,12 +126,6 @@ export class ConversationsService {
       .execute();
   }
 
-  /**
-   * Stamp the moment the interlocutor actually answered (SIP callStatus=active
-   * / peer joined). Idempotent — only sets the first answer time, so a replayed
-   * event can't move it. This is the single source of truth for billable
-   * duration; a call with a null answeredAt is never billed.
-   */
   async markAnswered(conversationId: string, answeredAt: Date = new Date()): Promise<void> {
     await this.conversations
       .createQueryBuilder()
@@ -175,20 +135,12 @@ export class ConversationsService {
       .execute();
   }
 
-  /**
-   * Final state transition. Bills from `answeredAt` (the real pickup), NOT from
-   * connect/dial time — a call that only rang and was never answered has a null
-   * answeredAt and therefore durationSeconds = 0 (no charge). If status was
-   * already `ended`/`failed` we DO update (allows error-reason backfill from a
-   * follow-up watchdog), but reuse the existing endedAt.
-   */
   async markEnded(input: EndConversationInput): Promise<Conversation> {
     const conv = await this.conversations.findOne({ where: { id: input.conversationId } });
     if (!conv) {
       throw new NotFoundException('Conversation not found');
     }
     const endedAt = conv.endedAt ?? input.endedAt ?? new Date();
-    // Bill only the answered span. No answeredAt ⇒ never picked up ⇒ 0 seconds.
     const durationSeconds = conv.answeredAt
       ? Math.max(0, Math.floor((endedAt.getTime() - conv.answeredAt.getTime()) / 1000))
       : 0;
@@ -214,16 +166,6 @@ export class ConversationsService {
     return (await this.conversations.findOne({ where: { id: input.conversationId } }))!;
   }
 
-  /**
-   * Count this user's calls that are in PENDING or ACTIVE state. Used by
-   * call.service to refuse a new /calls/start while another one is still
-   * in progress — without this, a flaky mobile retry loop or a stolen
-   * JWT can dial two SIP legs at once, both bill, both confuse the user.
-   *
-   * Cheap query: hit covered by `idx_conversations_status_active`
-   * (partial index on status IN ('pending', 'active')) — a few µs
-   * regardless of total conversation table size.
-   */
   async countActiveForUser(userId: string): Promise<number> {
     return this.conversations.count({
       where: [
@@ -245,10 +187,6 @@ export class ConversationsService {
       .getCount();
   }
 
-  /**
-   * Find conversations that look like zombies — pending/active but no update
-   * for `staleMinutes`. Watchdog cron (Phase 8) marks them failed.
-   */
   async findStaleActive(staleMinutes: number): Promise<Conversation[]> {
     const cutoff = new Date(Date.now() - staleMinutes * 60 * 1000);
     return this.conversations
@@ -260,20 +198,16 @@ export class ConversationsService {
       .getMany();
   }
 
-  // ─── Read side (user-facing) ────────────────────────────────────────
-
   async listForUser(query: ListConversationsQuery): Promise<CursorPage<Conversation>> {
     const limit = Math.min(query.limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
 
     const qb = this.conversations
       .createQueryBuilder('c')
-      // Only id+name are selected for the caller — never the full User row
-      // (passwordHash etc. must not leak through history serialization).
       .leftJoin('c.caller', 'caller')
       .addSelect(['caller.id', 'caller.name'])
       .where('c."userId" = :userId AND c."deletedAt" IS NULL', { userId: query.userId })
       .orderBy('c."startedAt"', 'DESC')
-      .limit(limit + 1); // +1 to peek at "is there a next page"
+      .limit(limit + 1);
 
     if (query.status) {
       qb.andWhere('c."status" = :status', { status: query.status });
@@ -311,7 +245,6 @@ export class ConversationsService {
       .where('c."id" = :id AND c."deletedAt" IS NULL', { id: conversationId })
       .getOne();
     if (!conv || conv.userId !== userId) {
-      // Same 404 in both cases — never leak existence of someone else's call.
       throw new NotFoundException('Conversation not found');
     }
     return conv;
@@ -323,7 +256,6 @@ export class ConversationsService {
     after?: string,
     limit: number = DEFAULT_PAGE_SIZE,
   ): Promise<CursorPage<Message>> {
-    // Authz check (also acts as existence check).
     await this.findOneForUser(userId, conversationId);
 
     const cappedLimit = Math.min(limit, MAX_PAGE_SIZE);
@@ -345,12 +277,9 @@ export class ConversationsService {
   }
 
   async softDelete(userId: string, conversationId: string): Promise<void> {
-    // Validate ownership first to avoid leaking via the SOFT DELETE result.
     await this.findOneForUser(userId, conversationId);
     await this.conversations.softDelete({ id: conversationId });
   }
-
-  // ─── Message + suggestion writes (called by agent-worker IPC) ───────
 
   async appendMessage(input: InsertMessageInput): Promise<Message> {
     return this.messages.save({
@@ -364,18 +293,11 @@ export class ConversationsService {
       ttsProvider: input.ttsProvider ?? null,
       ttsVoice: input.ttsVoice ?? null,
       durationMs: input.durationMs ?? null,
-      // source only meaningful for USER_TYPED; defensively null otherwise so
-      // the column never claims an AI message was "typed by the user".
       source:
         input.role === MessageRole.USER_TYPED ? input.source ?? null : null,
     });
   }
 
-  /**
-   * Flip a message's ttsStatus from `completed` to `interrupted`. Only
-   * applies if the current status is `completed` — re-marking is a no-op
-   * (the user can't un-interrupt a stopped TTS).
-   */
   async markMessageInterrupted(messageId: string): Promise<void> {
     await this.messages
       .createQueryBuilder()
@@ -403,14 +325,6 @@ export class ConversationsService {
       position: idx + 1,
       wasChosen: false,
     }));
-    // FK race: `transcript.final` (the parent message) and this
-    // `suggestions.generated` event are dispatched CONCURRENTLY by the
-    // consumer (un-awaited handleMessage per pmessage). The parent is
-    // published first and lags behind an LLM round-trip, so it normally
-    // commits first — but if this child INSERT wins the race the parent
-    // row isn't there yet and Postgres raises foreign_key_violation
-    // (SQLSTATE 23503). Retry briefly so the in-flight parent save lands,
-    // rather than dropping all 3 chips at-most-once.
     let lastErr: unknown;
     for (let attempt = 0; attempt < APPEND_SUGGESTIONS_MAX_RETRIES; attempt++) {
       try {
@@ -428,8 +342,6 @@ export class ConversationsService {
     throw lastErr;
   }
 
-  /** Recognise Postgres foreign_key_violation (SQLSTATE 23503) — the parent
-   *  message row hasn't committed yet on the concurrent consumer path. */
   private static isForeignKeyViolation(err: unknown): boolean {
     if (!(err instanceof QueryFailedError)) return false;
     return (err as QueryFailedError & { code?: string }).code === '23503';
@@ -446,10 +358,6 @@ export class ConversationsService {
     return (result.raw as Suggestion[])[0] ?? null;
   }
 
-  /**
-   * Prune zombie conversations older than `cutoff` that are still pending
-   * or active. Phase 8 watchdog uses this.
-   */
   async pruneStale(cutoff: Date): Promise<number> {
     const result = await this.conversations
       .createQueryBuilder()

@@ -9,10 +9,6 @@ import type { Redis } from 'ioredis';
 
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
 
-/**
- * Health endpoints for realtime-service. Mirror api-gateway probes; realtime
- * has no DB dependency in MVP, so only Redis is checked.
- */
 @Controller('health')
 export class HealthController {
   constructor(

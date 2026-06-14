@@ -4,22 +4,6 @@ import { Repository } from 'typeorm';
 
 import { Template, UserLanguage } from '@mova-back/shared-database';
 
-/**
- * System templates — seeded on every app bootstrap (idempotent).
- *
- * Idempotency strategy: each template has a fixed deterministic UUID, derived
- * from a stable string. Inserts use `ON CONFLICT (id) DO UPDATE SET ...` so
- * editing a description here updates production on next deploy.
- *
- * To add a template:
- *   1. Pick a fresh UUIDv4 (don't reuse).
- *   2. Add an entry to SYSTEM_TEMPLATES.
- *   3. Deploy; the upsert runs at startup.
- *
- * To remove: set the row's `deletedAt` via migration, NOT by deleting from
- * this array (leaves orphan rows but preserves audit).
- */
-
 interface SeedTemplate {
   id: string;
   name: string;
@@ -100,9 +84,6 @@ export class TemplatesSeed implements OnApplicationBootstrap {
   async onApplicationBootstrap(): Promise<void> {
     const upserted: string[] = [];
     for (const t of SYSTEM_TEMPLATES) {
-      // Use plain upsert (TypeORM 0.3) on conflict by id. We mark these as
-      // system templates regardless of any previous state, so removing the
-      // `isSystem` flag manually in DB gets re-applied on next boot.
       await this.repo
         .createQueryBuilder()
         .insert()

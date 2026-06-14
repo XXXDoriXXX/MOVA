@@ -2,41 +2,12 @@ import { z } from 'zod';
 
 import { CallErrorCode } from './error-codes';
 
-/**
- * WebSocket protocol — shared schema between backend (realtime-service) and
- * the mobile client. Zod schemas double as:
- *   1) TypeScript types (via z.infer)
- *   2) Runtime validation guards on both sides
- *   3) Source of truth for protocol docs
- *
- * Wire format: JSON with `type` discriminator. `id` and `timestamp` are added
- * by the producer (server for events, client for commands).
- *
- * Versioning policy: additive only within a major. Removing fields, renaming
- * types, or changing semantics ⇒ bump WS_PROTOCOL_VERSION and gate via client
- * version handshake.
- */
 export const WS_PROTOCOL_VERSION = '1' as const;
 
-// ─────────────────────────────────────────────────────
-// Envelope (every server event)
-// ─────────────────────────────────────────────────────
-
 const envelope = z.object({
-  /**
-   * Opaque event id — used by clients as `lastStreamId` on reconnect for
-   * replay. Format is producer-defined: Redis Stream entries use `<ms>-<seq>`,
-   * synthetic events use a UUID, gateway-local ones use socket.id. The wire
-   * contract is just "non-empty string"; consumers must not assume a format.
-   */
   id: z.string().min(1),
-  /** ISO 8601 timestamp (UTC) of when the event was produced server-side */
   timestamp: z.string().datetime(),
 });
-
-// ─────────────────────────────────────────────────────
-// Server → Client events
-// ─────────────────────────────────────────────────────
 
 export const ServerEvent = {
   callConnected: envelope.extend({
@@ -46,13 +17,6 @@ export const ServerEvent = {
     }),
   }),
 
-  /**
-   * Sent when the SIP participant joins the room — i.e. the called phone
-   * actually picked up. Mobile uses this to swap the ringing-loader for
-   * the chat UI. `call.connected` only signals "WS/agent ready" and fires
-   * within hundreds of ms; `call.answered` lands seconds later when the
-   * trunk reports the answer.
-   */
   callAnswered: envelope.extend({
     type: z.literal('call.answered'),
     data: z.object({
@@ -60,7 +24,6 @@ export const ServerEvent = {
     }),
   }),
 
-  /** Partial STT result. May arrive multiple times before a final. */
   transcriptPartial: envelope.extend({
     type: z.literal('transcript.partial'),
     data: z.object({
@@ -68,25 +31,19 @@ export const ServerEvent = {
     }),
   }),
 
-  /** Finalized STT for one utterance of the interlocutor. */
   transcriptFinal: envelope.extend({
     type: z.literal('transcript.final'),
     data: z.object({
-      // Opaque — currently mirrors stream-id until agent-worker plumbs the
-      // persisted Message.id. Don't constrain to UUID; the wire reality is
-      // a Redis stream cursor (`<ms>-<seq>`).
       messageId: z.string().min(1),
       text: z.string(),
     }),
   }),
 
-  /** LLM started generating a reply. */
   aiThinking: envelope.extend({
     type: z.literal('ai.thinking'),
     data: z.object({}).strict(),
   }),
 
-  /** Partial AI text token stream. */
   aiTextPartial: envelope.extend({
     type: z.literal('ai.text.partial'),
     data: z.object({
@@ -94,7 +51,6 @@ export const ServerEvent = {
     }),
   }),
 
-  /** Final AI text for one reply. */
   aiTextFinal: envelope.extend({
     type: z.literal('ai.text.final'),
     data: z.object({
@@ -107,14 +63,6 @@ export const ServerEvent = {
     }),
   }),
 
-  /**
-   * Candidate AI reply — produced by the LLM but NOT yet spoken.
-   * Mobile renders this as a preview bubble so the user reads what's
-   * about to go out and either accepts (or lets the auto-mode timer
-   * elapse) or cancels. After accept the standard ai.text.final +
-   * ai.tts.start/end events follow as if the agent had spoken it
-   * directly; after cancel the candidate is discarded silently.
-   */
   aiTextCandidate: envelope.extend({
     type: z.literal('ai.text.candidate'),
     data: z.object({
@@ -124,15 +72,11 @@ export const ServerEvent = {
         provider: z.string(),
         model: z.string(),
       }),
-      /** ms until auto-accept; null in manual mode. */
       autoAcceptInMs: z.number().int().nonnegative().nullable(),
-      /** True while the reply text is still streaming in (grows per emit).
-       *  Countdown/auto-accept only applies once a streaming=false emit lands. */
       streaming: z.boolean().default(false),
     }),
   }),
 
-  /** TTS started speaking. */
   aiTtsStart: envelope.extend({
     type: z.literal('ai.tts.start'),
     data: z.object({
@@ -141,7 +85,6 @@ export const ServerEvent = {
     }),
   }),
 
-  /** TTS finished — either naturally, interrupted by user, or failed. */
   aiTtsEnd: envelope.extend({
     type: z.literal('ai.tts.end'),
     data: z.object({
@@ -150,7 +93,6 @@ export const ServerEvent = {
     }),
   }),
 
-  /** 3 short reply suggestions generated in parallel with main AI turn. */
   suggestionsNew: envelope.extend({
     type: z.literal('suggestions.new'),
     data: z.object({
@@ -166,7 +108,6 @@ export const ServerEvent = {
     }),
   }),
 
-  /** Periodic billing tick — sent ~every 5s. */
   usageTick: envelope.extend({
     type: z.literal('usage.tick'),
     data: z.object({
@@ -176,7 +117,6 @@ export const ServerEvent = {
     }),
   }),
 
-  /** Confirmation of `user.change_voice` / `user.change_model` / `user.change_style`. */
   callConfigChanged: envelope.extend({
     type: z.literal('call.config.changed'),
     data: z.object({
@@ -184,18 +124,10 @@ export const ServerEvent = {
       provider: z.string().optional(),
       model: z.string().optional(),
       voice: z.string().optional(),
-      /**
-       * Active conversation style after the change — wire ID:
-       * "builtin:official" / "builtin:friendly" / "builtin:personal" /
-       * "custom:<uuid>". Surfaces so the mobile picker can keep its
-       * selected-chip state in sync after a switch from another device or
-       * after a reconnect-replay.
-       */
       styleId: z.string().optional(),
     }),
   }),
 
-  /** Non-fatal or fatal error. `recoverable` decides client UX. */
   callError: envelope.extend({
     type: z.literal('call.error'),
     data: z.object({
@@ -205,7 +137,6 @@ export const ServerEvent = {
     }),
   }),
 
-  /** Terminal event — server closes the WS shortly after. */
   callEnded: envelope.extend({
     type: z.literal('call.ended'),
     data: z.object({
@@ -220,16 +151,7 @@ export const ServerEvent = {
       ]),
       durationSeconds: z.number().int().nonnegative(),
       endedBy: z.enum(['user', 'system', 'interlocutor', 'admin']),
-      /**
-       * Specific cause, mirrors CallErrorCode. Present for failures and for
-       * `no_answer` (CALL_DECLINED / CALL_UNANSWERED / CALLEE_UNAVAILABLE /
-       * LIVEKIT_DISCONNECTED). Lets the end screen show a precise, friendly
-       * message + a "redial" action instead of a generic line.
-       */
       errorCode: z.string().optional(),
-      /** True only if the call was actually answered. The client uses this to
-       *  word the end screen ("nobody answered" vs "call ended") and to decide
-       *  whether to offer a redial. */
       wasAnswered: z.boolean().optional(),
     }),
   }),
@@ -239,7 +161,6 @@ export const ServerEvent = {
   }),
 } as const;
 
-/** Discriminated union of every server event. */
 export const ServerEventSchema = z.discriminatedUnion('type', [
   ServerEvent.callConnected,
   ServerEvent.callAnswered,
@@ -261,10 +182,6 @@ export const ServerEventSchema = z.discriminatedUnion('type', [
 
 export type ServerEvent = z.infer<typeof ServerEventSchema>;
 export type ServerEventType = ServerEvent['type'];
-
-// ─────────────────────────────────────────────────────
-// Client → Server commands
-// ─────────────────────────────────────────────────────
 
 export const ClientCommand = {
   speak: z.object({
@@ -301,13 +218,6 @@ export const ClientCommand = {
     }),
   }),
 
-  /**
-   * Switch the active conversation style mid-call. Wire id is the same
-   * format the REST endpoints use: "builtin:<key>" or "custom:<uuid>".
-   * Takes effect on the NEXT suggestion turn (no re-rendering of past
-   * messages). Server confirms with a `call.config.changed` event carrying
-   * the new `styleId`.
-   */
   changeStyle: z.object({
     type: z.literal('user.change_style'),
     data: z.object({
@@ -315,13 +225,6 @@ export const ClientCommand = {
     }),
   }),
 
-  /**
-   * Promote a pending AI candidate to actual speech. Mobile sends this
-   * either explicitly (manual mode — user tapped "Send") or implicitly
-   * when its auto-mode countdown ring elapses without the user tapping
-   * cancel. Server idempotent: a second accept for the same candidateId
-   * is a no-op.
-   */
   acceptAiReply: z.object({
     type: z.literal('user.accept_ai_reply'),
     data: z.object({
@@ -329,11 +232,6 @@ export const ClientCommand = {
     }),
   }),
 
-  /**
-   * Drop a pending AI candidate without speaking it. The agent then
-   * waits for the user to either type something or accept the next
-   * candidate (which the framework will generate on the next turn).
-   */
   cancelAiReply: z.object({
     type: z.literal('user.cancel_ai_reply'),
     data: z.object({
@@ -341,14 +239,6 @@ export const ClientCommand = {
     }),
   }),
 
-  /**
-   * Flip the per-call "auto-accept AI candidates" toggle. When ON the
-   * agent waits a fixed window before auto-promoting the candidate
-   * (current behaviour, just with a visible "about to speak" preview);
-   * when OFF every reply waits for explicit accept. Toggle is per-call,
-   * not persisted to the user profile — different calls may warrant
-   * different control levels.
-   */
   setAutoMode: z.object({
     type: z.literal('user.set_auto_mode'),
     data: z.object({
@@ -382,24 +272,11 @@ export const ClientCommandSchema = z.discriminatedUnion('type', [
 export type ClientCommand = z.infer<typeof ClientCommandSchema>;
 export type ClientCommandType = ClientCommand['type'];
 
-// ─────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────
-
-/**
- * Parse a raw client message. Returns null on invalid payload — never throws.
- * Caller decides how to respond (typically `call.error` with `RATE_LIMITED`
- * or just drop + log).
- */
 export function parseClientCommand(raw: unknown): ClientCommand | null {
   const result = ClientCommandSchema.safeParse(raw);
   return result.success ? result.data : null;
 }
 
-/**
- * Strict server event validator. Used in tests + outbound WS pipeline to catch
- * shape regressions before they reach the client.
- */
 export function parseServerEvent(raw: unknown): ServerEvent | null {
   const result = ServerEventSchema.safeParse(raw);
   return result.success ? result.data : null;

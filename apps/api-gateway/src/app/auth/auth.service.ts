@@ -61,12 +61,6 @@ export interface PublicUser {
   preferredLlmProvider: string | null;
   preferredLlmModel: string | null;
   preferredTtsProvider: string | null;
-  /**
-   * Wire id of the user's preferred conversation style — "builtin:<key>" or
-   * "custom:<uuid>", or null when not set. Exposed so mobile clients can
-   * pre-select the default chip without an extra round-trip; the matching
-   * writer lives at PATCH /v1/users/me/preferences/style.
-   */
   preferredStyleId: string | null;
   isDeafMute: boolean;
   createdAt: string;
@@ -87,7 +81,6 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto, ctx: ClientContext): Promise<AuthResponse> {
-    // Reject breached passwords BEFORE the expensive bcrypt op.
     await this.passwordBreach.assertNotBreached(dto.password);
 
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
@@ -98,9 +91,6 @@ export class AuthService {
       name: dto.name,
     });
 
-    // Fire-and-await: subscription creation is critical (every active user
-    // must have one). We emit and await — listener errors propagate up and
-    // surface to the client. Sentry captures via global filter.
     const event: UserRegisteredPayload = {
       userId: user.id,
       email: user.email,
@@ -108,8 +98,6 @@ export class AuthService {
     };
     await this.events.emitAsync(USER_REGISTERED_EVENT, event);
 
-    // Metric: bump AFTER subscription creation succeeded, so the count
-    // reflects fully-onboarded users rather than half-baked ones.
     this.signupsCounter.inc();
 
     return this.buildAuthResponse(user, ctx);
@@ -118,8 +106,6 @@ export class AuthService {
   async login(dto: LoginDto, ctx: ClientContext): Promise<AuthResponse> {
     const user = await this.usersService.findByEmail(dto.email);
 
-    // Constant-time-ish: always run bcrypt.compare even on missing user, to
-    // make timing attacks impractical. Throw the same error in both cases.
     const dummyHash =
       '$2b$12$abcdefghijklmnopqrstuv1234567890abcdefghijklmnopqrstuv1234567890';
     const passwordOk = await bcrypt.compare(
@@ -225,11 +211,6 @@ export class AuthService {
 
     const newHash = await bcrypt.hash(dto.newPassword, BCRYPT_COST);
 
-    // Order matters: revoke sessions FIRST, then write the new hash.
-    // If the order were reversed and updatePasswordHash succeeded but
-    // revokeAllForUser failed, the password would be rotated while old
-    // sessions still work — strictly worse than "sessions cleared but
-    // password unchanged" (user simply retries).
     await this.refreshTokens.revokeAllForUser(userId);
     await this.usersService.updatePasswordHash(userId, newHash);
   }
@@ -247,8 +228,6 @@ export class AuthService {
     await this.refreshTokens.revokeAllForUser(userId);
     await this.usersService.softDelete(userId);
   }
-
-  // ─── helpers ────────────────────────────────────────
 
   private async buildAuthResponse(
     user: User,
@@ -279,7 +258,6 @@ export class AuthService {
   }
 
   toPublic(user: User): PublicUser {
-    // Pick whitelisted fields — never use `delete user.passwordHash` (mutates input).
     return {
       id: user.id,
       email: user.email,
@@ -298,8 +276,4 @@ export class AuthService {
   }
 }
 
-/**
- * Re-export so the `users` module can use the same error message when
- * trying to insert a duplicate. Avoids a circular dep.
- */
 export { ConflictException };

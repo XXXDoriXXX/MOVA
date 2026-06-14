@@ -1,24 +1,5 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-/**
- * Conversation persistence: conversations + messages + suggestions.
- *
- * Backward-compatibility note for usage_records:
- *   The earlier Billing migration declared `usage_records.conversationId` as
- *   a "soft FK" because Conversation didn't exist yet. We now ADD the FK
- *   constraint so cascade-delete of a conversation properly cleans up its
- *   usage rows. (Append-only semantics still hold for the table — we delete
- *   only when the parent user is removed via cascade.)
- *
- * Indexes:
- *   - conversations.livekitRoom UNIQUE — prevents two active conversations
- *     pointing at the same SIP room (defensive; api-gateway generates a
- *     fresh uuid per call already).
- *   - conversations(status) WHERE status IN (...) — fast lookup of dangling
- *     calls for the watchdog cron (Phase 8).
- *   - messages(conversationId, createdAt) — primary read pattern for the
- *     mobile chat-history pagination cursor.
- */
 export class Conversations1715868000000 implements MigrationInterface {
   name = 'Conversations1715868000000';
 
@@ -48,7 +29,6 @@ export class Conversations1715868000000 implements MigrationInterface {
       EXCEPTION WHEN duplicate_object THEN null; END $$;
     `);
 
-    // ── conversations ────────────────────────────────
     await q.query(`
       CREATE TABLE "conversations" (
         "id"                     uuid                              NOT NULL DEFAULT uuid_generate_v4(),
@@ -90,7 +70,6 @@ export class Conversations1715868000000 implements MigrationInterface {
       `CREATE UNIQUE INDEX "idx_conversations_livekit_room" ON "conversations" ("livekitRoom")`,
     );
 
-    // ── messages ─────────────────────────────────────
     await q.query(`
       CREATE TABLE "messages" (
         "id"                uuid                          NOT NULL DEFAULT uuid_generate_v4(),
@@ -113,7 +92,6 @@ export class Conversations1715868000000 implements MigrationInterface {
       `CREATE INDEX "idx_messages_conversation_created" ON "messages" ("conversationId", "createdAt")`,
     );
 
-    // ── suggestions ──────────────────────────────────
     await q.query(`
       CREATE TABLE "suggestions" (
         "id"                uuid           NOT NULL DEFAULT uuid_generate_v4(),
@@ -134,7 +112,6 @@ export class Conversations1715868000000 implements MigrationInterface {
     await q.query(`CREATE INDEX "idx_suggestions_conversation" ON "suggestions" ("conversationId")`);
     await q.query(`CREATE INDEX "idx_suggestions_parent" ON "suggestions" ("parentMessageId")`);
 
-    // ── usage_records: backfill the FK now that conversations exists ──
     await q.query(`
       ALTER TABLE "usage_records"
         ADD CONSTRAINT "FK_usage_records_conversation"

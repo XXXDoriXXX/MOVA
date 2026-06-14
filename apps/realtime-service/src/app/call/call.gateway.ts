@@ -22,19 +22,11 @@ import { ConversationAccessService } from './conversation-access.service';
 import { RealtimeBridgeService } from './realtime-bridge.service';
 import { ReplayService } from './replay.service';
 
-/**
- * Per-socket state attached to `socket.data`. Socket.IO types `data` as a
- * generic — we cast at access sites via a small helper to keep TS happy
- * without polluting the global Socket type (which leaks into other gateways).
- */
 interface SocketData {
   userId: string;
   conversationId: string;
-  /** Cleans up the Redis-bridge subscription on disconnect. */
   unsubscribeBridge: () => void;
-  /** Heartbeat watchdog — kills the socket if no `ping` for too long. */
   heartbeatTimer: NodeJS.Timeout;
-  /** Replay cursor (XADD stream id) from handshake; null on first connect. */
   lastStreamId: string | null;
 }
 
@@ -51,39 +43,12 @@ function sockLog(logger: Logger, socket: Socket): CallLogger {
   });
 }
 
-const HEARTBEAT_GRACE_MS = 60_000; // close socket if no ping for 60s
-const MAX_TEXT_LEN = 2_000; // mirrors ws-events Zod constraint
+const HEARTBEAT_GRACE_MS = 60_000;
+const MAX_TEXT_LEN = 2_000;
 
-/**
- * The WS gateway. One Socket.IO connection per (user, conversation).
- *
- * Connect URL (Socket.IO):
- *   wss://realtime.mova.app/calls?conversationId=<uuid>&token=<jwt>
- *
- * Authentication: JWT signature + Conversation ownership are verified in the
- * `auth` middleware below. Failure rejects the handshake — client receives
- * connect_error and disconnects without ever entering the active state.
- *
- * Wire protocol (matches shared-realtime/ws-events.ts):
- *   Server → Client:  event name = "event", payload = ServerEvent JSON
- *   Client → Server:  event name = "command", payload = ClientCommand JSON
- *
- * Backpressure: Socket.IO ack timeouts handle this for us; we throttle
- * command processing at 10/sec per socket via the bucket counter below.
- *
- * Mobile UX notes:
- *   - Reconnect: client must re-handshake with a fresh `lastEventId` (Phase 5
- *     follow-up). Until then, brief disconnects lose partials but the next
- *     final event recovers state.
- *   - Pings: mobile sends `{type:"ping"}` every 20s. Server replies with
- *     `{type:"pong"}` and resets the heartbeat watchdog.
- */
 @WebSocketGateway({
   namespace: '/calls',
-  // CORS is overridden by main.ts; mobile clients connect from a custom
-  // scheme so this is mainly for admin UI / Swagger-derived testers.
   cors: { origin: true },
-  // Hold buffered events while a client briefly disconnects.
   serveClient: false,
 })
 @UseFilters(BaseWsExceptionFilter)
@@ -93,7 +58,6 @@ export class CallGateway implements OnModuleDestroy {
   @WebSocketServer()
   server!: Server;
 
-  /** Per-socket command-throttle bucket (token-bucket simplified). */
   private readonly commandRate = new Map<string, { count: number; resetAt: number }>();
 
   constructor(
@@ -111,8 +75,6 @@ export class CallGateway implements OnModuleDestroy {
 
   afterInit(server: Server): void {
     server.use((socket, next) => {
-      // Socket.IO's `next` expects (err?). Wrap explicitly so we don't pass
-      // the resolved void value as an "error".
       void this.authenticate(socket).then(
         () => next(),
         (err: unknown) => next(err instanceof Error ? err : new Error(String(err))),
@@ -121,25 +83,13 @@ export class CallGateway implements OnModuleDestroy {
   }
 
   async handleConnection(socket: Socket): Promise<void> {
-    // Increment first so the gauge is correct even if the rest of
-    // handleConnection throws — handleDisconnect always runs and
-    // decrements regardless of the failure path. Without this
-    // ordering, a thrown error here would leave the gauge stuck high.
     this.wsConnections.inc();
     const data = sockData(socket);
     const { userId, conversationId, lastStreamId } = data;
 
-    // Subscribe to live events FIRST — buffer them locally until replay is
-    // finished, then flush in order. This closes the race window where an
-    // event arrives between XRANGE completion and pub/sub attach.
     const liveBuffer: ServerEvent[] = [];
     let liveOpen = false;
     const unsubscribe = this.bridge.attach(conversationId, (event: ServerEvent) => {
-      // mova_ws_messages_total{direction="outbound"}: bumped here at the
-      // main hot-path (one per published event per subscribed socket).
-      // We deliberately don't count buffered-then-flushed events twice;
-      // the metric reflects "send attempts to a connected client",
-      // which is what the dashboards care about.
       this.wsMessages.inc({ direction: 'outbound' });
       this.logger.debug({
         msg: 'ws.event.out',
@@ -169,9 +119,6 @@ export class CallGateway implements OnModuleDestroy {
     });
     clog.event('ws.connect', { reconnect: Boolean(lastStreamId), lastStreamId });
 
-    // Replay missed events on reconnect, BEFORE we emit the call.connected
-    // greeting — keeps the client's view monotonic. Replay errors are
-    // swallowed (we don't want a Redis blip to fail the WS connect).
     if (lastStreamId) {
       try {
         const replayed = await this.replay.replayMissed(conversationId, lastStreamId);
@@ -186,18 +133,15 @@ export class CallGateway implements OnModuleDestroy {
       }
     }
 
-    // Flush any live events that arrived during replay, then open the firehose.
     for (const event of liveBuffer) {
       socket.emit('event', event);
     }
     liveBuffer.length = 0;
     liveOpen = true;
 
-    // Greet — mobile UI can render "online" instantly without waiting for
-    // agent join. Emitted AFTER replay so the client knows reconnect drained.
     socket.emit('event', {
       type: 'call.connected',
-      id: socket.id, // good-enough unique within this socket
+      id: socket.id,
       timestamp: new Date().toISOString(),
       data: { conversationId },
     });
@@ -205,10 +149,6 @@ export class CallGateway implements OnModuleDestroy {
   }
 
   handleDisconnect(socket: Socket): void {
-    // Always decrement, even if auth bounced this socket before
-    // attaching the bridge — we incremented unconditionally in
-    // handleConnection so we must decrement unconditionally here
-    // to keep the gauge honest.
     this.wsConnections.dec();
     const data = socket.data as Partial<SocketData> | undefined;
     if (data?.unsubscribeBridge) {
@@ -228,20 +168,8 @@ export class CallGateway implements OnModuleDestroy {
     this.commandRate.clear();
   }
 
-  // ── Client → Server ────────────────────────────────
-
-  /**
-   * Single handler for all commands. The discriminated-union parser
-   * validates shape; we then translate each kind to a Redis call-controls
-   * publish for agent-worker to consume.
-   */
-  // We don't use @SubscribeMessage('command') because we want to apply
-  // rate-limiting before dispatch, which is easier with raw .on().
   private bindCommandHandler(socket: Socket): void {
     socket.on('command', async (raw: unknown) => {
-      // Count BEFORE rate-limit check so the metric reflects raw
-      // client traffic (rate-limited attempts still cost CPU + are
-      // a useful signal of misbehaving clients).
       this.wsMessages.inc({ direction: 'inbound' });
       try {
         if (!this.allowCommand(socket.id)) {
@@ -268,7 +196,6 @@ export class CallGateway implements OnModuleDestroy {
 
     switch (cmd.type) {
       case 'ping':
-        // Reset heartbeat watchdog + reply.
         clearTimeout(sockData(socket).heartbeatTimer);
         sockData(socket).heartbeatTimer = this.startHeartbeat(socket);
         socket.emit('event', {
@@ -279,7 +206,7 @@ export class CallGateway implements OnModuleDestroy {
         return;
 
       case 'user.speak':
-        if (cmd.data.text.length > MAX_TEXT_LEN) return; // defense in depth
+        if (cmd.data.text.length > MAX_TEXT_LEN) return;
         await this.redis.publish(
           channel,
           JSON.stringify({
@@ -336,10 +263,6 @@ export class CallGateway implements OnModuleDestroy {
         return;
 
       case 'user.change_style':
-        // We do NOT validate the styleId here — the gateway is in the hot
-        // path and doesn't own the DB. agent-worker resolves it; an invalid
-        // id falls through to the default with a warn log. The mobile UI
-        // should only ever send IDs that GET /styles returned.
         await this.redis.publish(
           channel,
           JSON.stringify({
@@ -396,18 +319,12 @@ export class CallGateway implements OnModuleDestroy {
     }
   }
 
-  // ── Auth handshake ─────────────────────────────────
-
   private async authenticate(socket: Socket): Promise<void> {
     const { token, conversationId, lastStreamId } = this.extractAuthFromSocket(socket);
     if (!token || !conversationId) {
       throw new Error('Missing token or conversationId');
     }
 
-    // Dual-secret rotation: try CURRENT first, then PREVIOUS if
-    // configured. Mirrors api-gateway's JwtStrategy logic so a token
-    // signed by the OLD secret keeps working through a deploy window.
-    // See env.validation.ts JWT_SECRET_PREVIOUS for the workflow.
     let payload: unknown;
     const currentSecret = this.config.get('JWT_SECRET', { infer: true });
     const previousSecret = this.config.get('JWT_SECRET_PREVIOUS', {
@@ -431,7 +348,6 @@ export class CallGateway implements OnModuleDestroy {
       throw new Error('Invalid token payload');
     }
 
-    // Ownership check against the Redis-side call context.
     try {
       await this.access.assertOwner(conversationId, parsed.data.sub);
     } catch (err) {
@@ -445,7 +361,6 @@ export class CallGateway implements OnModuleDestroy {
       throw err;
     }
 
-    // Persist on the socket for later use in handlers + lifecycle.
     const data: SocketData = {
       userId: parsed.data.sub,
       conversationId,
@@ -454,7 +369,6 @@ export class CallGateway implements OnModuleDestroy {
       lastStreamId,
     };
     (socket as Socket & { data: SocketData }).data = data;
-    // Wire the `command` event handler now that we know the socket is trusted.
     this.bindCommandHandler(socket);
   }
 
@@ -473,16 +387,10 @@ export class CallGateway implements OnModuleDestroy {
       (handshake.auth?.['conversationId'] as string | undefined) ??
       (handshake.query['conversationId'] as string | undefined) ??
       null;
-    // Replay cursor: mobile client persists the last `ServerEvent.id` it saw
-    // (which equals the Redis Stream entry id) and replays missed events on
-    // reconnect. Absent on first connect.
     const rawCursor =
       (handshake.auth?.['lastStreamId'] as string | undefined) ??
       (handshake.query['lastStreamId'] as string | undefined) ??
       null;
-    // Sanity-check shape: "<ms>-<seq>" with digits only. Reject anything else
-    // to avoid passing junk into XRANGE (Redis would error and we'd swallow it,
-    // but better to fail fast on bad client input).
     const lastStreamId =
       rawCursor && /^\d+-\d+$/.test(rawCursor) ? rawCursor : null;
     return { token, conversationId, lastStreamId };
@@ -494,12 +402,6 @@ export class CallGateway implements OnModuleDestroy {
     return scheme?.toLowerCase() === 'bearer' && value ? value : null;
   }
 
-  // ── Heartbeat ─────────────────────────────────────
-
-  /**
-   * Closes the socket if no ping arrives within HEARTBEAT_GRACE_MS. Mobile
-   * client sends `{type:"ping"}` every 20s; missing two intervals → drop.
-   */
   private startHeartbeat(socket: Socket): NodeJS.Timeout {
     return setTimeout(() => {
       sockLog(this.logger, socket).warn('ws.heartbeat.timeout', {
@@ -509,9 +411,6 @@ export class CallGateway implements OnModuleDestroy {
     }, HEARTBEAT_GRACE_MS);
   }
 
-  // ── Rate limiting ─────────────────────────────────
-
-  /** Allow ≤10 commands per second per socket. Excess is silently dropped. */
   private allowCommand(socketId: string): boolean {
     const now = Date.now();
     const bucket = this.commandRate.get(socketId);

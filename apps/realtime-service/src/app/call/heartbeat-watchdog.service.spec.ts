@@ -2,12 +2,6 @@ import { RedisChannels } from '@mova-back/shared-realtime';
 
 import { HeartbeatWatchdog } from './heartbeat-watchdog.service';
 
-/**
- * Minimal ioredis stub. We only exercise the methods the watchdog
- * actually calls — subscribe/psubscribe, on('message'|'pmessage'),
- * publish, duplicate, disconnect. Everything else throws so a future
- * regression that depends on un-stubbed API surface fails loudly.
- */
 type Handler = (...args: unknown[]) => void;
 
 class FakeRedis {
@@ -36,8 +30,6 @@ class FakeRedis {
   }
 }
 
-// Helper to peek inside the watchdog at the subscriber it created so
-// the test can fire fake `message` / `pmessage` events.
 function subscriberOf(wd: HeartbeatWatchdog): FakeRedis {
   return (wd as unknown as { subscriber: FakeRedis }).subscriber;
 }
@@ -65,10 +57,8 @@ describe('HeartbeatWatchdog', () => {
       JSON.stringify({ conversationId: CONV, roomName: 'room' }),
     );
 
-    // 22s grace + a hair to cross the deadline.
     jest.advanceTimersByTime(22_500);
 
-    // Let the microtask the timer enqueued (`publish`) flush.
     await Promise.resolve();
 
     expect(redis.publish).toHaveBeenCalledWith(
@@ -85,26 +75,19 @@ describe('HeartbeatWatchdog', () => {
     await wd.onModuleInit();
     const sub = subscriberOf(wd);
 
-    // t=0 — dispatch arms a 22s deadline.
     sub.emit(
       'message',
       RedisChannels.callDispatch,
       JSON.stringify({ conversationId: CONV, roomName: 'room' }),
     );
 
-    // t=5s — first heartbeat. Replaces the (long) dispatch timer with
-    // a fresh 15s one that will fire at t=20s.
     jest.advanceTimersByTime(5_000);
     sub.emit('pmessage', 'heartbeat:*', `heartbeat:${CONV}`, '{"ts":1}');
 
-    // t=19s — still silent (just before the new 15s deadline).
     jest.advanceTimersByTime(14_000);
     await Promise.resolve();
     expect(redis.publish).not.toHaveBeenCalled();
 
-    // t=21s — past the heartbeat deadline (t=20s) BUT before the
-    // original dispatch deadline would have been (t=22s). Firing
-    // here proves the heartbeat shortened the window.
     jest.advanceTimersByTime(2_000);
     await Promise.resolve();
     expect(redis.publish).toHaveBeenCalledTimes(1);
@@ -141,7 +124,6 @@ describe('HeartbeatWatchdog', () => {
     await wd.onModuleInit();
     const sub = subscriberOf(wd);
 
-    // Call running: dispatch + a heartbeat arm the 15s grace window.
     sub.emit(
       'message',
       RedisChannels.callDispatch,
@@ -149,8 +131,6 @@ describe('HeartbeatWatchdog', () => {
     );
     sub.emit('pmessage', 'heartbeat:*', `heartbeat:${CONV}`, '{"ts":1}');
 
-    // The interlocutor hangs up → agent emits a clean call.ended and stops
-    // heart-beating. The watchdog must cancel its timer, not fire AGENT_LOST.
     sub.emit(
       'pmessage',
       'call-events:*',
@@ -183,7 +163,6 @@ describe('HeartbeatWatchdog', () => {
       JSON.stringify({ type: 'transcript.final', conversationId: CONV }),
     );
 
-    // No heartbeat after → the grace timer still fires AGENT_LOST.
     jest.advanceTimersByTime(16_000);
     await Promise.resolve();
     expect(redis.publish).toHaveBeenCalledWith(

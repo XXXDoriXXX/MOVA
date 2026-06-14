@@ -58,26 +58,6 @@ import {
   ResolveIncidentDto,
 } from './dto/admin.schemas';
 
-/**
- * Admin REST surface.
- *
- * Security model:
- *   - All routes are marked @Public() so the global JwtAuthGuard skips
- *     them (it would 401 the shared-password path otherwise). The
- *     real auth is done by AdminAccessGuard — see its file for the
- *     two accepted credentials (admin-role JWT OR ADMIN_PASSWORD
- *     bearer). The guard injects `request.user`, so downstream
- *     handlers + @CurrentUser() work unchanged.
- *   - All routes are under /v1/admin/. Production should restrict by
- *     IP allowlist or VPN at the load-balancer level.
- *
- * Audit:
- *   - Block / unblock + future admin mutations write a row to `audit_logs`
- *     via AuditLogService. The row carries actor snapshot (id, email, role
- *     at time of action), target, action enum, request metadata (ip / UA),
- *     and a JSONB metadata blob with action-specific context.
- *   - GET /admin/audit-log surfaces the trail with cursor pagination + filters.
- */
 @ApiTags('admin')
 @ApiBearerAuth()
 @Public()
@@ -110,15 +90,6 @@ export class AdminController {
     });
   }
 
-  /**
-   * Auth probe — the admin UI calls this on login to validate the
-   * password before storing it. Returns the actor identity so the UI
-   * can show "logged in as foo@bar" in the header (the synthetic
-   * password-only user reads as "admin@local").
-   *
-   * `200 OK` here means the guard let the request through; the body is
-   * just the snapshot. Failure paths (401 / 503) come from the guard.
-   */
   @Get('whoami')
   @ApiOperation({ summary: 'Verify admin credentials and return actor snapshot' })
   whoami(@CurrentUser() user: AuthenticatedUser): {
@@ -129,11 +100,6 @@ export class AdminController {
     return { id: user.id, email: user.email, role: user.role };
   }
 
-  /**
-   * Pull a thin actor + request context for AuditLogService. Lives on the
-   * controller (not the service) because Req is an HTTP concern and we want
-   * the service callable from non-HTTP contexts later (cron / queue handlers).
-   */
   private auditContext(
     user: AuthenticatedUser,
     req: Request,
@@ -150,7 +116,6 @@ export class AdminController {
     };
   }
 
-  /** Extracts the client IP from X-Forwarded-For if our reverse proxy sets it. */
   private firstForwardedIp(req: Request): string | null {
     const header = req.headers['x-forwarded-for'];
     const raw = Array.isArray(header) ? header[0] : header;
@@ -158,8 +123,6 @@ export class AdminController {
     const first = raw.split(',')[0]?.trim();
     return first ? first : null;
   }
-
-  // ── Users ─────────────────────────────────────────
 
   @Get('users')
   @ApiOperation({ summary: 'List users (cursor pagination + search)' })
@@ -205,8 +168,6 @@ export class AdminController {
     const ctx = this.auditContext(actor, req);
     return this.admin.unblockUser(id, ctx.actor, ctx.request);
   }
-
-  // ── Conversations ─────────────────────────────────
 
   @Get('conversations/:id')
   @ApiOperation({
@@ -275,8 +236,6 @@ export class AdminController {
     });
   }
 
-  // ── Stats + incidents ─────────────────────────────
-
   @Get('stats')
   @ApiOperation({ summary: 'High-level KPI snapshot for the dashboard' })
   getStats(): Promise<AdminStats> {
@@ -328,8 +287,6 @@ export class AdminController {
     return this.admin.resolveIncident(id, dto.note, ctx.actor, ctx.request);
   }
 
-  // ── Audit trail ──────────────────────────────────
-
   @Get('audit-log')
   @ApiOperation({
     summary:
@@ -370,8 +327,6 @@ export class AdminController {
     );
   }
 
-  // ── Settings / API keys (admin-managed overlay) ────
-
   @Get('settings')
   @ApiOperation({
     summary: 'List admin-managed env keys (masked) with source provenance.',
@@ -402,10 +357,6 @@ export class AdminController {
     try {
       saved = await this.settings.set(key, value, actorId);
     } catch (err) {
-      // Common config-time errors should surface to the admin UI verbatim
-      // instead of getting flattened to "Internal server error". The
-      // admin panel runs behind ADMIN_PASSWORD on localhost — leaking
-      // the encryption-key-not-set / table-missing message is intended.
       const message = err instanceof Error ? err.message : String(err);
       if (
         message.includes('SETTINGS_ENCRYPTION_KEY') ||
@@ -468,8 +419,6 @@ export class AdminController {
   }
 }
 
-/** AuditLogService rejects non-UUID actor ids; the synthetic admin
- *  ("admin-bypass") needs to land as null so audit rows pass FK checks. */
 function isPersistableActor(id: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 }

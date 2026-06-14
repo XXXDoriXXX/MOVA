@@ -1,28 +1,9 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-/**
- * Per-user "writing style" learning support.
- *
- * Adds:
- *   - `messages.source` enum (typed | suggestion) — null for non-USER_TYPED
- *     rows; lets the profile builder ignore AI-authored words that the user
- *     merely accepted with a tap.
- *   - `user_style_profiles` table — denormalized per-user aggregate that
- *     SuggestionsService reads on every turn. PK = userId (one row per user),
- *     CASCADE on user delete.
- *
- * Backfill policy:
- *   - Existing USER_TYPED rows get NULL `source`. Treating NULL as "unknown
- *     provenance, do not train" is the safe default (we'd rather under-train
- *     than poison the profile by mis-tagging accepted suggestions as typed).
- *   - The profile table starts empty; profiles materialize as users send
- *     new typed messages post-deploy.
- */
 export class UserStyleProfile1716300000000 implements MigrationInterface {
   name = 'UserStyleProfile1716300000000';
 
   async up(q: QueryRunner): Promise<void> {
-    // ── messages.source enum ─────────────────────────
     await q.query(`
       DO $$ BEGIN
         CREATE TYPE "messages_source_enum" AS ENUM ('typed', 'suggestion');
@@ -33,7 +14,6 @@ export class UserStyleProfile1716300000000 implements MigrationInterface {
       ADD COLUMN IF NOT EXISTS "source" "messages_source_enum"
     `);
 
-    // ── user_style_profiles table ────────────────────
     await q.query(`
       CREATE TABLE "user_style_profiles" (
         "userId"             uuid          NOT NULL,

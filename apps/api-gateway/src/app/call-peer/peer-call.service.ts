@@ -56,11 +56,6 @@ export interface PeerLookupResult {
 
 const RING_TTL_SECONDS = 3600;
 
-/**
- * Peer (app-to-app) calls bill the CALLER at a fraction of the PSTN per-second
- * rate — they never touch a SIP trunk, so the only marginal cost is AI + servers.
- * Tunable: this single knob reprices peer minutes (1.0 = same as PSTN, 0 = free).
- */
 const PEER_PRICE_FRACTION = 0.5;
 
 @Injectable()
@@ -179,8 +174,6 @@ export class PeerCallService {
       );
     }
 
-    // Peer calls are billed to the CALLER (not the callee) — gate on the
-    // caller's quota/balance so a caller can't drain a victim by repeat-dialing.
     const eligibility = await this.billing.assertEligible(caller.id);
     clog.event('call.peer.start.eligible', {
       plan: eligibility.summary.plan.code,
@@ -198,10 +191,6 @@ export class PeerCallService {
       templateResolvedId: template?.id ?? null,
       language,
     });
-    // Snapshot the CALLER's plan + the discounted peer rate at start (same
-    // start-snapshot idiom as SIP calls) so end-of-call billing is stable and
-    // targets the caller. FREE callers consume free seconds; PAID callers pay
-    // the peer rate (a fraction of their PSTN price).
     const callerSource =
       eligibility.summary.plan.code === PlanCode.FREE
         ? UsageSource.FREE
@@ -281,8 +270,6 @@ export class PeerCallService {
           : {}),
       },
       maxCallDurationSeconds: eligibility.maxCallDurationSeconds,
-      // Snapshot the plan at start so agent-worker can stamp it onto each
-      // usage.tick without a billing call (mirrors maxCallDurationSeconds).
       planCode: eligibility.summary.plan.code,
       createdAt: new Date().toISOString(),
     };

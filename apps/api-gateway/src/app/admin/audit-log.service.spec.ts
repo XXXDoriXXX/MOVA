@@ -127,7 +127,7 @@ describe('AuditLogService', () => {
       (repo.createQueryBuilder as jest.Mock).mockReturnValue(qb);
 
       await svc.list({ limit: 5000, cursor: '2026-01-01T00:00:00Z' });
-      expect(qb.limit).toHaveBeenCalledWith(201); // limit + 1 for hasMore
+      expect(qb.limit).toHaveBeenCalledWith(201);
       expect(qb.andWhere).toHaveBeenCalledWith(
         'a."createdAt" < :cursor',
         expect.objectContaining({ cursor: expect.any(Date) }),

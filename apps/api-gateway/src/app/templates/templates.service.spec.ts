@@ -6,10 +6,6 @@ import { Template, UserLanguage } from '@mova-back/shared-database';
 
 import { TemplatesService } from './templates.service';
 
-/**
- * Builds a Jest mock Repository<Template>. Only methods used by the service
- * are stubbed; calls to any other method throw to surface accidental coupling.
- */
 function makeRepoMock(): jest.Mocked<Repository<Template>> {
   return {
     find: jest.fn(),
@@ -197,7 +193,7 @@ describe('TemplatesService', () => {
     it('falls back to system template in user language', async () => {
       const systemUk = mkTemplate({ userId: null, isSystem: true });
       repo.findOne
-        .mockResolvedValueOnce(null) // no user default
+        .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(systemUk);
       const found = await service.resolveDefaultForUser(USER_ID, UserLanguage.UK);
       expect(found).toBe(systemUk);
@@ -206,8 +202,8 @@ describe('TemplatesService', () => {
     it('falls back to any system template if nothing in user language', async () => {
       const systemEn = mkTemplate({ userId: null, isSystem: true, language: UserLanguage.EN });
       repo.findOne
-        .mockResolvedValueOnce(null) // no user default
-        .mockResolvedValueOnce(null) // no system in lang
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(systemEn);
       const found = await service.resolveDefaultForUser(USER_ID, UserLanguage.UK);
       expect(found).toBe(systemEn);

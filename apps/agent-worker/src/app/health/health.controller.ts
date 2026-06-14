@@ -10,16 +10,6 @@ import type { Redis } from 'ioredis';
 
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
 
-/**
- * Health endpoints for agent-worker.
- *
- * agent-worker is primarily a Redis consumer + LiveKit Agents host. K8s probes
- * still expect HTTP. We expose minimal HTTP just for liveness/readiness.
- *
- * NOTE: do NOT include LiveKit reachability in readiness — LiveKit transient
- * outages should not pull pods out of rotation (call drops are handled
- * separately). Liveness only fails if event loop is wedged.
- */
 @Controller('health')
 export class HealthController {
   constructor(
@@ -37,11 +27,6 @@ export class HealthController {
   @Get('ready')
   @HealthCheck()
   ready(): Promise<HealthCheckResult> {
-    // agent-worker reads Postgres at boot (settings-sync hydrate) and
-    // per-call (provider-incident writes). A downed DB means new calls
-    // start with stale config and incident audit silently drops, so
-    // /ready should 503 — k8s-equivalent LB removes the pod and the
-    // call gets routed to a healthy peer.
     return this.health.check([
       () => this.pingRedis(),
       () => this.db.pingCheck('database', { timeout: 2000 }),

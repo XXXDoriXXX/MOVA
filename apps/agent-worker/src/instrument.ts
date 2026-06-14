@@ -1,13 +1,7 @@
-/**
- * Sentry initialization. See api-gateway/src/instrument.ts for the PII strategy
- * and import-ordering rationale.
- */
 import * as Sentry from '@sentry/nestjs';
 import { BatchSpanProcessor, type SpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
 
-/** OTLP exporter, opt-in via OTEL_EXPORTER_OTLP_TRACES_ENDPOINT.
- *  See api-gateway/src/instrument.ts for the rationale comment. */
 function buildOtelProcessors(serviceName: string): SpanProcessor[] {
   const endpoint = process.env['OTEL_EXPORTER_OTLP_TRACES_ENDPOINT'];
   if (!endpoint) return [];

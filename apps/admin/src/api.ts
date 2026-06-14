@@ -1,12 +1,3 @@
-/**
- * Tiny fetch wrapper for the admin panel. Treats the bearer token as
- * either the shared ADMIN_PASSWORD or an admin-role JWT — backend's
- * AdminAccessGuard accepts both.
- *
- * No retry / backoff: admin is a low-traffic dev tool, and a failed
- * call surfaces fast through React's error boundary so the operator
- * can react.
- */
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/v1';
 
@@ -52,8 +43,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
-
-// ── Endpoints ──────────────────────────────────────────────────────
 
 export interface WhoAmI {
   id: string;
@@ -181,7 +170,6 @@ export function unblockUser(id: string): Promise<void> {
 
 export interface ProviderIncident {
   id: string;
-  /** "stt" | "llm" | "tts" — matches the backend enum. */
   providerType: string;
   providerName: string;
   errorCode: string;
@@ -209,14 +197,11 @@ export function getProvidersHealth(): Promise<{ items: ProviderHealthRow[] }> {
   return request<{ items: ProviderHealthRow[] }>(`/admin/providers/health`);
 }
 
-// ── Admin-managed settings (env overlay) ────────────────────────────
-
 export interface SettingRow {
   key: string;
   label: string;
   group: 'LLM' | 'STT' | 'TTS' | 'LiveKit' | 'Other';
   description: string;
-  /** "••••abcd" or null when no override exists yet. */
   masked: string | null;
   source: 'db' | 'env' | null;
   updatedAt: string | null;

@@ -327,17 +327,29 @@ export class BillingService {
     const result =
       input.source === UsageSource.FREE
         ? await baseQuery
-            .set({ freeSecondsUsed: () => `"freeSecondsUsed" + :seconds` })
-            // CAS defence-in-depth: even if upstream gates leak, the
-            // UPDATE fails (affected=0) instead of letting freeSecondsUsed
-            // exceed the plan cap. Sub-query joins to the plans table
-            // so the bound is enforced atomically with the increment.
-            // Layer ordering matters: subscriptions row is locked by
-            // the UPDATE; plans row read is consistent within the
-            // statement (no separate transaction needed).
+            // Clamp the increment to the remaining quota instead of an
+            // all-or-nothing add. The billable span can legitimately
+            // exceed remaining seconds by a small margin: the agent-worker
+            // deadline watchdog force-ends at `maxCallDurationSeconds`, but
+            // durationSeconds is wall-clock (answeredAt -> endedAt) and the
+            // force-end teardown + flooring push it a tick past the cap.
+            // An all-or-nothing CAS then matches 0 rows, the caller swallows
+            // the InsufficientBalanceError, and freeSecondsUsed NEVER
+            // advances -- so eligibility keeps approving calls and the user
+            // gets uncapped free service. LEAST(...) pins freeSecondsUsed
+            // at the plan cap on overrun, exhausting the quota so the next
+            // call is refused.
+            .set({
+              freeSecondsUsed: () =>
+                `"freeSecondsUsed" + LEAST(:seconds, (SELECT "freeSecondsPerMonth" FROM "plans" WHERE "plans"."id" = "subscriptions"."planId") - "freeSecondsUsed")`,
+            })
+            // Only refuse when the quota is ALREADY fully exhausted (nothing
+            // left to advance). In the normal flow assertEligible has
+            // already gated this, so affected=0 here is the genuine
+            // edge case and still yields a typed error below.
             .where(
               '"userId" = :userId AND ' +
-                '"freeSecondsUsed" + :seconds <= (SELECT "freeSecondsPerMonth" FROM "plans" WHERE "plans"."id" = "subscriptions"."planId")',
+                '"freeSecondsUsed" < (SELECT "freeSecondsPerMonth" FROM "plans" WHERE "plans"."id" = "subscriptions"."planId")',
               { userId: input.userId },
             )
             .setParameters({ seconds })

@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { IsNull, QueryFailedError, Repository } from 'typeorm';
 
 import {
   Conversation,
@@ -67,6 +67,12 @@ export interface CursorPage<T> {
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
+
+/** appendSuggestions FK-race retry budget. The parent `transcript.final`
+ *  save runs concurrently and normally lands within a single round-trip;
+ *  a few short retries cover the worst-case interleave without blocking. */
+const APPEND_SUGGESTIONS_MAX_RETRIES = 5;
+const APPEND_SUGGESTIONS_RETRY_DELAY_MS = 100;
 
 /**
  * Conversation + Message + Suggestion store.
@@ -368,7 +374,36 @@ export class ConversationsService {
       position: idx + 1,
       wasChosen: false,
     }));
-    return this.suggestions.save(rows);
+    // FK race: `transcript.final` (the parent message) and this
+    // `suggestions.generated` event are dispatched CONCURRENTLY by the
+    // consumer (un-awaited handleMessage per pmessage). The parent is
+    // published first and lags behind an LLM round-trip, so it normally
+    // commits first — but if this child INSERT wins the race the parent
+    // row isn't there yet and Postgres raises foreign_key_violation
+    // (SQLSTATE 23503). Retry briefly so the in-flight parent save lands,
+    // rather than dropping all 3 chips at-most-once.
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < APPEND_SUGGESTIONS_MAX_RETRIES; attempt++) {
+      try {
+        return await this.suggestions.save(rows);
+      } catch (err) {
+        if (!ConversationsService.isForeignKeyViolation(err)) {
+          throw err;
+        }
+        lastErr = err;
+        await new Promise((resolve) =>
+          setTimeout(resolve, APPEND_SUGGESTIONS_RETRY_DELAY_MS),
+        );
+      }
+    }
+    throw lastErr;
+  }
+
+  /** Recognise Postgres foreign_key_violation (SQLSTATE 23503) — the parent
+   *  message row hasn't committed yet on the concurrent consumer path. */
+  private static isForeignKeyViolation(err: unknown): boolean {
+    if (!(err instanceof QueryFailedError)) return false;
+    return (err as QueryFailedError & { code?: string }).code === '23503';
   }
 
   async markSuggestionChosen(suggestionId: string): Promise<Suggestion | null> {

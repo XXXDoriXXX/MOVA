@@ -47,6 +47,13 @@ export interface AgentContext {
    */
   maxCallDurationSeconds?: number;
   /**
+   * Plan code at call start, snapshotted by api-gateway alongside
+   * maxCallDurationSeconds. Surfaced on each usage.tick so the mobile
+   * counter can label free vs paid without a billing round-trip. Optional
+   * for back-compat with legacy contexts; defaults to 'free' on the wire.
+   */
+  planCode?: 'free' | 'paid';
+  /**
    * Resolved conversation-style prompt block (output of
    * StyleResolverService.resolve()). Injected into the LLM's system
    * prompt as a TONE section so the main agent voice — not just

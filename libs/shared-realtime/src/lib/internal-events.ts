@@ -201,6 +201,16 @@ export const CallTickEvent = baseEvent.extend({
   data: z.object({
     /** Seconds the call has been connected. Monotonic, computed agent-side. */
     secondsConnected: z.number().int().nonnegative(),
+    /**
+     * Seconds left in THIS call under the at-start billing snapshot:
+     * max(0, maxCallDurationSeconds - secondsConnected). Computed by the
+     * agent against the snapshot it already holds (no mid-call billing
+     * call). null when the context carried no cap (legacy / mis-configured
+     * plan) — the mobile counter then hides rather than showing a fake number.
+     */
+    secondsRemaining: z.number().int().nonnegative().nullable(),
+    /** Plan at call start, snapshotted into the call context by api-gateway. */
+    planCode: z.enum(['free', 'paid']),
   }),
 });
 

@@ -88,19 +88,44 @@ export class ConversationLifecycleService {
     if (!existing) {
       throw new Error(`Conversation not found: ${input.conversationId}`);
     }
-    if (
-      existing.status === ConversationStatus.ENDED ||
-      existing.status === ConversationStatus.FAILED
-    ) {
+    // ATOMIC CLAIM of the terminal transition. The previous status read was a
+    // non-atomic check-then-act: two concurrent `call.ended` deliveries (real
+    // agent end racing the realtime watchdog's synthesized AGENT_LOST, or an
+    // admin force-end racing a real end) both saw status=ACTIVE and both went
+    // on to charge. This single guarded UPDATE makes the conversation row the
+    // serialization point — only the caller whose UPDATE affects a row (won
+    // the pending|active -> terminal transition) is allowed to bill. Everyone
+    // else (loser of the race, or an already-terminal row) returns an
+    // idempotent replay WITHOUT re-charging.
+    const claimStatus =
+      input.reason === ConversationEndReason.FATAL_ERROR
+        ? ConversationStatus.FAILED
+        : ConversationStatus.ENDED;
+    const claim = await this.conversationsRepo
+      .createQueryBuilder()
+      .update(Conversation)
+      .set({ status: claimStatus })
+      .where('id = :id AND "status" IN (:...active)', {
+        id: input.conversationId,
+        active: [ConversationStatus.PENDING, ConversationStatus.ACTIVE],
+      })
+      .execute();
+    if ((claim.affected ?? 0) === 0) {
+      // Lost the claim (or row already terminal). THIS invocation must not
+      // bill. Re-read to return the authoritative committed row.
+      const settled =
+        (await this.conversationsRepo.findOne({
+          where: { id: input.conversationId },
+        })) ?? existing;
       this.logger.debug(
-        `Idempotent endCall replay for conversation ${input.conversationId} (status=${existing.status})`,
+        `Idempotent endCall replay for conversation ${input.conversationId} (status=${settled.status})`,
       );
       return {
-        conversation: existing,
-        secondsBilled: existing.durationSeconds,
+        conversation: settled,
+        secondsBilled: settled.durationSeconds,
         costCents: 0, // unknown for replay; reconciliation knows truth
         source:
-          existing.initialLlmProvider === PlanCode.FREE ? UsageSource.FREE : UsageSource.PAID,
+          settled.initialLlmProvider === PlanCode.FREE ? UsageSource.FREE : UsageSource.PAID,
         idempotentReplay: true,
       };
     }

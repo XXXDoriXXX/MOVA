@@ -226,13 +226,37 @@ export class BillingService {
     costCents: number;
     source: UsageSource;
   }): Promise<UsageRecord> {
-    const record = await this.usage.save({
-      userId: input.userId,
-      conversationId: input.conversationId,
-      secondsBilled: input.secondsBilled,
-      costCents: input.costCents,
-      source: input.source,
-    });
+    let record: UsageRecord;
+    try {
+      record = await this.usage.save({
+        userId: input.userId,
+        conversationId: input.conversationId,
+        secondsBilled: input.secondsBilled,
+        costCents: input.costCents,
+        source: input.source,
+      });
+    } catch (err) {
+      // Durable backstop: the UNIQUE index on usage_records.conversationId
+      // (migration 1780000200000) makes a second ledger row for the same call
+      // impossible. If a duplicate end-of-call slips past the in-process claim
+      // (cross-pod leak, future caller), the loser sees 23505 — return the
+      // already-recorded row instead of bubbling a 500.
+      if (this.isUniqueViolation(err)) {
+        const winner = await this.usage.findOne({
+          where: { conversationId: input.conversationId },
+        });
+        if (winner) {
+          this.logger.warn({
+            msg: 'billing.recordUsage.duplicateIgnored',
+            userId: input.userId,
+            conversationId: input.conversationId,
+            usageRecordId: winner.id,
+          });
+          return winner;
+        }
+      }
+      throw err;
+    }
     // Structured log: every billable event leaves a key-value trail
     // queryable by log aggregator (Loki/Elastic). "billing.recordUsage"
     // is the single search anchor; userId / conversationId / amounts

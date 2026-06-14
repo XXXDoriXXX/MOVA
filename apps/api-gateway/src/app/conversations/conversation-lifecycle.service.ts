@@ -120,12 +120,16 @@ export class ConversationLifecycleService {
       this.logger.debug(
         `Idempotent endCall replay for conversation ${input.conversationId} (status=${settled.status})`,
       );
+      // Derive the real plan from billing (same source of truth as the
+      // non-replay path). initialLlmProvider is an LLM-provider snapshot
+      // (e.g. 'openai'), NOT a plan code — never compare it to PlanCode.FREE.
+      const replaySummary = await this.billing.getSummary(settled.userId);
       return {
         conversation: settled,
         secondsBilled: settled.durationSeconds,
         costCents: 0, // unknown for replay; reconciliation knows truth
         source:
-          settled.initialLlmProvider === PlanCode.FREE ? UsageSource.FREE : UsageSource.PAID,
+          replaySummary.plan.code === PlanCode.FREE ? UsageSource.FREE : UsageSource.PAID,
         idempotentReplay: true,
       };
     }

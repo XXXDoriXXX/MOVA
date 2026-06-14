@@ -221,15 +221,31 @@ export function mapInternalToServer(event: InternalCallEvent): ServerEvent | nul
 }
 
 /**
- * Map a provider failure to the appropriate CallErrorCode. Falls back to
- * the generic UNAVAILABLE for the provider type. We do NOT use FATAL_INTERNAL
- * here because that ends the call — provider failures are recoverable from
- * the user's perspective (system attempts fallback in Phase 6).
+ * Set of every canonical CallErrorCode value, used to decide whether a
+ * producer-supplied errorCode is already a public code we can forward
+ * verbatim (e.g. STT_STALLED from the STT-stall watchdog) vs. a raw
+ * provider code (e.g. '503', 'PROVIDER_DEGRADED') we must collapse to a
+ * generic per-type degraded code.
+ */
+const VALID_ERROR_CODES: ReadonlySet<string> = new Set<string>(
+  Object.values(CallErrorCode),
+);
+
+/**
+ * Map a provider failure to the appropriate CallErrorCode. If the agent
+ * already supplied a canonical CallErrorCode (e.g. STT_STALLED from the
+ * STT-stall watchdog), honor it so its distinct mobile message/recovery is
+ * preserved. Otherwise fall back to the generic per-type *_DEGRADED for the
+ * provider type. We do NOT use FATAL_INTERNAL here because that ends the
+ * call — provider failures are recoverable from the user's perspective
+ * (system attempts fallback in Phase 6).
  */
 function pickErrorCode(
   providerType: 'stt' | 'llm' | 'tts',
-  _errorCode: string,
+  errorCode: string,
 ): CallErrorCode {
+  // Pass through a code the agent already resolved to a public CallErrorCode.
+  if (VALID_ERROR_CODES.has(errorCode)) return errorCode as CallErrorCode;
   if (providerType === 'stt') return CallErrorCode.STT_DEGRADED;
   if (providerType === 'llm') return CallErrorCode.LLM_DEGRADED;
   return CallErrorCode.TTS_DEGRADED;

@@ -28,7 +28,7 @@ export enum UsageSource {
  */
 @Entity('usage_records')
 @Index('idx_usage_user_recorded', ['userId', 'recordedAt'])
-@Index('idx_usage_conversation', ['conversationId'])
+@Index('idx_usage_conversation', ['conversationId'], { unique: true })
 export class UsageRecord {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

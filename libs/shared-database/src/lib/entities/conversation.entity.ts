@@ -71,6 +71,15 @@ export enum ConversationEndReason {
 @Index('idx_conversations_status_active', ['status'], {
   where: `"status" IN ('pending','active')`,
 })
+// Atomic concurrent-call gate (CLAUDE.md rule #1): at most one live
+// conversation per user. The non-atomic countActiveForUser check is a
+// fast-path; this partial UNIQUE index is the backstop that closes the
+// count-then-INSERT race. createPending catches the 23505 and maps it to
+// the CALL_IN_PROGRESS 409.
+@Index('idx_conversations_active_user_unique', ['userId'], {
+  unique: true,
+  where: `"status" IN ('pending','active')`,
+})
 @Index('idx_conversations_livekit_room', ['livekitRoom'], { unique: true })
 export class Conversation {
   @PrimaryGeneratedColumn('uuid')

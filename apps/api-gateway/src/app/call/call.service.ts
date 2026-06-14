@@ -156,6 +156,14 @@ export class CallService {
         initialVoice: template?.defaultVoice ?? null,
       });
     } catch (err) {
+      // A ConflictException here is the atomic gate firing (createPending hit
+      // the partial UNIQUE index because a concurrent request for this user
+      // already created a live row). Propagate it as the 409 CALL_IN_PROGRESS
+      // contract — do NOT swallow it into a 500.
+      if (err instanceof ConflictException) {
+        clog.warn('call.sip.start.alreadyOnCall', { atInsert: true });
+        throw err;
+      }
       clog.error('call.sip.start.persistFailed', err, { roomName });
       throw new InternalServerErrorException('Failed to start call');
     }

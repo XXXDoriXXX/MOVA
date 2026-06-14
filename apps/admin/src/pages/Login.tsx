@@ -6,15 +6,6 @@ type Props = {
   onSuccess: (user: WhoAmI) => void;
 };
 
-/**
- * Single-field login. The password is the ADMIN_PASSWORD env var on
- * the backend; we POST nothing — we just store the password as the
- * bearer token and hit /admin/whoami to confirm the guard accepts it.
- *
- * If it doesn't (wrong password / panel not configured), we surface
- * the server's message verbatim. Anything more clever (typed error
- * codes) is premature for a single-user dev tool.
- */
 export function LoginPage({ onSuccess }: Props) {
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);

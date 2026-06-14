@@ -7,25 +7,10 @@ import type { KnownSetting } from './known-settings';
 
 export interface ProbeResult {
   ok: boolean;
-  /** HTTP status code from the upstream, when relevant. */
   status?: number;
-  /** Short message rendered next to the field in the admin UI. */
   message: string;
 }
 
-/**
- * Cheap auth-only HTTP probes per provider. We pick the lightest endpoint
- * the vendor exposes that requires the API key — typically `/v1/models` or
- * `/v1/voices` — so a probe doesn't bill us for tokens. Each probe has a
- * 6s hard timeout: real upstream outages should return fast as "down", not
- * pin the admin UI's spinner.
- *
- * Returned `ok` reflects "the key is accepted by the upstream", not "the
- * upstream is generally healthy". A 200 with empty body is fine; a 401 or
- * 403 means the key is wrong; 5xx means upstream's having a bad day but
- * the key is probably fine — we still report `ok=false` so the admin
- * doesn't trust an unverifiable key. The UI lets them save anyway.
- */
 @Injectable()
 export class ProviderProbeService {
   private readonly logger = new Logger(ProviderProbeService.name);
@@ -36,7 +21,6 @@ export class ProviderProbeService {
 
   async probe(setting: KnownSetting, value: string): Promise<ProbeResult> {
     if (setting.probe === 'none') {
-      // No live endpoint — best we can offer is a non-empty + length check.
       return value.length >= setting.minLength
         ? { ok: true, message: `Збережено. Перевірка довжини пройшла.` }
         : { ok: false, message: `Закоротко: мінімум ${setting.minLength} символів.` };
@@ -74,8 +58,6 @@ export class ProviderProbeService {
     }
   }
 
-  // ── Per-provider probes ────────────────────────────
-
   private async probeBearer(url: string, key: string): Promise<ProbeResult> {
     const res = await this.client.get(url, {
       headers: { authorization: `Bearer ${key}` },
@@ -100,10 +82,6 @@ export class ProviderProbeService {
     return this.interpret(res.status);
   }
 
-  /** Cloud TTS uses a separate API endpoint + project from Gemini's
-   *  AI Studio key. We list voices (cheap, no synthesis billed) and
-   *  the 200/403 split tells us if Cloud TTS is enabled on the project
-   *  the key belongs to. */
   private async probeGoogleCloudTts(key: string): Promise<ProbeResult> {
     const res = await this.client.get(
       `https://texttospeech.googleapis.com/v1/voices?key=${encodeURIComponent(key)}&languageCode=uk-UA`,

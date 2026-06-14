@@ -1,22 +1,9 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-/**
- * Billing core: plans, subscriptions, usage_records, payment_events.
- *
- * Hardening:
- *   - CHECK constraints on subscriptions.balanceCents >= 0 + freeSecondsUsed >= 0
- *     to enforce money-non-negative invariant at the storage layer.
- *   - UNIQUE index on subscriptions.userId — one subscription per user.
- *   - UNIQUE index on payment_events.externalId — idempotency for webhook
- *     retries.
- *   - Plans.RESTRICT on FK delete: never drop a plan while subscriptions
- *     reference it (would orphan billing data).
- */
 export class Billing1715781600000 implements MigrationInterface {
   name = 'Billing1715781600000';
 
   async up(q: QueryRunner): Promise<void> {
-    // ── enums ────────────────────────────────────────
     await q.query(`
       DO $$ BEGIN
         CREATE TYPE "plans_code_enum" AS ENUM ('free', 'paid');
@@ -40,7 +27,6 @@ export class Billing1715781600000 implements MigrationInterface {
       EXCEPTION WHEN duplicate_object THEN null; END $$;
     `);
 
-    // ── plans ────────────────────────────────────────
     await q.query(`
       CREATE TABLE "plans" (
         "id"                     uuid               NOT NULL DEFAULT uuid_generate_v4(),
@@ -59,7 +45,6 @@ export class Billing1715781600000 implements MigrationInterface {
     `);
     await q.query(`CREATE UNIQUE INDEX "idx_plans_code" ON "plans" ("code")`);
 
-    // ── subscriptions ────────────────────────────────
     await q.query(`
       CREATE TABLE "subscriptions" (
         "id"                    uuid                          NOT NULL DEFAULT uuid_generate_v4(),
@@ -88,7 +73,6 @@ export class Billing1715781600000 implements MigrationInterface {
       `CREATE INDEX "idx_subscriptions_period_end" ON "subscriptions" ("currentPeriodEnd")`,
     );
 
-    // ── usage_records ────────────────────────────────
     await q.query(`
       CREATE TABLE "usage_records" (
         "id"               uuid                         NOT NULL DEFAULT uuid_generate_v4(),
@@ -110,11 +94,6 @@ export class Billing1715781600000 implements MigrationInterface {
       `CREATE INDEX "idx_usage_conversation" ON "usage_records" ("conversationId")`,
     );
 
-    // Append-only: revoke UPDATE/DELETE on the table at the role level if the
-    // app role exists. Skipped here because role names vary by environment;
-    // ops should add a manual GRANT/REVOKE in their deploy scripts.
-
-    // ── payment_events ───────────────────────────────
     await q.query(`
       CREATE TABLE "payment_events" (
         "id"            uuid                           NOT NULL DEFAULT uuid_generate_v4(),

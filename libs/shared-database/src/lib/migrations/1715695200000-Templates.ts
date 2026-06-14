@@ -1,15 +1,5 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-/**
- * Add templates table — system + user-owned presets for AI conversation behavior.
- *
- * Indexes:
- *   - idx_templates_user                  → fast list-by-user (most common query)
- *   - idx_templates_system_lang (partial) → fast pick-default-by-language for
- *                                           users without their own default
- *   - idx_templates_user_default (partial unique) → enforces one isDefault per
- *                                           user, deleted rows excluded
- */
 export class Templates1715695200000 implements MigrationInterface {
   name = 'Templates1715695200000';
 

@@ -37,31 +37,12 @@ interface CallControlMessage {
   model?: string;
   suggestionId?: string;
   reason?: string;
-  /** Active conversation style id, wire format ("builtin:..." | "custom:..."). */
   styleId?: string;
-  /** AI candidate id for accept/cancel actions. */
   candidateId?: string;
-  /** Auto-mode toggle payload. */
   enabled?: boolean;
-  /** Legacy shape support — old api-gateway code path. */
   roomName?: string;
 }
 
-/**
- * Top-level worker bootstrap + Redis routing.
- *
- * Channels listened to:
- *   - `call-dispatch` (legacy single-channel) — api-gateway publishes here
- *     when a new call should be picked up.
- *   - `call-controls`  (legacy single-channel) — old `interrupt_and_speak`
- *     control format. Kept for back-compat.
- *   - `call-controls:*` (pattern) — Phase 5 typed control commands from
- *     realtime-service. Each message is per-conversationId.
- *
- * Per-conversation routing: we maintain `conversationIndex` so pattern
- * subscribers can locate the active local session in O(1). Calls handled
- * by other agent-worker pods produce a debug log + drop on this node.
- */
 @Injectable()
 export class AgentRunnerService
   implements OnApplicationBootstrap, OnApplicationShutdown
@@ -73,27 +54,8 @@ export class AgentRunnerService
   private readonly activeSessions = new Map<string, ActiveSession>();
   private readonly conversationIndex = new Map<string, string>();
 
-  /**
-   * Unique id for this worker process. Used as the value of
-   * `call-owner:{roomName}` and `call-owner-conv:{conversationId}`
-   * Redis claims so multiple agent-worker pods can subscribe to the
-   * same `call-dispatch` channel without all of them racing to dial
-   * SIP for the same room (which was the case with the previous
-   * in-process `activeSessions.has(roomName)` dedup — local to one pod
-   * only). At any moment, AT MOST one pod owns a given call.
-   *
-   * Restart-stable would be nicer (e.g. hostname-based) so a pod that
-   * crashed and respawned could reclaim its own orphans, but the
-   * SIP-orphan watchdog (Phase 2.2) covers that case independently.
-   * UUID per process is sufficient and avoids hostname collisions in
-   * stateful set deployments.
-   */
   private readonly podId = `agent-worker-${randomUUID().slice(0, 8)}`;
-  /** Ownership claim TTL. Should comfortably exceed max call duration
-   *  so a long call doesn't drop ownership mid-flight. Refreshed
-   *  implicitly on activeSessions.delete() via DEL — no heartbeat
-   *  needed for the happy path. */
-  private static readonly OWNERSHIP_TTL_SECONDS = 4 * 60 * 60; // 4h
+  private static readonly OWNERSHIP_TTL_SECONDS = 4 * 60 * 60;
 
   private ownerKeyByRoom(roomName: string): string {
     return `call-owner:${roomName}`;
@@ -146,20 +108,6 @@ export class AgentRunnerService
     }
   }
 
-  /**
-   * Per-session stop() deadline during shutdown drain. Beyond this, we
-   * stop waiting and forcibly proceed to subscriber.quit() — the SIP
-   * leg of any laggard call eventually gets reaped by the SIP-orphan
-   * watchdog (realtime-service Phase 2.2) or LiveKit's own idle
-   * timeout, but the pod itself MUST exit promptly so k8s / docker
-   * compose / systemd don't escalate to SIGKILL (which would skip our
-   * call.ended emit AND leak the LiveKit room).
-   *
-   * 25s leaves enough headroom for a polite say("goodbye") + the 3×
-   * deleteRoom retries (200+800+2400ms backoff) + cleanup. Past that,
-   * the call clearly isn't shutting down gracefully — better to cut
-   * losses than block the deploy.
-   */
   private static readonly SHUTDOWN_DRAIN_TIMEOUT_MS = 25_000;
 
   async onApplicationShutdown(signal?: string): Promise<void> {
@@ -168,14 +116,8 @@ export class AgentRunnerService
       await this.subscriber.punsubscribe('call-controls:*');
       await this.subscriber.unsubscribe('call-dispatch', 'call-controls');
     } catch {
-      // best-effort
     }
 
-    // Race the drain against a hard timeout. Promise.all naturally
-    // resolves when every session stop() resolves; the timeout
-    // resolves to a sentinel after SHUTDOWN_DRAIN_TIMEOUT_MS so we
-    // never block longer than that. We DO NOT reject — even partial
-    // drain is better than no drain.
     const drainStart = Date.now();
     const stopAll = Promise.allSettled(
       [...this.activeSessions.values()].map((s) => s.handler.stop()),
@@ -204,12 +146,9 @@ export class AgentRunnerService
     try {
       await this.subscriber.quit();
     } catch {
-      // best-effort
     }
     this.logger.log('👋 [Shutdown] complete');
   }
-
-  // ── Message routing ────────────────────────────────
 
   private async routeMessage(channel: string, raw: string): Promise<void> {
     let payload: Record<string, unknown>;
@@ -227,15 +166,9 @@ export class AgentRunnerService
         return;
       }
       if (this.activeSessions.has(roomName)) {
-        // Same dispatch arrived twice on the same pod — pub/sub
-        // duplicate or upstream retry. Safe to no-op.
         this.logger.warn(`Duplicate dispatch for ${roomName} — ignored`);
         return;
       }
-      // Cross-pod claim: SET NX EX is atomic in Redis — only one pod
-      // can win the lock for a given roomName. Losers silently skip.
-      // Without this, every pod subscribed to `call-dispatch` would
-      // dial SIP independently when scaled to >1 instance.
       const claimed = await this.redis.set(
         this.ownerKeyByRoom(roomName),
         this.podId,
@@ -270,12 +203,6 @@ export class AgentRunnerService
     const conversationId = channel.slice('call-controls:'.length);
     if (!conversationId) return;
 
-    // Local-index fast path. If we own the call, the index is hot and
-    // saves a Redis round-trip on every control. Redis ownership is
-    // checked first only if we don't have it locally — which means
-    // either we never had it (it's on another pod, normal cross-pod
-    // case) or our cleanup callback already ran (call ended). Either
-    // way, dropping silently is correct.
     const roomName = this.conversationIndex.get(conversationId);
     if (!roomName) {
       this.logger.debug(
@@ -307,12 +234,6 @@ export class AgentRunnerService
         return;
 
       case CallControlAction.ACCEPT_SUGGESTION:
-        // The mobile client sends `accept_suggestion { suggestionId }` and
-        // the api-gateway consumer marks the row `wasChosen=true`. The text
-        // ride into TTS uses the same SPEAK code path — realtime-service
-        // sends both SPEAK (with the chosen text) and ACCEPT_SUGGESTION
-        // (audit) together. For MVP we no-op here; the audit-only message
-        // lands on api-gateway anyway.
         this.logger.debug(`accept_suggestion received (id=${msg.suggestionId}); audit-only`);
         return;
 
@@ -325,11 +246,6 @@ export class AgentRunnerService
         return;
 
       case CallControlAction.CHANGE_VOICE:
-        // LiveKit Agents binds TTS at session creation; mid-call swap would
-        // recreate the session and cut audio. The preference is persisted
-        // by api-gateway (user profile) and applies on the NEXT call. A
-        // future custom pipeline replacing LiveKit Agents unlocks real-time
-        // swap.
         this.logger.log(
           `change_voice voice=${msg.voice} — applies next call`,
         );
@@ -342,30 +258,18 @@ export class AgentRunnerService
         return;
 
       case CallControlAction.CHANGE_STYLE:
-        // Style is consumed lazily by SuggestionsService at the next turn;
-        // we just mutate the handler's tracked id. No audio interruption,
-        // no provider swap — safe to do mid-utterance.
         if (msg.styleId) await handler.setActiveStyle(msg.styleId);
         return;
 
       case CallControlAction.ACCEPT_AI_REPLY:
-        // Mobile tapped "Send" on the candidate preview (or its auto-mode
-        // timer elapsed and it sent automatically). Promote the pending
-        // candidate to actual TTS via the ttsNode gate.
         if (msg.candidateId) handler.acceptAiReply(msg.candidateId);
         return;
 
       case CallControlAction.CANCEL_AI_REPLY:
-        // User dismissed the candidate before the timer fired. Drop
-        // without speaking — the agent waits for the next interlocutor
-        // turn (which produces a fresh candidate).
         if (msg.candidateId) handler.cancelAiReply(msg.candidateId);
         return;
 
       case CallControlAction.SET_AUTO_MODE:
-        // Per-call toggle — sensitive calls may want manual every time.
-        // Lives on the agent instance only; not persisted to the user
-        // profile because different calls warrant different control.
         if (typeof msg.enabled === 'boolean') handler.setAutoMode(msg.enabled);
         return;
 
@@ -373,8 +277,6 @@ export class AgentRunnerService
         this.logger.warn(`Unknown control action: ${msg.action}`);
     }
   }
-
-  // ── Call bootstrap ─────────────────────────────────
 
   private async initiateCall(roomName: string): Promise<void> {
     try {
@@ -412,10 +314,6 @@ export class AgentRunnerService
           const session = this.activeSessions.get(closedRoomName);
           if (session?.conversationId) {
             this.conversationIndex.delete(session.conversationId);
-            // Release cross-pod ownership of the conversation. We
-            // delete by-conv first so a control message racing in
-            // can't briefly resolve to a pod that's about to drop
-            // ownership of the room too.
             void this.redis
               .del(this.ownerKeyByConv(session.conversationId))
               .catch((err: Error) =>
@@ -434,11 +332,6 @@ export class AgentRunnerService
       this.activeSessions.set(roomName, { handler, conversationId });
       if (conversationId) {
         this.conversationIndex.set(conversationId, roomName);
-        // Conversation-keyed ownership lets routePatternMessage on
-        // ANY pod look up "who owns this conversation". For now we
-        // only rely on it for explicit observability; the dispatch
-        // claim (room-keyed, above) is what actually enforces
-        // single-pod processing. Both keys share the same TTL.
         try {
           await this.redis.set(
             this.ownerKeyByConv(conversationId),
@@ -458,13 +351,9 @@ export class AgentRunnerService
       const e = err as Error;
       reportError(this.logger, 'Failed to initiate call', e, { roomName });
       this.activeSessions.delete(roomName);
-      // Release the dispatch-claim so the next retry (or another pod)
-      // can pick it up. Without this, the room is "owned" for 4h but
-      // nobody can ever process it.
       void this.redis
         .del(this.ownerKeyByRoom(roomName))
         .catch(() => {
-          /* swallow — claim will TTL out anyway */
         });
     }
   }

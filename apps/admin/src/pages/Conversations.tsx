@@ -17,14 +17,6 @@ const FILTERS: { id: Filter; label: string }[] = [
   { id: 'failed', label: 'З помилкою' },
 ];
 
-/**
- * Conversations list — every call across every user, filter chips
- * on top, auto-refresh same as the dashboard but 5s (this list is
- * usually consulted, not stared at).
- *
- * Pagination is simple cursor — "show more" appends; the dashboard
- * shows only "now-active", this page shows the whole history.
- */
 export function ConversationsPage() {
   const [filter, setFilter] = useState<Filter>('all');
   const [items, setItems] = useState<AdminConversation[]>([]);
@@ -32,7 +24,6 @@ export function ConversationsPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Reload first page on filter change or every REFRESH_MS.
   useEffect(() => {
     let cancelled = false;
     async function tick(opts?: { reset?: boolean }) {

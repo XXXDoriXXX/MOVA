@@ -36,9 +36,7 @@ export interface BuiltinStyleSummary extends BuiltinStylePreset {
 
 export interface CustomStyleSummary {
   kind: 'custom';
-  /** Opaque wire ID — `custom:<uuid>` — matches what gets passed to /change_style. */
   id: string;
-  /** Raw UUID for internal use; the wire id is what mobile sends. */
   uuid: string;
   name: string;
   instructions: string;
@@ -53,21 +51,6 @@ export interface ListStylesResponse {
   custom: CustomStyleSummary[];
 }
 
-/**
- * Manages user-authored conversation styles + presents a unified list of
- * "what styles can this user choose from right now" (built-ins + their own).
- *
- * Validation owned here:
- *   - Name + instructions length, trimmed.
- *   - Style ID syntax (`builtin:<key>` / `custom:<uuid>`).
- *   - Ownership (a custom style ID resolves only for its owner).
- *
- * Lakera Guard for prompt-injection IS NOT currently invoked on instructions —
- * the model is told to "follow this user's style guidance" but the safety
- * layer that handles Template.systemPrompt should be applied here too in a
- * follow-up. Filed as a TODO; for MVP the instructions field is bounded to
- * 2KB which limits blast radius.
- */
 @Injectable()
 export class ConversationStylesService {
   private readonly logger = new Logger(ConversationStylesService.name);
@@ -77,7 +60,6 @@ export class ConversationStylesService {
     private readonly styles: Repository<ConversationStyle>,
   ) {}
 
-  /** Unified list — built-ins always come first so the UI can render them at the top. */
   async listForUser(userId: string): Promise<ListStylesResponse> {
     const customs = await this.styles.find({
       where: { userId },
@@ -136,13 +118,6 @@ export class ConversationStylesService {
     await this.styles.delete({ id: row.id });
   }
 
-  /**
-   * Read a single style by wire ID — built-in or custom. Returns null when:
-   *   - the ID syntax is invalid (caller can decide between 400 and "use default")
-   *   - a custom ID references a row owned by someone else (NEVER reveal cross-tenant)
-   *   - a custom ID references a deleted row
-   * Built-ins always resolve.
-   */
   async resolveById(
     userId: string | null,
     wireId: string,
@@ -152,18 +127,12 @@ export class ConversationStylesService {
       const preset = Object.values(BUILTIN_STYLE_PRESETS).find((p) => p.id === wireId);
       return preset ? { ...preset, kind: 'builtin' } : null;
     }
-    // custom:<uuid>
     const uuid = parseCustomStyleId(wireId);
     if (!uuid || !userId) return null;
     const row = await this.styles.findOne({ where: { id: uuid, userId } });
     return row ? this.toCustomSummary(row) : null;
   }
 
-  /**
-   * Validate a wire ID + (for custom) confirm ownership. Used by the
-   * PATCH endpoints that set user preference / template default — we don't
-   * want a 404 at call-start time because the user typo'd a style ID.
-   */
   async assertValidForUser(userId: string, wireId: string): Promise<void> {
     if (!isValidStyleId(wireId)) {
       throw new BadRequestException(
@@ -177,8 +146,6 @@ export class ConversationStylesService {
       }
     }
   }
-
-  // ── helpers ─────────────────────────────────────────
 
   private async requireOwnedCustom(
     userId: string,

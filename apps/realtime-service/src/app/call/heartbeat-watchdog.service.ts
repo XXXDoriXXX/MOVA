@@ -10,88 +10,18 @@ import { Redis } from 'ioredis';
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
 import { RedisChannels } from '@mova-back/shared-realtime';
 
-/** Tolerates 2 missed agent ticks (each is 5s). */
 const HEARTBEAT_GRACE_MS = 15_000;
 
-/**
- * How long to wait after a call is dispatched before we declare the
- * agent dead. Counts from the moment api-gateway publishes the
- * dispatch event; reset by the first heartbeat from agent-worker.
- *
- * The frontend's own client-side watchdog fires at 25s — keep the
- * server slightly tighter so the user sees a typed `call.ended`
- * event rather than the generic "connect timeout" synthesised on
- * the client. 22s leaves the client a 3s grace window.
- */
 const FIRST_HEARTBEAT_GRACE_MS = 22_000;
 
-/**
- * Per-conversation heartbeat tracker. Detects dead agent-worker pods so
- * the user gets a clear "call ended due to agent loss" instead of staring
- * at a hung call.
- *
- * Two arming triggers:
- *
- *   1. **First-heartbeat deadline** — `call-dispatch` event from
- *      api-gateway arms a 22-second timer. If the agent-worker never
- *      picks up the dispatch (crashed pod, queue back-pressure,
- *      LiveKit refusing the room) the first heartbeat never arrives
- *      and we fire AGENT_LOST. Without this, the call would just
- *      hang at "connecting" until the client times out.
- *
- *   2. **Subsequent-heartbeat deadline** — each `heartbeat:{id}`
- *      tick re-arms a 15s timer (3× the agent's 5s tick interval).
- *      If the agent crashes mid-call the next tick won't arrive
- *      and we fire AGENT_LOST.
- *
- * Both deadlines share the same `timers` map — they're conceptually
- * "is this call making progress?" so the first heartbeat replacing
- * the dispatch timer is the natural transition.
- *
- * Wire:
- *   - api-gateway publishes `{ conversationId, roomName }` to
- *     `call-dispatch` whenever a new call starts.
- *   - agent-worker publishes `{"ts":...}` to `heartbeat:{id}` every
- *     5s while a call is active.
- *   - When either deadline fires, we synthesize a typed
- *     `call.ended { reason: 'fatal_error', errorCode: 'AGENT_LOST' }`
- *     event and publish it to `call-events:{conversationId}`. From there:
- *       * api-gateway consumer runs ConversationLifecycleService.endCall
- *         (marks conversation failed, no billing for the dropped part).
- *       * realtime-bridge forwards the event to all attached WS clients.
- *         Mobile renders a fatal modal with retry / close.
- *
- * Why publish over Redis vs. broadcast locally:
- *   - Multiple realtime-service pods serve different conversations. The
- *     pod that detects the missing heartbeat may not be the same pod
- *     that holds the mobile client's WS connection. Routing through
- *     Redis pub/sub ensures the right pod forwards to the right client.
- *   - api-gateway needs the event for persistence regardless.
- *
- * Idempotency:
- *   - Once we declare AGENT_LOST and publish, we DELETE the tracker for
- *     that conversation so we don't fire repeatedly. The next time a
- *     heartbeat arrives (e.g. agent recovered), we re-arm cleanly —
- *     but the conversation is by then marked failed in DB; the late
- *     heartbeat is a no-op.
- */
 @Injectable()
 export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(HeartbeatWatchdog.name);
 
   private subscriber: Redis | null = null;
 
-  /** conversationId → grace timer. Bumped on each heartbeat. */
   private readonly timers = new Map<string, NodeJS.Timeout>();
 
-  /**
-   * Conversations that have already terminated (we declared AGENT_LOST, or we
-   * saw a clean call.ended on the events stream). A late/stale heartbeat for
-   * one of these must NOT re-arm a tracker — otherwise subsequent silence
-   * would fire a SECOND AGENT_LOST and publish a duplicate call.ended to the
-   * mobile client. Insertion-ordered; FIFO-evicted to stay bounded since
-   * conversationIds are unique per call and never reused.
-   */
   private readonly ended = new Set<string>();
   private static readonly MAX_ENDED_TOMBSTONES = 10_000;
 
@@ -99,8 +29,6 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
     if (this.ended.has(conversationId)) return;
     this.ended.add(conversationId);
     if (this.ended.size > HeartbeatWatchdog.MAX_ENDED_TOMBSTONES) {
-      // Evict the oldest tombstone. Worst case after eviction is the
-      // original pre-fix behavior for a very old conversation — acceptable.
       const oldest = this.ended.values().next().value;
       if (oldest !== undefined) this.ended.delete(oldest);
     }
@@ -114,10 +42,6 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`Subscriber error: ${err.message}`);
     });
 
-    // Pattern subscribe for per-conversation heartbeats AND the call-events
-    // stream — the latter so a clean call.ended stops the tracker before its
-    // grace timer would otherwise fire a spurious AGENT_LOST (the agent stops
-    // heart-beating the moment the call ends normally).
     await this.subscriber.psubscribe('heartbeat:*', 'call-events:*');
     this.subscriber.on('pmessage', (_pattern, channel, payload) => {
       if (channel.startsWith('heartbeat:')) {
@@ -130,7 +54,6 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
       }
     });
 
-    // Direct subscribe for the dispatch fan-out (single channel).
     await this.subscriber.subscribe(RedisChannels.callDispatch);
     this.subscriber.on('message', (channel, payload) => {
       if (channel !== RedisChannels.callDispatch) return;
@@ -160,13 +83,6 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
     this.ended.clear();
   }
 
-  /**
-   * Arm a first-heartbeat timer for a newly-dispatched call. If the
-   * agent-worker boots, joins the LiveKit room and starts heart-beating
-   * within `FIRST_HEARTBEAT_GRACE_MS`, the first `markAlive` call will
-   * replace the deadline with the regular shorter one. Otherwise we
-   * declare AGENT_LOST.
-   */
   private handleDispatch(payload: string): void {
     let conversationId: string | undefined;
     try {
@@ -175,9 +91,6 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
         conversationId = parsed.conversationId;
       }
     } catch {
-      // Malformed dispatch payload — ignore. agent-worker has its own
-      // schema validation; the watchdog is best-effort and shouldn't
-      // crash on garbage.
       return;
     }
     if (!conversationId) return;
@@ -185,22 +98,11 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
     this.armTimer(conversationId, FIRST_HEARTBEAT_GRACE_MS);
   }
 
-  /** Reset the grace timer for a conversation that just heart-beat. */
   private markAlive(conversationId: string): void {
-    // A heartbeat arriving after the call already terminated (we declared
-    // AGENT_LOST, or a clean call.ended was seen) must be a no-op. Re-arming
-    // here would let later silence fire a second AGENT_LOST and publish a
-    // duplicate call.ended to the client.
     if (this.ended.has(conversationId)) return;
     this.armTimer(conversationId, HEARTBEAT_GRACE_MS);
   }
 
-  /**
-   * A call.ended on the events stream means the call is over (agent hang-up,
-   * interlocutor disconnect, user end, or our own AGENT_LOST). Either way the
-   * agent will stop heart-beating, so cancel the grace timer to avoid firing
-   * a redundant AGENT_LOST after a clean end.
-   */
   private handleCallEvent(channel: string, payload: string): void {
     let type: string | undefined;
     try {
@@ -235,9 +137,6 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
   }
 
   private async onAgentLost(conversationId: string): Promise<void> {
-    // Drop the tracker first so we don't fire again if a stale heartbeat
-    // arrives during the publish. Tombstone the conversation so a late
-    // heartbeat after this declaration cannot re-arm and fire a duplicate.
     this.timers.delete(conversationId);
     this.markEnded(conversationId);
     this.logger.warn(`AGENT_LOST detected for conversation ${conversationId}`);

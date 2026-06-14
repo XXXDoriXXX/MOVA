@@ -6,15 +6,6 @@ import { UserRole } from '@mova-back/shared-database';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 import type { AuthenticatedUser } from '../jwt-payload';
 
-/**
- * Resource-level role gate.
- *
- *   @UseGuards(JwtAuthGuard, RolesGuard)
- *   @Roles(UserRole.ADMIN)
- *   @Get('admin/...')
- *
- * Throws 403 (instead of returning false) so the client gets a structured error.
- */
 @Injectable()
 export class RolesGuard implements CanActivate {
   constructor(private readonly reflector: Reflector) {}
@@ -25,7 +16,6 @@ export class RolesGuard implements CanActivate {
       context.getClass(),
     ]);
 
-    // No @Roles() metadata — anyone authenticated can access.
     if (!requiredRoles || requiredRoles.length === 0) {
       return true;
     }

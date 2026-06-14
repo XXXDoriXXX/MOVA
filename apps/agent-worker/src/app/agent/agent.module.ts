@@ -21,8 +21,6 @@ import { ProvidersModule } from '../providers/providers.module';
       },
     }),
     SharedRedisModule,
-    // LlmFactory consults ProviderRegistry's health snapshot to skip
-    // dead providers and silently fall back to a healthy one.
     ProvidersModule,
   ],
   providers: [AgentFactory, SttFactory, LlmFactory, TtsFactory],

@@ -2,7 +2,6 @@ import { HttpException } from '@nestjs/common';
 
 import { PasswordBreachService } from './password-breach.service';
 
-/** Build a ConfigService stub with the env values we need. */
 type AnyConfig = ConstructorParameters<typeof PasswordBreachService>[0];
 
 function makeConfig(overrides: Partial<Record<string, unknown>> = {}): AnyConfig {
@@ -24,8 +23,6 @@ describe('PasswordBreachService', () => {
   });
 
   it('reports breached for a known leaked password', async () => {
-    // "password" -> SHA1 = 5BAA61E4C9B93F3F0682250B6CF8331B7EE68FD8
-    // Suffix after first 5 chars = "1E4C9B93F3F0682250B6CF8331B7EE68FD8"
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,

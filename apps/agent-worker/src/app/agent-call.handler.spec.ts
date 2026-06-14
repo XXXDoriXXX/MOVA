@@ -1,23 +1,5 @@
-/**
- * Behavioural tests for the AgentCallHandler state machine.
- *
- * We don't try to test LiveKit SDK interop — that's the SDK's job. We
- * test the *guards and ordering* layered on top: idempotent cleanup,
- * first-wins endedBy, RoomEvent.Disconnected suppression after user
- * stop, deadline timer firing the right errorCode, etc. Each of these
- * was a real bug we hit in production.
- *
- * To keep the test surface small, we mock the SDK classes at module
- * level (jest.mock) and assert on the call.ended events the handler
- * publishes — the publisher.publish spy IS the observable behaviour.
- */
 
-// MUST be before any `@mova-back/shared-config` import — that module's
 // global ConfigModule.forRoot runs Zod validation on process.env at
-// import time. Without these stubs we get "Invalid environment
-// configuration" because the test environment lacks the production
-// vars. Tests never read these values; they exist purely to satisfy
-// the schema gate.
 process.env['LIVEKIT_URL'] ||= 'wss://test.example';
 process.env['LIVEKIT_API_KEY'] ||= 'test-key';
 process.env['LIVEKIT_API_SECRET'] ||= 'test-secret';
@@ -34,8 +16,6 @@ import { AgentCallHandler } from './agent-call.handler';
 import type { AgentContext, AgentFactory } from './agent/agent.factory';
 import type { CallEventPublisher } from './events/call-event.publisher';
 import type { SuggestionsService } from './suggestions/suggestions.service';
-
-// ── SDK module mocks ───────────────────────────────────────
 
 const fakeRoomEmitters: EventEmitter[] = [];
 const fakeRoomDisconnect = jest.fn();
@@ -57,7 +37,6 @@ jest.mock('@livekit/rtc-node', () => {
       fakeRoomEmitters.push(this);
     }
     async connect(): Promise<void> {
-      /* no-op */
     }
     disconnect(): void {
       fakeRoomDisconnect();
@@ -88,11 +67,6 @@ jest.mock('@livekit/rtc-ffi-bindings', () => ({
   ParticipantKind: { SIP: 1, STANDARD: 0, CONNECTOR: 2 },
 }));
 
-// Mock @livekit/agents directly — its room_io.ts module-init does
-// `Object.values(ParticipantKind)` on a non-mockable internal import
-// that escapes the rtc-ffi-bindings mock above. We only need the
-// .Agent class to be a constructable stub (the spec never starts a
-// real session — flow tests work off the fake EventEmitter).
 jest.mock('@livekit/agents', () => {
   class Agent {
     constructor(opts: unknown) {
@@ -105,7 +79,7 @@ jest.mock('@livekit/agents', () => {
 const fakeDeleteRoom = jest.fn().mockResolvedValue(undefined);
 jest.mock('livekit-server-sdk', () => {
   class FakeAccessToken {
-    addGrant(): void { /* no-op */ }
+    addGrant(): void { }
     async toJwt(): Promise<string> {
       return 'fake-jwt';
     }
@@ -120,8 +94,6 @@ jest.mock('livekit-server-sdk', () => {
     RoomServiceClient: FakeRoomServiceClient,
   };
 });
-
-// ── Helpers ────────────────────────────────────────────────
 
 interface Harness {
   handler: AgentCallHandler;
@@ -195,7 +167,6 @@ function makeHarness(opts: {
 
   const config = {
     getOrThrow: jest.fn().mockImplementation((k: string) => {
-      // The handler's start() reads three LiveKit keys via getOrThrow.
       if (k === 'LIVEKIT_API_KEY') return 'lk-key';
       if (k === 'LIVEKIT_API_SECRET') return 'lk-secret';
       if (k === 'LIVEKIT_URL') return 'wss://livekit.example';
@@ -225,14 +196,10 @@ function makeHarness(opts: {
     userContext,
     config,
     factory,
-    {} as never, // vadModel is just passed through to factory
+    {} as never,
     redis,
     publisher as unknown as CallEventPublisher,
     suggestions,
-    // StyleResolverService stub — handler only calls resolve() once at
-    // session start; returning null gives the "no style adaptation"
-    // branch which is what the spec needs (style behaviour itself is
-    // covered by style-resolver.service.spec.ts).
     { resolve: jest.fn().mockResolvedValue(null) } as never,
     onDisconnectCb,
   );
@@ -255,16 +222,11 @@ function lastCallEnded(publisher: { publish: jest.Mock }):
   return undefined;
 }
 
-// ── Tests ──────────────────────────────────────────────────
-
 describe('AgentCallHandler — lifecycle guards', () => {
   it('publishes a single call.ended on concurrent stop() + RoomEvent.Disconnected', async () => {
     const { handler, publisher, onDisconnectCb } = makeHarness();
     await handler.start();
 
-    // Fire both teardown signals "simultaneously". The SDK fires
-    // Disconnected as a side-effect of OUR own room.disconnect() inside
-    // stop(); without the state guard this race used to double-emit.
     const stopPromise = handler.stop();
     fakeRoomEmitters[0]!.emit('disconnected');
     await stopPromise;
@@ -286,7 +248,6 @@ describe('AgentCallHandler — lifecycle guards', () => {
     expect(ended!.data.reason).toBe('fatal_error');
     expect(ended!.data.errorCode).toBe(CallErrorCode.TTS_UNAVAILABLE);
     expect(ended!.data.endedBy).toBe('system');
-    // cleanup() ran exactly once.
     expect(onDisconnectCb).toHaveBeenCalledTimes(1);
   });
 
@@ -309,7 +270,6 @@ describe('AgentCallHandler — lifecycle guards', () => {
     await handler.start();
 
     await handler.stop();
-    // Late Disconnected (SDK firing as part of our own room.disconnect()):
     fakeRoomEmitters[0]!.emit('disconnected');
 
     const ended = lastCallEnded(publisher);
@@ -320,14 +280,12 @@ describe('AgentCallHandler — lifecycle guards', () => {
     const { handler, publisher } = makeHarness();
     await handler.start();
 
-    // Answer first so the room drop reads as a real interlocutor hang-up.
     fakeRoomEmitters[0]!.emit('participantConnected', {
       kind: 1,
       identity: 'phone-101',
       attributes: { 'sip.callStatus': 'active' },
     });
     fakeRoomEmitters[0]!.emit('disconnected');
-    // Yield so async cleanup completes.
     await new Promise((r) => setImmediate(r));
 
     const ended = lastCallEnded(publisher);
@@ -353,8 +311,6 @@ describe('AgentCallHandler — lifecycle guards', () => {
     const { handler, publisher } = makeHarness();
     await handler.start();
 
-    // Phone answers (sip.callStatus=active), then hangs up while the agent is
-    // still in the room. An answered hang-up is a normal 'interlocutor' end.
     fakeRoomEmitters[0]!.emit('participantConnected', {
       kind: 1,
       identity: 'phone-101',
@@ -380,7 +336,6 @@ describe('AgentCallHandler — lifecycle guards', () => {
       kind: 1,
       identity: 'phone-101',
     });
-    // A different participant (e.g. the agent itself) leaving must NOT end it.
     fakeRoomEmitters[0]!.emit('participantDisconnected', {
       identity: 'agent-call-test',
     });
@@ -391,8 +346,6 @@ describe('AgentCallHandler — lifecycle guards', () => {
 
   it('SIP interlocutor already ACTIVE in the room on join emits call.answered + can disconnect', async () => {
     const { handler, publisher } = makeHarness();
-    // A fast SIP answer can join the room (already active) before the agent
-    // finishes connecting — RoomEvent.ParticipantConnected then never fires.
     participantsMap.set('phone-101', {
       kind: 1,
       identity: 'phone-101',
@@ -405,7 +358,6 @@ describe('AgentCallHandler — lifecycle guards', () => {
       .find((ev) => ev.type === 'call.answered');
     expect(answered).toBeDefined();
 
-    // ...and the disconnect handler now has the identity to end the call.
     fakeRoomEmitters[0]!.emit('participantDisconnected', { identity: 'phone-101' });
     await new Promise((r) => setImmediate(r));
 
@@ -423,8 +375,6 @@ describe('AgentCallHandler — lifecycle guards', () => {
         .map(([ev]) => ev as InternalCallEvent)
         .filter((ev) => ev.type === 'call.answered');
 
-    // SIP participant joins while still ringing — presence alone must NOT
-    // be reported as answered (this was the regression).
     fakeRoomEmitters[0]!.emit('participantConnected', {
       kind: 1,
       identity: 'phone-101',
@@ -433,7 +383,6 @@ describe('AgentCallHandler — lifecycle guards', () => {
     await new Promise((r) => setImmediate(r));
     expect(answeredEvents()).toHaveLength(0);
 
-    // The phone is picked up → sip.callStatus flips to active → answered.
     fakeRoomEmitters[0]!.emit(
       'participantAttributesChanged',
       { 'sip.callStatus': 'active' },
@@ -452,7 +401,6 @@ describe('AgentCallHandler — lifecycle guards', () => {
       identity: 'phone-101',
       attributes: { 'sip.callStatus': 'ringing' },
     });
-    // Callee rejects without ever answering.
     fakeRoomEmitters[0]!.emit('participantDisconnected', {
       identity: 'phone-101',
       disconnectReason: 12,
@@ -468,8 +416,6 @@ describe('AgentCallHandler — lifecycle guards', () => {
     const ended = lastCallEnded(publisher);
     expect(ended).toBeDefined();
     expect(ended!.data.endedBy).toBe('interlocutor');
-    // USER_REJECTED (12) on a never-answered leg → no_answer + CALL_DECLINED,
-    // not a generic "interlocutor hung up".
     expect(ended!.data.reason).toBe('no_answer');
     expect(ended!.data.errorCode).toBe('CALL_DECLINED');
     expect(ended!.data.wasAnswered).toBe(false);
@@ -484,7 +430,6 @@ describe('AgentCallHandler — lifecycle guards', () => {
       identity: 'phone-101',
       attributes: { 'sip.callStatus': 'dialing' },
     });
-    // Trunk failure (13) before any answer → fatal_error + LIVEKIT_DISCONNECTED.
     fakeRoomEmitters[0]!.emit('participantDisconnected', {
       identity: 'phone-101',
       disconnectReason: 13,
@@ -504,8 +449,6 @@ describe('AgentCallHandler — lifecycle guards', () => {
       const { handler, publisher } = makeHarness({ maxCallDurationSeconds: 1 });
       await handler.start();
 
-      // Advance past the 1s deadline. setTimeout schedules + we yield
-      // microtasks so the async fireCallDeadline can run.
       jest.advanceTimersByTime(1500);
       await Promise.resolve();
       await Promise.resolve();
@@ -526,9 +469,6 @@ describe('AgentCallHandler — lifecycle guards', () => {
 
     const types = publishedTypes(publisher);
     expect(types).toContain('call.connected');
-    // call.connected must precede any call.config.changed (provenance fanout)
-    // — mobile relies on this ordering to know "we're live" before voice
-    // pickers populate.
     const idxConnected = types.indexOf('call.connected');
     const idxConfig = types.indexOf('call.config.changed');
     if (idxConfig >= 0) expect(idxConnected).toBeLessThan(idxConfig);

@@ -9,29 +9,16 @@ import {
   UserRole,
 } from '@mova-back/shared-database';
 
-/**
- * Narrow actor shape — matches `AuthenticatedUser` from shared-auth without
- * pulling that lib into the entity layer (would create a cycle).
- * For system-driven actions (cron), pass `null`.
- */
 export interface AuditActor {
   id: string;
   email: string;
   role: UserRole;
 }
 
-/** Cap metadata size — we never need huge payloads, and a runaway caller
- *  shouldn't be able to blow up row width. ~4kB is generous for any sane
- *  before/after snapshot. */
 const METADATA_MAX_BYTES = 4_096;
 
 const USER_AGENT_MAX = 500;
 
-/**
- * Minimal context required to write an audit row. We snapshot the actor's
- * email + role at write time so the trail survives later renames / role
- * demotions / user deletes.
- */
 export interface AuditContext {
   actor: AuditActor | null;
   action: AuditAction;
@@ -61,22 +48,6 @@ export interface AuditPage {
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
 
-/**
- * Writes append-only audit rows for sensitive admin operations.
- *
- * Design choices:
- *   - `record()` NEVER throws. An audit failure must not roll back a successful
- *     business operation (you don't want a block to fail because audit_logs is
- *     temporarily full). Failures go to the Logger so they can be triaged.
- *   - We snapshot actor email + role at write time. Later role changes do not
- *     rewrite history.
- *   - Metadata is JSON.stringified once for length-checking, then stored as
- *     JSONB. Oversize payloads are truncated to a placeholder object — the
- *     event is still recorded.
- *
- * Reading: cursor pagination keyed on `createdAt DESC` for stability under
- * concurrent inserts. Index `idx_audit_logs_created` makes this cheap.
- */
 @Injectable()
 export class AuditLogService {
   private readonly logger = new Logger(AuditLogService.name);
@@ -93,11 +64,6 @@ export class AuditLogService {
         ? ctx.userAgent.slice(0, USER_AGENT_MAX)
         : null;
 
-      // The `actor_id` column is a strict uuid; the synthetic
-      // password-only admin uses the sentinel "admin-bypass" which is
-      // not a uuid and would explode the insert. Fall back to null in
-      // that case — the email column already carries "admin@local"
-      // so the row stays attributable.
       const actorId = isUuid(ctx.actor?.id) ? ctx.actor!.id : null;
 
       await this.repo.save(
@@ -114,8 +80,6 @@ export class AuditLogService {
         }),
       );
     } catch (err) {
-      // Never bubble — the business op already succeeded. Log loudly so an
-      // ops dashboard can spot persistent audit-write failures.
       this.logger.error(
         `Audit write failed (action=${ctx.action} target=${ctx.targetType}:${ctx.targetId}): ${
           err instanceof Error ? err.message : String(err)
@@ -165,10 +129,6 @@ export class AuditLogService {
     return { items, nextCursor };
   }
 
-  /**
-   * Helpers exposed for tests + intra-app callers — admin can fetch by a
-   * specific actor or target without a full query object.
-   */
   listByActor(actorId: string, limit?: number): Promise<AuditPage> {
     return this.list({ actorId, limit });
   }
@@ -181,11 +141,6 @@ export class AuditLogService {
     return this.list({ targetType, targetId, limit });
   }
 
-  /**
-   * Convenience writer for the most common admin action — wraps `record()`
-   * with the user-role / user-block context inlined so callers don't have to
-   * repeat the boilerplate. Keeps the writer signature uniform.
-   */
   async recordUserAction(
     actor: AuditActor | null,
     action: AuditAction,
@@ -204,7 +159,6 @@ export class AuditLogService {
     });
   }
 
-  /** Truncate oversize metadata to a stable placeholder so we still record the event. */
   private safeMetadata(
     metadata: Record<string, unknown> | undefined,
   ): Record<string, unknown> {
@@ -224,8 +178,6 @@ export class AuditLogService {
     };
   }
 
-  // Re-export the role constant so import sites have one place for the type
-  // boundary (avoids circular imports between admin internals).
   static readonly Roles = UserRole;
 }
 

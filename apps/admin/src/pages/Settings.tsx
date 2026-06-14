@@ -9,22 +9,6 @@ import {
   type SettingRow,
 } from '../api';
 
-/**
- * Admin "Keys" page — read + edit the third-party API keys (OPENAI,
- * ELEVENLABS, DEEPGRAM, LiveKit, …) without poking around in .env. Each
- * row shows:
- *   - Masked tail of the current value + provenance badge (DB / .env /
- *     unset) so the operator can tell what's live right now.
- *   - Input + Save: persists encrypted, mutates process.env in api-gateway
- *     immediately, publishes on Redis for agent-worker to pick up too.
- *   - Test: dry-run probe against the provider's auth endpoint.
- *   - Revert: drop the DB override; .env baseline takes over after the
- *     next restart.
- *
- * Plain values are never echoed back from the server — once you save a
- * key you can only see its last 4 characters from then on. To rotate,
- * type a new one over.
- */
 export function SettingsPage() {
   const [items, setItems] = useState<SettingRow[]>([]);
   const [err, setErr] = useState<string | null>(null);

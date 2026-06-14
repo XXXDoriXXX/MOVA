@@ -41,7 +41,6 @@ function makeRedis(): jest.Mocked<Redis> {
   } as unknown as jest.Mocked<Redis>;
 }
 
-/** Style-resolver stub. Defaults to "no addendum" — matches cold-start. */
 function makeStyleResolver(
   addendum: string | null = null,
 ): jest.Mocked<StyleResolverService> {
@@ -90,10 +89,6 @@ describe('SuggestionsService.generate', () => {
   });
 
   it('pads to 3 when the JSON has fewer items (LLM miscounted)', async () => {
-    // Previous behaviour was to reject anything ≠ exactly 3 — that meant
-    // a Llama variant returning 2 lost the user's quick replies entirely.
-    // Parser now duplicates the last item to fill out to 3 so the mobile
-    // picker always has the canonical chip count.
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: ['Так', 'Ні'] }),
     );
@@ -217,8 +212,6 @@ describe('SuggestionsService — style addendum injection', () => {
       styleId: 'builtin:official',
     });
 
-    // runLlm received a callback; we re-invoke it with a probe provider
-    // to inspect the messages that would have gone to Groq.
     const runLlmCall = (registry.runLlm as jest.Mock).mock.calls[0];
     const callback = runLlmCall[1] as (
       p: { generate: jest.Mock },

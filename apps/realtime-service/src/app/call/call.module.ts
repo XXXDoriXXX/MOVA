@@ -20,10 +20,6 @@ import { SipOrphanWatchdog } from './sip-orphan-watchdog.service';
         secret: config.get('JWT_SECRET', { infer: true }),
       }),
     }),
-    // ScheduleModule is required wherever @Cron-decorated providers live.
-    // forRoot() is safe at submodule scope — @nestjs/schedule shares a
-    // single SchedulerRegistry process-wide regardless of how many times
-    // you call forRoot().
     ScheduleModule.forRoot(),
   ],
   providers: [

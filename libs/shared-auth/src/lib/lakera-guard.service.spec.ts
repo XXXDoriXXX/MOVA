@@ -94,10 +94,9 @@ describe('LakeraGuardService', () => {
       60_000,
     );
 
-    // Second call — simulate cache hit
     cache.get.mockResolvedValueOnce({ safe: true, reasons: [] });
     await svc.check('hello', { cacheTtlMs: 60_000 });
-    expect(fetchMock).toHaveBeenCalledTimes(1); // not called again
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('parses `payload[0].categories` response shape', async () => {
@@ -136,14 +135,13 @@ describe('LakeraGuardService', () => {
   });
 
   it('does not crash when cacheTtlMs is set but cache binding is missing', async () => {
-    // Reproduce I2: caller passes cacheTtlMs but DI didn't provide a cache.
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
       json: () => Promise.resolve({ flagged: false, results: [{ categories: {} }] }),
     }) as unknown as typeof fetch;
 
-    const svc = new LakeraGuardService(makeConfig()); // no cache injected
+    const svc = new LakeraGuardService(makeConfig());
     const result = await svc.check('hello', { cacheTtlMs: 60_000 });
     expect(result.safe).toBe(true);
   });

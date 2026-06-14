@@ -109,8 +109,6 @@ describe('BillingService', () => {
     it('creates a free subscription when none exists', async () => {
       const freePlan = makePlan({ code: PlanCode.FREE });
       plans.findOne.mockResolvedValue(freePlan);
-      // First findOne: no existing sub. Second findOne (in loadSubscription
-      // after the upsert): returns the newly-created row.
       const fresh = makeSub({ planId: freePlan.id, plan: freePlan });
       subs.findOne.mockResolvedValueOnce(null).mockResolvedValueOnce(fresh);
 
@@ -136,7 +134,6 @@ describe('BillingService', () => {
       subs.findOne.mockResolvedValue(sub);
       const result = await svc.checkEligibility(USER_ID);
       expect(result.allowed).toBe(true);
-      // 300 - 100 = 200 remaining; min(3600, 200) = 200
       expect(result.maxCallDurationSeconds).toBe(200);
     });
 
@@ -152,7 +149,7 @@ describe('BillingService', () => {
   describe('checkEligibility — PAID plan', () => {
     const paidPlan = makePlan({
       code: PlanCode.PAID,
-      pricePerSecondCents: 1, // 1 cent/sec
+      pricePerSecondCents: 1,
       freeSecondsPerMonth: 0,
       maxCallDurationSeconds: 3600,
     });
@@ -162,7 +159,7 @@ describe('BillingService', () => {
       subs.findOne.mockResolvedValue(sub);
       const result = await svc.checkEligibility(USER_ID);
       expect(result.allowed).toBe(true);
-      expect(result.maxCallDurationSeconds).toBe(600); // 600 cents / 1 cent
+      expect(result.maxCallDurationSeconds).toBe(600);
     });
 
     it('caps duration at plan max even with huge balance', async () => {
@@ -260,7 +257,6 @@ describe('BillingService', () => {
         update: jest.fn().mockReturnValue(updateBuilder),
       };
       (subs.createQueryBuilder as jest.Mock).mockReturnValue(queryBuilder);
-      // Probe finds existing sub with low balance → InsufficientBalanceError.
       subs.findOne.mockResolvedValue(
         makeSub({
           plan: makePlan({ code: PlanCode.PAID, pricePerSecondCents: 1 }),
@@ -280,7 +276,6 @@ describe('BillingService', () => {
   });
 
   describe('fakeTopup', () => {
-    /** Wire the subscriptions repo's transaction + raw UPDATE machinery. */
     function wireTransactionUpdate(
       finalBalance: number,
       paymentRow: Partial<PaymentEvent>,
@@ -332,8 +327,6 @@ describe('BillingService', () => {
 
       expect(result.balanceCents).toBe(500);
       expect(result.reused).toBe(false);
-      // The transaction's tx.save was called with PaymentEvent
-      // (we just check the result paymentEvent has the expected fields).
       expect(result.paymentEvent).toMatchObject({
         userId: USER_ID,
         amountCents: 500,
@@ -349,24 +342,19 @@ describe('BillingService', () => {
           amountCents: 500,
           idempotencyKey: 'client-key-abc',
         };
-        // Fast-path lookup hits.
         payments.findOne.mockResolvedValueOnce(existing as PaymentEvent);
-        // loadSubscription for the balance refresh.
         subs.findOne.mockResolvedValue(makeSub({ balanceCents: 500 }));
 
         const result = await svc.fakeTopup(USER_ID, 500, 'client-key-abc');
         expect(result.reused).toBe(true);
         expect(result.paymentEvent).toBe(existing);
         expect(result.balanceCents).toBe(500);
-        // No transaction was started — `manager` is not even wired on the
-        // mocked repo because we never went down the write path.
         const txFn = (subs.manager as unknown as { transaction?: jest.Mock } | undefined)
           ?.transaction;
         expect(txFn).toBeUndefined();
       });
 
       it('persists idempotencyKey on the new PaymentEvent when no prior row exists', async () => {
-        // Fast-path lookup misses.
         payments.findOne.mockResolvedValueOnce(null);
         subs.findOne.mockResolvedValue(makeSub({ balanceCents: 0 }));
         wireTransactionUpdate(500, {});
@@ -383,7 +371,6 @@ describe('BillingService', () => {
         wireTransactionUpdate(500, {});
 
         const result = await svc.fakeTopup(USER_ID, 500, '   ');
-        // Fast-path was NOT invoked → idempotencyKey is null on the row.
         expect(payments.findOne).not.toHaveBeenCalled();
         expect(result.paymentEvent).toMatchObject({ idempotencyKey: null });
       });
@@ -397,11 +384,9 @@ describe('BillingService', () => {
       });
 
       it('recovers from a unique_violation race by returning the winner row', async () => {
-        // Lookup misses (both retries pass this).
         payments.findOne.mockResolvedValueOnce(null);
         subs.findOne.mockResolvedValue(makeSub({ balanceCents: 500 }));
 
-        // Transaction throws 23505 — the loser side of the race.
         const uniqueViolation = new QueryFailedError(
           'INSERT',
           [],
@@ -412,7 +397,6 @@ describe('BillingService', () => {
           transaction: jest.fn().mockRejectedValue(uniqueViolation),
         };
 
-        // After the throw, the recovery lookup finds the winner row.
         const winner: Partial<PaymentEvent> = {
           id: 'pay-winner',
           userId: USER_ID,
@@ -448,7 +432,6 @@ describe('BillingService', () => {
 
       const summary = await svc.switchPlan(USER_ID, PlanCode.FREE);
       expect(summary.plan.code).toBe(PlanCode.FREE);
-      // No UPDATE issued because the planId already matches.
       expect(subs.createQueryBuilder).not.toHaveBeenCalled();
     });
 
@@ -460,13 +443,10 @@ describe('BillingService', () => {
         freeSecondsPerMonth: 0,
       });
       plans.findOne.mockResolvedValue(paidPlan);
-      // First findOne: sub on FREE plan. Second findOne (re-read after switch):
-      // sub on PAID plan.
       subs.findOne
         .mockResolvedValueOnce(makeSub())
         .mockResolvedValueOnce(makeSub({ planId: paidPlan.id, plan: paidPlan }));
 
-      // Wire the UPDATE chain.
       const updateBuilder = {
         set: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),

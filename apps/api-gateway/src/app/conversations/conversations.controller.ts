@@ -19,15 +19,6 @@ import {
   type CursorPage,
 } from './conversations.service';
 
-/**
- * History API. Mobile UI uses these to render the Calls list and the chat
- * transcript of any past call.
- *
- * Cursor pagination contract:
- *   - Client passes `cursor` (opaque ISO string) and `limit` (default 20).
- *   - Response `nextCursor` is non-null when more pages exist.
- *   - Client treats `null` `nextCursor` as end-of-list.
- */
 @ApiTags('conversations')
 @ApiBearerAuth()
 @Controller('conversations')

@@ -2,12 +2,6 @@ import { useEffect, useState } from 'react';
 
 import { listIncidents, type ProviderIncident } from '../api';
 
-/**
- * Provider incidents — STT/LLM/TTS that hit the circuit breaker.
- * Severity colour + open/resolved status. Resolving from the UI is
- * intentionally NOT exposed here (the resolve endpoint exists in
- * the API but admins can mark them via a follow-up step in v2).
- */
 export function IncidentsPage() {
   const [items, setItems] = useState<ProviderIncident[]>([]);
   const [err, setErr] = useState<string | null>(null);

@@ -5,24 +5,6 @@ import {
   randomBytes,
 } from 'node:crypto';
 
-/**
- * AES-256-GCM helper for the app_setting table.
- *
- * Wire format: `<iv_b64>:<tag_b64>:<ciphertext_b64>`. IV is 12 bytes (the
- * standard for GCM); tag is 16 bytes. The key is derived once via SHA-256
- * over the operator-supplied `SETTINGS_ENCRYPTION_KEY` so any sane password
- * length is folded into the 32-byte key AES-256 wants — same trick e.g.
- * argon-id-then-truncate would handle, but cheaper and reversible (we just
- * need a constant key per process, not a slow KDF).
- *
- * Failure modes the caller should be ready for:
- *   - SecretCrypto.fromEnv() throws when SETTINGS_ENCRYPTION_KEY is unset
- *     or shorter than 16 chars — fail-fast is correct; a missing key
- *     means admin-managed settings simply aren't available.
- *   - decrypt() throws on tampered ciphertext (GCM tag mismatch). Callers
- *     in SettingsService log + skip the row rather than crashing the
- *     bootstrap pass.
- */
 export class SecretCrypto {
   private readonly key: Buffer;
 
@@ -35,7 +17,6 @@ export class SecretCrypto {
     this.key = createHash('sha256').update(passphrase, 'utf8').digest();
   }
 
-  /** Pull the passphrase from process.env. Convenience entry point. */
   static fromEnv(): SecretCrypto {
     const k = process.env['SETTINGS_ENCRYPTION_KEY'];
     if (!k) {
@@ -69,11 +50,6 @@ export class SecretCrypto {
     return pt.toString('utf8');
   }
 
-  /**
-   * Mask a value for display in the admin UI. Returns the last 4 characters
-   * prefixed with • dots so we never echo full secret material back over the
-   * wire — even to authenticated admins, even on read.
-   */
   static mask(value: string): string {
     if (value.length <= 4) return '••••';
     const tail = value.slice(-4);

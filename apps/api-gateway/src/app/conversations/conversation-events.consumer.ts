@@ -30,39 +30,10 @@ import { UserStyleProfileService } from '../users/user-style-profile.service';
 import { ConversationLifecycleService } from './conversation-lifecycle.service';
 import { ConversationsService } from './conversations.service';
 
-/**
- * Subscribes to Redis call-events:* and call-interim-events:* — the channels
- * that agent-worker publishes on during a live call — and persists the
- * relevant ones to the database.
- *
- * Why a dedicated subscriber (vs. doing the work inside agent-worker):
- *   - Agent-worker is the LiveKit critical path. Adding DB writes there
- *     trades audio quality for persistence reliability — wrong trade.
- *   - Separating the consumer means we can horizontally scale persistence
- *     independently of the agent. (Phase 11 will move this to a dedicated
- *     worker if api-gateway gets noisy.)
- *
- * Subscriber lifecycle:
- *   - Uses a SEPARATE ioredis connection (`.duplicate()`). The shared
- *     REDIS_CLIENT is in command mode; you cannot psubscribe on it without
- *     blocking SET/GET for the whole process.
- *   - Pattern subscribes to `call-events:*` (final events) and the partial
- *     channel `call-interim-events:*` is intentionally NOT subscribed —
- *     partials don't need persistence; they flow only via realtime-service
- *     to the mobile client.
- *
- * At-least-once semantics:
- *   - Redis pub/sub is at-most-once (no replay if subscriber was down).
- *     For exact-once we'd need Redis Streams + consumer groups — Phase 5
- *     migration. For MVP we accept the tradeoff: a brief consumer outage
- *     loses live event persistence, but the conversation row + summary
- *     remain (created by api-gateway on /calls/start).
- */
 @Injectable()
 export class ConversationEventsConsumer implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ConversationEventsConsumer.name);
 
-  /** Dedicated subscriber connection — separate from the shared command client. */
   private subscriber: Redis | null = null;
 
   constructor(
@@ -75,7 +46,6 @@ export class ConversationEventsConsumer implements OnModuleInit, OnModuleDestroy
   async onModuleInit(): Promise<void> {
     this.subscriber = this.redis.duplicate();
     this.subscriber.on('error', (err) => {
-      // Stay quiet but visible. Production should alert on a sustained error rate.
       this.logger.error(`Subscriber error: ${err.message}`);
     });
     await this.subscriber.psubscribe('call-events:*');
@@ -149,17 +119,12 @@ export class ConversationEventsConsumer implements OnModuleInit, OnModuleDestroy
       case 'call.connected':
         return this.conversations.markConnected(event.conversationId, new Date(event.occurredAt));
       case 'call.answered':
-        // The interlocutor actually picked up — stamp answeredAt, the single
-        // source of truth for billable duration. A call that never reaches
-        // here is charged 0 at end time.
         return this.conversations.markAnswered(
           event.conversationId,
           new Date(event.occurredAt),
         );
       case 'call.ended':
         return this.onCallEnded(event);
-      // call.tick + provider.failure + transcript.partial: realtime-service
-      // and Phase 8 observability handle these; no persistence side-effect.
       default:
         return undefined;
     }
@@ -167,9 +132,6 @@ export class ConversationEventsConsumer implements OnModuleInit, OnModuleDestroy
 
   private async onTranscriptFinal(event: TranscriptFinal): Promise<void> {
     await this.conversations.appendMessage({
-      // Persist under the agent-assigned id so the parentMessageId on the
-      // matching `suggestions.generated` event references a real row
-      // (otherwise FK_suggestions_parent fails and the batch is dropped).
       id: event.data.messageId,
       conversationId: event.conversationId,
       role: MessageRole.INTERLOCUTOR,
@@ -180,13 +142,6 @@ export class ConversationEventsConsumer implements OnModuleInit, OnModuleDestroy
   }
 
   private async onAiTextFinal(event: AiTextFinal): Promise<void> {
-    // Persist the AI text with provider snapshot. ttsStatus stays null
-    // until ai.tts.end arrives — at that point we'd ideally UPDATE the row
-    // but our markMessageInterrupted only flips completed→interrupted.
-    // For MVP we accept a brief race where the row has ttsStatus=null even
-    // after TTS finishes successfully; the user-facing chat view treats
-    // `null` as "speaking" which is acceptable. A follow-up will add an
-    // explicit transition.
     await this.conversations.appendMessage({
       conversationId: event.conversationId,
       role: MessageRole.AI,
@@ -201,7 +156,6 @@ export class ConversationEventsConsumer implements OnModuleInit, OnModuleDestroy
     if (event.data.status === 'interrupted') {
       await this.conversations.markMessageInterrupted(event.data.messageId);
     }
-    // status='failed' goes to ProviderIncident in Phase 6.
   }
 
   private async onUserSpoke(event: UserSpoke): Promise<void> {
@@ -223,10 +177,6 @@ export class ConversationEventsConsumer implements OnModuleInit, OnModuleDestroy
       await this.conversations.markSuggestionChosen(event.data.suggestionId);
     }
 
-    // Train the user's style profile ONLY on genuinely typed text — accepted
-    // suggestions are the AI's words and would collapse the profile toward
-    // the model's default register. The service is best-effort: a failure
-    // here does NOT roll back the message persistence above.
     if (messageSource === MessageSource.TYPED) {
       await this.styleProfile.recordFromConversation(
         event.conversationId,

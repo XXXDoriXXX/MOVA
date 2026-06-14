@@ -8,42 +8,6 @@ import {
 
 import { Public } from '@mova-back/shared-auth';
 
-/**
- * Prometheus metrics endpoint at /metrics (unauthenticated — scraped by
- * Prometheus / Grafana Cloud Agent over the internal network).
- *
- * Defaults exposed by prom-client:
- *   - process_cpu_seconds_total, process_resident_memory_bytes
- *   - nodejs_event_loop_lag_seconds, nodejs_active_handles_total
- *   - nodejs_heap_size_total_bytes, etc.
- *
- * Custom application metrics:
- *
- * Counters:
- *   - http_requests_total{method, route, status}        — wired by Nest
- *     interceptor (Phase 8 follow-up; for now we expose just the defaults).
- *   - mova_signups_total                               — bump on /auth/register
- *   - mova_calls_started_total{plan}                   — bump on /calls/start
- *   - mova_call_errors_total{code}                     — bump on call.error WS event
- *   - mova_billable_seconds_total{plan}                — sum of UsageRecord
- *
- * Histograms:
- *   - mova_call_duration_seconds                        — Conversation.durationSeconds
- *   - mova_provider_latency_seconds{type,provider,model} — ProviderRegistry.runLlm
- *
- * Gauges:
- *   - mova_active_calls                                — current Conversation status='active'
- *   - mova_provider_health{provider}                   — ProviderRegistry health score
- *
- * Wiring of each counter to its event source is incremental (Phase 8 follow-
- * ups). This PR registers them so dashboards have stable label names from
- * day one; missing increments produce zero-series, not 404s.
- */
-/**
- * Centralised metric provider definitions. Exported so consumers in other
- * modules can both inject (`@InjectMetric('mova_signups_total')`) and lint
- * sees the canonical name list in one place.
- */
 const METRIC_PROVIDERS = [
   makeCounterProvider({
     name: 'mova_signups_total',
@@ -105,15 +69,8 @@ const METRIC_PROVIDERS = [
     }),
   ],
   providers: METRIC_PROVIDERS,
-  // Export both the PrometheusModule (for the controller) AND the metric
-  // providers themselves so @InjectMetric works in any feature module.
   exports: [PrometheusModule, ...METRIC_PROVIDERS],
 })
 export class MetricsModule {}
 
-/**
- * Helper re-export so a future bootstrap step can apply @Public() to the
- * Prometheus controller from outside (Phase 8 follow-up: a global filter
- * detects the /metrics path and skips the JWT guard).
- */
 export const PUBLIC_METRICS_DECORATOR = Public;

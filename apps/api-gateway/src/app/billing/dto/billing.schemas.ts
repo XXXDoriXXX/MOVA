@@ -5,10 +5,6 @@ import { PlanCode } from '@mova-back/shared-database';
 
 import { MAX_TOPUP_CENTS, MIN_TOPUP_CENTS } from '../billing.service';
 
-/**
- * Billing request schemas. All amounts in minor units (kopecks / cents).
- */
-
 export const TopupSchema = z.object({
   amountCents: z
     .number()

@@ -31,8 +31,6 @@ export class TelemetryController {
   @Public()
   @Post('client-errors')
   @HttpCode(HttpStatus.ACCEPTED)
-  // Generous bucket — a crash-looping client may legitimately send several
-  // reports, but we still cap abuse. Keyed per-IP for unauthenticated boots.
   @Throttle({ default: { limit: 60, ttl: 60_000 } })
   @ApiOperation({ summary: 'Ingest client error/crash reports (batch)' })
   async ingest(
@@ -44,11 +42,6 @@ export class TelemetryController {
     return { stored };
   }
 
-  /**
-   * Best-effort user attribution. The endpoint is public so pre-login crashes
-   * are still captured; when a valid bearer token is present we tag the report
-   * with its user. An invalid/expired token is ignored (report stays anon).
-   */
   private async resolveUserId(req: Request): Promise<string | null> {
     const header = req.headers['authorization'];
     if (!header || Array.isArray(header)) return null;

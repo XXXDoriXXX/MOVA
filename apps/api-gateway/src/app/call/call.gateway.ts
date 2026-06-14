@@ -13,7 +13,7 @@ import { REDIS_CLIENT } from '@mova-back/shared-redis';
 import { Redis } from 'ioredis';
 
 @WebSocketGateway({
-  cors: { origin: '*' }, //in production, specify allowed origins for security
+  cors: { origin: '*' },
   namespace: '/call-stream',
 })
 @Injectable()
@@ -54,14 +54,12 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     this.logger.debug(`🔴 [Gateway] Client disconnected: ${client.id}`);
   }
 
-
   @SubscribeMessage('join-room')
   handleJoinRoom(@ConnectedSocket() client: Socket, @MessageBody() data: { roomName: string }) {
     client.join(data.roomName);
     this.logger.log(`🔗 [Gateway] Client ${client.id} joined room ${data.roomName}`);
     return { status: 'joined', room: data.roomName };
   }
-
 
   @SubscribeMessage('interrupt-and-speak')
   async handleInterrupt(@ConnectedSocket() client: Socket, @MessageBody() data: { roomName: string, text: string }) {

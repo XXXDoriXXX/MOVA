@@ -25,17 +25,6 @@ import {
 } from './dto/conversation-styles.schemas';
 import { UsersService } from './users.service';
 
-/**
- * Per-user conversation-style management.
- *
- * Built-ins are NOT mutable — they live as code constants in shared-realtime.
- * GET returns them alongside the user's custom rows so the mobile picker
- * has one list to render.
- *
- * Note: the wire `id` for custom rows is "custom:<uuid>" — clients should
- * pass exactly that string back when setting it as a default or changing
- * mid-call.
- */
 @ApiTags('conversation-styles')
 @ApiBearerAuth()
 @Controller('users/me/styles')
@@ -91,12 +80,6 @@ export class ConversationStylesController {
   }
 }
 
-/**
- * Sub-controller for the user-wide style preference. Lives on a separate
- * path (/users/me/preferences/style) so it doesn't conflict with the
- * [GET|POST|PATCH|DELETE] on /users/me/styles/:id and so mobile can
- * reason about the two endpoints independently.
- */
 @ApiTags('conversation-styles')
 @ApiBearerAuth()
 @Controller('users/me/preferences')
@@ -116,8 +99,6 @@ export class UserStylePreferenceController {
     @Body() dto: SetPreferredStyleDto,
   ): Promise<{ preferredStyleId: string | null }> {
     if (dto.styleId !== null) {
-      // Validate ownership BEFORE writing so an invalid id can't poison the
-      // column. Built-ins always pass; custom ones must belong to caller.
       await this.styles.assertValidForUser(user.id, dto.styleId);
     }
     await this.users.updateProfile(user.id, { preferredStyleId: dto.styleId });

@@ -11,20 +11,6 @@ import type { Redis } from 'ioredis';
 import { Public } from '@mova-back/shared-auth';
 import { REDIS_CLIENT } from '@mova-back/shared-redis';
 
-/**
- * Health endpoints. Three semantics:
- *
- *   /health/live   — process is alive (no external checks). K8s liveness.
- *                    If this fails, K8s restarts the pod.
- *
- *   /health/ready  — process is ready to accept traffic (deps OK). K8s readiness.
- *                    If this fails, K8s removes the pod from the LB but does not
- *                    restart it. Useful during startup or transient dep outages.
- *
- *   /health        — verbose JSON, intended for humans/dashboards.
- *
- * IMPORTANT: never put auth on these. K8s probes are unauthenticated.
- */
 @Controller('health')
 export class HealthController {
   constructor(
@@ -37,7 +23,6 @@ export class HealthController {
   @Get('live')
   @HealthCheck()
   live(): HealthCheckResult {
-    // No external deps — just confirms the event loop is responsive.
     return {
       status: 'ok',
       info: {},
@@ -50,12 +35,6 @@ export class HealthController {
   @Get('ready')
   @HealthCheck()
   ready(): Promise<HealthCheckResult> {
-    // Readiness must reflect every dep we hard-require to serve a request.
-    // Without the Postgres ping, a downed DB still passes /ready → the LB
-    // keeps routing traffic → every request 500s. With the ping, /ready
-    // 503s within a few seconds of a Postgres outage, the LB drops the
-    // pod, and recovery is instant once Postgres comes back. Terminus's
-    // pingCheck wraps a `SELECT 1` with a 1s timeout by default.
     return this.health.check([
       () => this.pingRedis(),
       () => this.db.pingCheck('database', { timeout: 2000 }),

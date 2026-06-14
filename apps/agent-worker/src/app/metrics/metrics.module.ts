@@ -5,17 +5,6 @@ import {
   makeHistogramProvider,
 } from '@willsoto/nestjs-prometheus';
 
-/**
- * agent-worker metrics endpoint. Separate from api-gateway's /metrics — each
- * service exposes its own scrape target. The metric NAMES are shared (same
- * Grafana dashboards work against both) but the increments are local.
- *
- * Why split:
- *   - Scrape isolation: agent-worker scrape failure shouldn't drop
- *     api-gateway metrics.
- *   - Per-service labels in Prometheus (the scrape target carries
- *     {service="agent-worker"} automatically).
- */
 const METRIC_PROVIDERS = [
   makeHistogramProvider({
     name: 'mova_provider_latency_seconds',

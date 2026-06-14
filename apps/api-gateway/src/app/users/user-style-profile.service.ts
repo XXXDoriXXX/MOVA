@@ -9,15 +9,8 @@ import {
   type StyleExemplar,
 } from '@mova-back/shared-database';
 
-/**
- * Minimum content length to count as a style sample. Short replies ("ок",
- * "так", "ні") don't carry stylistic signal — they'd just dilute the
- * exemplar pool without teaching the model anything useful about the
- * user's dialect or phrasing.
- */
 export const STYLE_MIN_CONTENT_LENGTH = 12;
 
-/** Truncate exemplars before storing — JSONB column stays bounded. */
 export const STYLE_EXEMPLAR_MAX_CHARS = 280;
 
 export interface UserStyleProfileSummary {
@@ -28,31 +21,6 @@ export interface UserStyleProfileSummary {
   lastUpdatedAt: string | null;
 }
 
-/**
- * Builds and maintains the per-user "writing style" profile that
- * SuggestionsService later reads to bias reply candidates toward the
- * user's own dialect / phrasing.
- *
- * Write semantics:
- *   - One row per user (PK = userId). UPSERT on every qualifying message.
- *   - Stats (`sampleCount`, `totalChars`, `avgMessageLength`) are monotonic.
- *   - Exemplar pool is most-recent-K capped: when full, the OLDEST entry
- *     drops. Recency bias is deliberate — style evolves; we don't want a
- *     2-year-old message dominating the prompt.
- *
- * Eligibility:
- *   - Only USER_TYPED messages with `source='typed'` (mobile client typed
- *     it, did NOT tap an AI suggestion). Accepted suggestions are the AI's
- *     words; training on them would collapse the user's style into the
- *     model's default register.
- *   - Content length ≥ STYLE_MIN_CONTENT_LENGTH. Filters out trivial acks.
- *
- * Concurrency: at-least-once consumer delivery can fire the same event
- * twice for the same Message. We accept eventual over-counting (small drift
- * in sampleCount/totalChars) rather than introduce a UNIQUE(messageId)
- * constraint that would force conflict handling everywhere. The averaged
- * stat still reflects the user's voice.
- */
 @Injectable()
 export class UserStyleProfileService {
   private readonly logger = new Logger(UserStyleProfileService.name);
@@ -64,13 +32,6 @@ export class UserStyleProfileService {
     private readonly conversations: Repository<Conversation>,
   ) {}
 
-  /**
-   * Convenience wrapper for the events consumer — looks up the conversation
-   * owner so the consumer doesn't have to re-shape its handler signature.
-   *
-   * Best-effort by design: a failure to record style does NOT bubble up
-   * (the user's message has already been persisted; style is a side-show).
-   */
   async recordFromConversation(
     conversationId: string,
     content: string,
@@ -96,10 +57,6 @@ export class UserStyleProfileService {
     }
   }
 
-  /**
-   * Core write path. Idempotency: NOT enforced — see class docstring.
-   * Returns the updated row (mostly for tests; production callers ignore it).
-   */
   async recordTypedMessage(
     userId: string,
     content: string,
@@ -109,11 +66,6 @@ export class UserStyleProfileService {
 
     const truncated = trimmed.slice(0, STYLE_EXEMPLAR_MAX_CHARS);
 
-    // Load-or-init pattern. We do a SELECT + INSERT/UPDATE rather than a
-    // raw UPSERT because we need to mutate the JSONB exemplar array in
-    // application code (capped FIFO). A raw UPSERT can't append-and-trim
-    // a JSONB array atomically without a custom Postgres function — not
-    // worth the operational complexity for a write rate this low.
     const existing = await this.profiles.findOne({ where: { userId } });
     if (!existing) {
       const created = this.profiles.create({
@@ -142,11 +94,6 @@ export class UserStyleProfileService {
     return this.profiles.save(existing);
   }
 
-  /**
-   * Read-side for the user-facing endpoint (GET /v1/users/me/style-profile)
-   * and admin debugging. Returns null when the user has no profile yet
-   * (cold-start) — mobile UI renders "AI is still learning your style".
-   */
   async getSummary(userId: string): Promise<UserStyleProfileSummary | null> {
     const row = await this.profiles.findOne({ where: { userId } });
     if (!row) return null;
@@ -159,21 +106,11 @@ export class UserStyleProfileService {
     };
   }
 
-  /**
-   * Manual reset — exposed for "delete my data" UX and for support. Wipes
-   * the row entirely (the cron rebuilds from scratch only as the user types
-   * new qualifying messages).
-   */
   async reset(userId: string): Promise<void> {
     await this.profiles.delete({ userId });
   }
 }
 
-/**
- * Append `entry` to `pool`, capping at STYLE_EXEMPLAR_CAP. Oldest entries
- * drop first. Pure function for easy testing — no Repository, no Date.now,
- * just array math.
- */
 export function appendCapped(
   pool: StyleExemplar[],
   entry: StyleExemplar,

@@ -120,11 +120,9 @@ describe('renderStylePrompt', () => {
     const heavy = 'x'.repeat(1_000);
     const lines = Array.from({ length: 5 }, (_, i) => ({
       content: `${heavy}_${i}`,
-      // Newer dates first so order is deterministic.
       createdAt: `2026-05-${String(20 - i).padStart(2, '0')}T00:00:00Z`,
     }));
     const out = renderStylePrompt(lines, { avgLength: 1000, sampleCount: 5 });
-    // Newest (20) included; later ones dropped past the budget.
     expect(out).toContain('_0');
     expect(out).not.toContain('_4');
   });

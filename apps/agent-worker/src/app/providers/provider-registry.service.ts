@@ -23,58 +23,20 @@ import { GeminiLlmProvider } from './llm/gemini-llm.provider';
 import { GroqLlmProvider } from './llm/groq-llm.provider';
 import { OpenAiLlmProvider } from './llm/openai-llm.provider';
 
-/**
- * Health snapshot for a provider. Score 0..100; 100 = healthy.
- *
- * Score decay:
- *   - Successful call → +20 (capped at 100).
- *   - 'rate_limited'  → -10 (transient).
- *   - 'upstream'/'timeout' → -25.
- *   - 'auth'/'breaker_open' → set to 0 immediately.
- *
- * Score < 30 ⇒ provider is excluded from primary selection but can still be
- * used as last-resort fallback. Score < 10 ⇒ totally skipped.
- */
 interface ProviderHealth {
   score: number;
   lastError?: { code: string; at: Date };
-  /** Open incident row id, set when an incident is filed. */
   incidentId?: string;
 }
 
-/** Policy for the circuit breaker per provider. */
 const BREAKER_OPTIONS: CircuitBreaker.Options = {
-  /** Wrap individual calls (Vercel SDK calls). 15s is the LLM full-response budget. */
   timeout: 15_000,
-  /** Open the breaker if 50% of last 10 calls failed. */
   errorThresholdPercentage: 50,
-  /** Min rolling-window calls before % is computed. */
   volumeThreshold: 5,
-  /** Cool-off before half-open. */
   resetTimeout: 30_000,
-  /** A caller-driven cancellation isn't a provider fault — don't let normal
-   *  candidate supersedes count toward the breaker and trip it. */
   errorFilter: (err: unknown) => err instanceof ProviderError && err.code === 'cancelled',
 };
 
-/**
- * Central LLM provider registry. Responsibilities:
- *   - Maintain health scores per provider.
- *   - Wrap every call in an opossum CircuitBreaker.
- *   - Pick the best-available provider for a `prefer` hint, with fallback.
- *   - Persist ProviderIncident rows for observability (Phase 8 alerting).
- *   - Background health probe every 60s (also recovers `recoveredAt` on
- *     transition green).
- *
- * Hot-swap semantics:
- *   - The registry exposes `selectLlm(prefer)` for the agent to call on
- *     EVERY turn. Mid-utterance swap is intentionally NOT supported — that
- *     would corrupt the partial stream. The agent finishes the current turn
- *     and re-selects on the next.
- *   - `user.change_model` from the WS protocol updates a per-conversation
- *     `prefer` hint in agent-worker; selectLlm honors it as long as the
- *     provider is healthy.
- */
 @Injectable()
 export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ProviderRegistry.name);
@@ -87,9 +49,6 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
     CircuitBreaker<any[], any>
   >();
 
-  /** Default fallback order — adjusted at runtime by health scores. Gemini
-   *  is the primary (routed via the LiveKit Inference Gateway, no OpenAI key
-   *  required); OpenAI stays available as a fallback when its key is set. */
   private readonly defaultLlmOrder: LlmProviderEnum[] = [
     LlmProviderEnum.GEMINI,
     LlmProviderEnum.OPENAI,
@@ -118,28 +77,13 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit(): Promise<void> {
-    // Adopt any open incidents that survived the previous process so the
-    // first probe failure doesn't create a duplicate row in the DB. The
-    // in-memory `llmHealth` map is fresh on boot, so without this hand-off
-    // a misconfigured provider would file a new "open" incident on every
-    // container restart and the admin dashboard would slowly fill with
-    // dupes like "17 open incidents (upstream)" for the same actual fault.
     await this.adoptExistingOpenIncidents();
-    // Run an initial probe so the very first turn has accurate health scores.
     await this.probeAll();
-    // Background re-probe every 60s.
     this.probeInterval = setInterval(() => {
       this.probeAll().catch((err) => this.logger.error(`Probe error: ${String(err)}`));
     }, 60_000);
   }
 
-  /**
-   * Pull one open incident per registered LLM provider from the DB and
-   * attach its id to the in-memory health entry. We pick the most recent
-   * one — older orphans (from earlier crashes that didn't get a chance to
-   * recover) are best-effort marked recovered so the admin view only ever
-   * shows at most one open incident per provider.
-   */
   private async adoptExistingOpenIncidents(): Promise<void> {
     for (const id of this.llmProviders.keys()) {
       try {
@@ -156,9 +100,6 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
         const h = this.llmHealth.get(id);
         if (h) {
           h.incidentId = latest!.id;
-          // Probe will set the right score; pre-load to 0 so we don't
-          // accidentally route a turn through a known-bad provider in the
-          // window before the first probe completes.
           h.score = 0;
           this.healthGauge.set({ type: 'llm', provider: id }, 0);
         }
@@ -197,13 +138,6 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  // ── Public API ──────────────────────────────────────
-
-  /**
-   * Pick the best healthy provider, honoring the caller's preference if it's
-   * usable. Returns the provider + a `viaFallback` flag the agent can use to
-   * emit `call.error LLM_DEGRADED recoverable:true` to the client.
-   */
   selectLlm(prefer?: LlmProviderEnum): { provider: ILlmProvider; viaFallback: boolean } {
     const order = this.rankLlmProviders(prefer);
     for (const id of order) {
@@ -214,8 +148,6 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
         return { provider, viaFallback: id !== (prefer ?? this.defaultLlmOrder[0]) };
       }
     }
-    // All providers below score 10 — return the highest-scored as a desperate
-    // last attempt. Callers must handle the ProviderError that follows.
     const best = [...this.llmHealth.entries()].sort((a, b) => b[1].score - a[1].score)[0];
     if (!best) {
       throw new ProviderError('breaker_open', 'registry', 'No LLM providers registered');
@@ -227,11 +159,6 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
     return { provider, viaFallback: true };
   }
 
-  /**
-   * Run an LLM operation through the circuit breaker for the given provider.
-   * Updates health on success/failure. Use this wrapper for ANY external
-   * call — never call provider methods directly without it.
-   */
   async runLlm<T>(
     providerId: LlmProviderEnum,
     op: (provider: ILlmProvider) => Promise<T>,
@@ -243,11 +170,6 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
       throw new ProviderError('breaker_open', providerId, 'Provider not registered');
     }
 
-    // Histogram timer — covers both success and failure paths so we see
-    // latency-of-failure (e.g. timeouts) alongside latency-of-success.
-    // model label uses provider.defaultModel — runtime callers MAY pass a
-    // different model in op(); for histograms that level of granularity is
-    // typically not worth the cardinality blow-up.
     const endTimer = this.latencyHistogram.startTimer({
       type: 'llm',
       provider: providerId,
@@ -260,8 +182,6 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
       return result;
     } catch (err) {
       const wrapped = this.normalizeError(err, providerId);
-      // A cancelled call (caller aborted the stream) is health-neutral — don't
-      // decay the score or file an incident for normal candidate supersedes.
       if (wrapped.code !== 'cancelled') {
         await this.onFailure(providerId, wrapped, context);
       }
@@ -271,7 +191,6 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** Read-only snapshot for observability endpoints / admin tooling. */
   getHealthSnapshot(): Record<string, { score: number; lastErrorCode?: string }> {
     const out: Record<string, { score: number; lastErrorCode?: string }> = {};
     for (const [id, h] of this.llmHealth) {
@@ -280,17 +199,10 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
     return out;
   }
 
-  // ── Internal ────────────────────────────────────────
-
   private registerLlm(provider: ILlmProvider): void {
     this.llmProviders.set(provider.id as LlmProviderEnum, provider);
     this.llmHealth.set(provider.id as LlmProviderEnum, { score: 100 });
-    // Seed the gauge so the metric appears immediately at scrape time —
-    // dashboards prefer "we know it's healthy" over "we have no data".
     this.healthGauge.set({ type: 'llm', provider: provider.id }, 100);
-    // The breaker wraps `op(provider)` so user-supplied async functions run
-    // through it. Opossum types are loose; we accept that and rely on our
-    // typed `runLlm` wrapper above.
     const breaker = new CircuitBreaker<
       [ILlmProvider, (p: ILlmProvider) => Promise<unknown>],
       unknown
@@ -311,19 +223,11 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
 
   private rankLlmProviders(prefer?: LlmProviderEnum): LlmProviderEnum[] {
     const ordered = [...this.defaultLlmOrder];
-    // Rank candidates by health score so a degraded provider yields to a
-    // healthier fallback.
     ordered.sort((a, b) => {
       const ha = this.llmHealth.get(a)?.score ?? 0;
       const hb = this.llmHealth.get(b)?.score ?? 0;
       return hb - ha;
     });
-    // Honor the caller's preference as long as it's still usable (score >= 10,
-    // the same threshold selectLlm skips below). A usable preferred provider
-    // must NOT be demoted just because another provider scores higher —
-    // otherwise the user's explicit model choice is silently dropped and a
-    // spurious LLM_DEGRADED banner fires. Only a genuinely degraded preferred
-    // provider (score < 10) falls through to the healthiest fallback.
     if (prefer && ordered.includes(prefer)) {
       const preferScore = this.llmHealth.get(prefer)?.score ?? 0;
       if (preferScore >= 10) {
@@ -340,7 +244,6 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
     h.score = Math.min(100, h.score + 20);
     this.healthGauge.set({ type: 'llm', provider: id }, h.score);
     if (h.incidentId) {
-      // Mark the incident as recovered (fire-and-forget; failure here is OK).
       const { incidentId } = h;
       this.incidents
         .update({ id: incidentId, recoveredAt: undefined as never }, { recoveredAt: new Date() })
@@ -361,8 +264,6 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
     h.lastError = { code: err.code, at: new Date() };
     this.healthGauge.set({ type: 'llm', provider: id }, h.score);
 
-    // Only file an incident if one isn't already open (avoid spamming the
-    // table during a sustained outage).
     if (!h.incidentId) {
       try {
         const incident = await this.incidents.save({
@@ -409,7 +310,6 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
     return new ProviderError('upstream', id, e?.message ?? String(err), err);
   }
 
-  /** Background re-probe — refreshes scores so swaps converge after outages. */
   private async probeAll(): Promise<void> {
     await Promise.all(
       [...this.llmProviders.entries()].map(async ([id, p]) => {
@@ -418,7 +318,6 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
           if (ok) {
             this.onSuccess(id);
           } else {
-            // Probe failed but we don't know why — count it as `upstream`.
             await this.onFailure(
               id,
               new ProviderError('upstream', id, 'health probe failed'),

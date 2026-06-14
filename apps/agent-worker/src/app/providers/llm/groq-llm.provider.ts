@@ -8,15 +8,6 @@ import type { AppEnv } from '@mova-back/shared-config';
 
 import { AiSdkLlmAdapter } from './ai-sdk-llm.adapter';
 
-/**
- * Groq llama — fast LLM used primarily for Phase 7 smart-suggestions
- * (3 short replies in parallel with the main turn; needs sub-200ms TTFT).
- *
- * Can also serve as a third-tier fallback for main turns when both OpenAI
- * and Anthropic are down — quality is lower but voice keeps working.
- *
- * Disabled when GROQ_API_KEY is missing.
- */
 @Injectable()
 export class GroqLlmProvider extends AiSdkLlmAdapter {
   private readonly logger = new Logger(GroqLlmProvider.name);

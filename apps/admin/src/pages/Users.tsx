@@ -7,14 +7,6 @@ import {
   type AdminUser,
 } from '../api';
 
-/**
- * Users — searchable list with block / unblock. Search is debounced
- * so typing doesn't flood the server.
- *
- * Block + unblock fire a confirm to avoid accidental hits — these
- * mutations are visible to the user (their next request returns
- * 401 + the mobile signs them out) so we want them deliberate.
- */
 export function UsersPage() {
   const [items, setItems] = useState<AdminUser[]>([]);
   const [search, setSearch] = useState('');

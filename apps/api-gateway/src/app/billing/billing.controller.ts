@@ -18,26 +18,8 @@ import type { PaymentEvent, Plan, UsageRecord } from '@mova-back/shared-database
 import { BillingService, type BillingSummary } from './billing.service';
 import { SubscribeDto, TopupDto } from './dto/billing.schemas';
 
-/** Allowed shape for the Idempotency-Key header — printable ASCII, ≤64 chars. */
 const IDEMPOTENCY_KEY_RE = /^[\x20-\x7E]{1,64}$/;
 
-/**
- * Billing REST endpoints.
- *
- * Read side: GET /me, /plans, /usage.
- *
- * Mutations (MVP — fake payment provider):
- *   - POST /topup     credits balance immediately + writes PaymentEvent
- *   - POST /subscribe switches plan; free-quota carryover preserved
- *
- * Real-payment migration:
- *   - POST /topup will return `paymentUrl` instead of crediting eagerly.
- *   - A new POST /webhook (Public, signature-verified) will receive the
- *     LiqPay callback and flip the PaymentEvent + apply the balance.
- *
- * Rate-limiting on mutations is tight: financial-side ops shouldn't be
- * spammed even in dev. 5 req/min per IP is plenty for legitimate flows.
- */
 @ApiTags('billing')
 @ApiBearerAuth()
 @Controller('billing')
@@ -101,17 +83,11 @@ export class BillingController {
     return {
       paymentEventId: paymentEvent.id,
       balanceCents,
-      // null in MVP — real LiqPay flow will return a redirect URL here.
       paymentUrl: null,
       reused,
     };
   }
 
-  /**
-   * Reject malformed keys at the edge so the service layer can trust whatever
-   * it receives. We fail loudly on bad input rather than silently coercing —
-   * a wrong idempotency key could deduplicate against the wrong payment.
-   */
   private parseIdempotencyKey(raw: string | undefined): string | null {
     if (!raw) return null;
     const trimmed = raw.trim();
@@ -136,5 +112,4 @@ export class BillingController {
   }
 }
 
-/** Re-export for external consumers of historical PaymentEvent rows (admin tooling). */
 export type { PaymentEvent };

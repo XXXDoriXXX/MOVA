@@ -4,14 +4,6 @@ import { AuthGuard } from '@nestjs/passport';
 
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 
-/**
- * Path prefixes that bypass JWT regardless of @Public() — needed for
- * controllers we don't own (Prometheus scrape endpoint, NestJS internal
- * health checkers) where decorating is impractical.
- *
- * Keep this list short and infra-only. Anything user-facing must use
- * @Public() explicitly.
- */
 const UNAUTHENTICATED_PATH_PREFIXES: ReadonlyArray<string> = [
   '/metrics',
   '/v1/metrics',
@@ -45,7 +37,6 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
       return true;
     }
 
-    // Path-based opt-out for third-party controllers (Prometheus, etc.)
     const request = context.switchToHttp().getRequest<{ url?: string }>();
     const url = request.url ?? '';
     if (UNAUTHENTICATED_PATH_PREFIXES.some((prefix) => url.startsWith(prefix))) {

@@ -21,12 +21,6 @@ import { UsersService } from '../users/users.service';
 import { CreateTemplateDto, UpdateTemplateDto } from './dto/template.schemas';
 import { TemplatesService } from './templates.service';
 
-/**
- * Templates CRUD + system-default management.
- *
- * All endpoints require auth (global JwtAuthGuard). Resource ownership is
- * enforced in the service — controller layer stays thin.
- */
 @ApiTags('templates')
 @ApiBearerAuth()
 @Controller('templates')
@@ -114,8 +108,6 @@ export class TemplatesController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: SetPreferredStyleDto,
   ): Promise<Template> {
-    // Validate id shape + ownership (for custom) BEFORE writing — invalid
-    // values would only surface later at call-start time as silent fallbacks.
     if (dto.styleId !== null) {
       await this.stylesService.assertValidForUser(user.id, dto.styleId);
     }

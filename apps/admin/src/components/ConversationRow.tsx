@@ -1,12 +1,5 @@
 import type { AdminConversation } from '../api';
 
-/**
- * Single row in any conversation list (dashboard / calls page).
- *
- * Status drives both the leading dot (animated when active) and the
- * badge color. Duration is rendered in mono so a column of them
- * stays vertically aligned even with varying widths.
- */
 export function ConversationRow({ conv }: { conv: AdminConversation }) {
   const status = conv.status;
   return (

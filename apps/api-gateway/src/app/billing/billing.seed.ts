@@ -17,19 +17,6 @@ interface SeedPlan {
   maxCallDurationSeconds: number;
 }
 
-/**
- * Seed FREE + PAID plans on startup. Idempotent via deterministic UUID +
- * ON CONFLICT (id) DO UPDATE. Default values come from env (operator can
- * change pricing without a code release).
- *
- * To add a new plan (e.g. ENTERPRISE):
- *   1. Add a value to PlanCode enum (entities + migration).
- *   2. Add a seed entry below with a fresh UUID.
- *   3. Deploy.
- *
- * To deactivate a plan: set `isActive=false` via migration. Never delete —
- * existing subscriptions reference it.
- */
 @Injectable()
 export class BillingSeed implements OnApplicationBootstrap {
   private readonly logger = new Logger(BillingSeed.name);

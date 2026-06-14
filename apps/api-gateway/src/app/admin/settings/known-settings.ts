@@ -1,38 +1,15 @@
-/**
- * Whitelist of admin-editable env keys.
- *
- * Why a whitelist:
- *   1. Defense in depth — an admin (or compromised admin password) can't
- *      poke arbitrary `process.env` keys (e.g. flip NODE_ENV, DATABASE_URL).
- *   2. UX — the panel only shows keys with rich metadata (group, label,
- *      probe support), so the page reads as a checklist of services
- *      instead of a stale env-dump.
- *   3. Discovery — adding a new key here is the contract for "let admins
- *      manage this in the UI".
- *
- * Adding a new key:
- *   1. Add an entry here with `probe: 'none'` first.
- *   2. If a cheap upstream auth-check endpoint exists, add a case in
- *      ProviderProbeService and switch `probe` to `'live'`.
- */
 export type ProbeKind = 'none' | 'live';
 
 export interface KnownSetting {
   key: string;
-  /** Human-readable label for the admin panel. */
   label: string;
-  /** Group/section in the panel — drives the heading rows. */
   group: 'LLM' | 'STT' | 'TTS' | 'LiveKit' | 'Other';
-  /** Short hint shown under the input. */
   description: string;
-  /** Whether ProviderProbeService can do a real upstream auth check. */
   probe: ProbeKind;
-  /** Reasonable lower bound to catch obvious typos before saving. */
   minLength: number;
 }
 
 export const KNOWN_SETTINGS: KnownSetting[] = [
-  // ── LLM keys ──
   {
     key: 'OPENAI_API_KEY',
     label: 'OpenAI',
@@ -65,7 +42,6 @@ export const KNOWN_SETTINGS: KnownSetting[] = [
     probe: 'live',
     minLength: 20,
   },
-  // ── STT ──
   {
     key: 'DEEPGRAM_API_KEY',
     label: 'Deepgram',
@@ -74,7 +50,6 @@ export const KNOWN_SETTINGS: KnownSetting[] = [
     probe: 'live',
     minLength: 20,
   },
-  // ── TTS ──
   {
     key: 'GOOGLE_TTS_API_KEY',
     label: 'Google Cloud TTS',
@@ -92,7 +67,6 @@ export const KNOWN_SETTINGS: KnownSetting[] = [
     probe: 'live',
     minLength: 20,
   },
-  // ── LiveKit ──
   {
     key: 'LIVEKIT_API_KEY',
     label: 'LiveKit API Key',

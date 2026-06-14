@@ -25,57 +25,8 @@ import { CallEventPublisher } from './events/call-event.publisher';
 import { StyleResolverService } from './suggestions/style-resolver.service';
 import { SuggestionsService } from './suggestions/suggestions.service';
 
-/**
- * Per-call lifecycle handler. Bridges the LiveKit Agents JS SDK pipeline
- * to our typed internal event protocol.
- *
- * Phase 6 pt 2 additions over the prior version:
- *   1. Publishes typed `InternalCallEvent` to `call-events:{conversationId}`
- *      via `CallEventPublisher` — the channel consumed by api-gateway
- *      persistence (Phase 4 pt 2) and realtime-service forwarding (Phase 5).
- *   2. Triggers `SuggestionsService.generateAndEmit()` on every
- *      transcript.final from the interlocutor, in parallel with the main
- *      LLM turn. Fire-and-forget: never blocks the audio pipeline.
- *   3. Keeps legacy flat-channel publishes (`call-events`,
- *      `call-interim-events`) for any not-yet-migrated consumer. Cleanup
- *      lands once realtime-service stops listening to the legacy channels.
- *   4. Maintains a small rolling buffer of recent messages so suggestions
- *      are context-aware (last ≤10 turns), avoiding a DB hop on hot path.
- *
- * Mid-call provider swap (known limitation):
- *   The LiveKit Agents JS pipeline binds STT/LLM/TTS plugins at session
- *   creation. Mid-call swap would require recreating the session and
- *   would interrupt audio. `user.change_model` is therefore logged here
- *   but persisted via Template/user-prefs so it takes effect on the NEXT
- *   call. Real hot-swap is post-MVP — needs a custom pipeline replacing
- *   the LiveKit Agents framework.
- */
-/**
- * Lifecycle state machine. Every teardown path consults this to avoid
- * the classic "interlocutor disconnect + user stop arrive within the
- * same tick" double-cleanup race that otherwise double-emits call.ended,
- * double-closes the session, and confuses the mobile post-call sheet.
- *
- * Transitions:
- *   idle → starting (start() called)
- *   starting → active (greeting completed successfully)
- *   starting → ending (start() catch)
- *   active → ending (user stop, room disconnect, fatal mid-call error)
- *   ending → ended (cleanup() ran)
- *
- * Guard contract: stop(), cleanup(), and the RoomEvent.Disconnected
- * handler all short-circuit if state is already 'ending' or 'ended'.
- * The first transition into 'ending' wins — its endedBy / reason are
- * preserved; subsequent triggers are dropped at log level.
- */
 type CallState = 'idle' | 'starting' | 'active' | 'ending' | 'ended';
 
-/**
- * `say()` wrapper outcome. We need a tri-state instead of a plain
- * Promise so callers (greeting / idle probe / silence fallback) can each
- * apply their own policy — greeting failure is fatal, probe failure is
- * "retry without bumping the counter", fallback failure is "give up".
- */
 type SaySafeResult =
   | { ok: true; reason: null; error: null }
   | { ok: false; reason: 'timeout' | 'error'; error: Error };
@@ -86,12 +37,7 @@ export class AgentCallHandler {
   private room: Room | null = null;
   private session: voice.AgentSession | null = null;
 
-  /** See `CallState` doc above. Mutated through `transitionTo()` only. */
   private state: CallState = 'idle';
-  /** First-wins record of why we entered `ending`. Subsequent teardown
-   *  signals are logged but do NOT override these — duplicate
-   *  RoomEvent.Disconnected after we already called stop() must not
-   *  rewrite the user-initiated reason as "interlocutor". */
   private endedBy: 'user' | 'interlocutor' | 'system' | 'admin' | null = null;
   private endReason:
     | 'user'
@@ -104,135 +50,51 @@ export class AgentCallHandler {
     | null = null;
   private endErrorCode: string | null = null;
 
-  /** TTS hard timeout. If `session.say()` doesn't resolve within this
-   *  window we treat TTS as broken — the underlying audio pipeline can
-   *  fail without the SDK ever emitting an `error` event (stream chunk
-   *  timeout, provider socket hang). Per-call greeting gets a longer
-   *  budget because cold-start of an ElevenLabs/Google TTS session
-   *  legitimately takes 2-4s on first byte. */
   private static readonly TTS_SAY_TIMEOUT_MS = 8_000;
   private static readonly TTS_GREETING_TIMEOUT_MS = 12_000;
 
-  /** deleteRoom retry policy. LiveKit control-plane blips are common in
-   *  dev; in prod a single 503 from the control-plane would otherwise
-   *  leave the SIP leg ringing on the trunk side until the room idles
-   *  out (~5 min default). Three retries with exponential backoff cover
-   *  the vast majority of transient failures. */
   private static readonly DELETE_ROOM_RETRIES = 3;
   private static readonly DELETE_ROOM_BACKOFF_MS = [200, 800, 2_400];
 
-  /** STT-stall watchdog. The SIP participant is on the line (we know —
-   *  `participantAnswered` is true) but Deepgram/etc. hasn't emitted
-   *  ANY transcript activity (partial or final) in this many ms. This
-   *  catches the silent-failure mode where the STT websocket dies and
-   *  no error surfaces — the agent quietly goes deaf and the user gets
-   *  ghosted. We emit STT_STALLED so mobile can show "перевірте звʼязок"
-   *  and (optionally) hand back to typed input. */
   private sttStallTimer: NodeJS.Timeout | null = null;
   private static readonly STT_STALL_TIMEOUT_MS = 30_000;
-  /** True after we've emitted STT_STALLED at least once in this call,
-   *  so we don't spam the banner if STT keeps stalling and recovering. */
   private sttStalledEmitted = false;
 
-  /** Consecutive heartbeat publish failures. Beyond 3 we log at error
-   *  level (not debug) because at that point realtime-service has
-   *  almost certainly declared AGENT_LOST on the mobile side already
-   *  and the user is staring at a frozen call screen. */
   private heartbeatFailures = 0;
   private static readonly HEARTBEAT_FAIL_ALARM = 3;
 
-  /**
-   * Hard call-duration deadline. Armed in start() once we have an
-   * actual session. Fires CallErrorCode.CALL_TIMEOUT and tears down via
-   * the standard stop() path so the post-call sheet and billing both
-   * see a clean end. Without this, a crashed/leaked SIP participant
-   * keeps the LiveKit room alive (~5 min idle timeout) and bills the
-   * user / our telco trunk for the whole window.
-   *
-   * Default cap is enforced by billing eligibility per plan
-   * (`maxCallDurationSeconds`), passed through agentContext. Free-tier
-   * users get a tight cap (e.g. 5 min), paid plans a generous one
-   * (e.g. 60 min) — both are upper bounds, not nominal call lengths.
-   */
   private callDeadlineTimer: NodeJS.Timeout | null = null;
-  /** Fallback when context has no maxCallDurationSeconds (legacy call
-   *  context, mis-configured plan, etc.). 1 hour ceiling — high enough
-   *  to never trip a real conversation, low enough to bound runaway
-   *  spend at one user-hour of telco/LLM cost. */
   private static readonly DEFAULT_CALL_DEADLINE_MS = 60 * 60 * 1000;
 
-  /** Rolling buffer of recent messages — feeds SuggestionsService context. */
   private readonly recentMessages: Array<{
     role: 'interlocutor' | 'ai' | 'user_typed';
     text: string;
   }> = [];
   private static readonly RECENT_BUFFER_MAX = 10;
 
-  /** Heartbeat tick — realtime-service's watchdog declares AGENT_LOST after silence. */
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private static readonly HEARTBEAT_INTERVAL_MS = 5_000;
 
-  /** Billing-countdown tick — emits call.tick every 5s while active so the
-   *  mobile client shows a live seconds-elapsed / seconds-remaining counter.
-   *  secondsRemaining is computed against the at-start maxCallDurationSeconds
-   *  snapshot (no mid-call billing call). */
   private usageTickInterval: NodeJS.Timeout | null = null;
   private static readonly USAGE_TICK_INTERVAL_MS = 5_000;
 
-  /** ms-since-epoch when the agent joined the LiveKit room. Stamped at
-   *  the start of `start()` and used to compute durationMs for every
-   *  `call.ended` emit so the post-call sheet shows a real number. */
   private callStartTime: number | null = null;
 
-  /** Polite "I'm thinking" lines we speak when reply generation yields
-   *  nothing usable. Kept short and intentionally non-meta (never says
-   *  "I'm an AI"). */
   private static readonly FALLBACK_LINES_UA = [
     'Перепрошую, можете повторити?',
     'Вибачте, мене не дуже добре чути. Повторіть, будь ласка.',
     'Дайте мені секунду.',
   ];
-  /** Round-robin pointer so consecutive fallbacks don't repeat the same line. */
   private fallbackCursor = 0;
 
-  /**
-   * Idle-probe watchdog. Fires when the agent has been listening for too
-   * long with NO sound from the interlocutor (no VAD, no STT partial, no
-   * STT final). Without this the line goes silent both ways: the agent
-   * politely waits for input that never comes, the user (caller and the
-   * deaf-end mobile user) thinks "AI is silent" and hangs up.
-   *
-   * Armed: after each AI utterance finishes (initial greeting + every
-   * `onAiFinal` + every fallback line).
-   * Cleared: on any `user_input_transcribed` (partial or final).
-   *
-   * First probe lands later than subsequent ones — a fresh-connect human
-   * deserves a few seconds to clear their throat; back-to-back silence
-   * after we've already probed once means we're probably talking to a
-   * machine or someone who genuinely didn't pick up.
-   */
   private idleProbeTimer: NodeJS.Timeout | null = null;
   private idleProbeCount = 0;
-  /** Cleared when the SIP participant joins; before that, idle probes
-   *  are pointless — nobody's on the line yet. */
   private participantAnswered = false;
-  /** Identity of the interlocutor (SIP phone / peer caller) once answered.
-   *  Used to end the call promptly when THEY disconnect — without this we
-   *  only learn the line dropped via the room-level Disconnected (which the
-   *  agent gets when IT leaves) and idle-probe a draining session. */
   private interlocutorIdentity: string | null = null;
-  /** Last SIP call status we logged, so attribute-change spam doesn't
-   *  re-log the same value. */
   private lastSipStatus: string | null = null;
-  /** LiveKit publishes the real SIP leg state here. A SIP participant joins
-   *  the room at DIAL time ("dialing" / "ringing"); the phone is only truly
-   *  answered once this reads "active". Gating call.answered on presence
-   *  (as we did before) reports a ringing phone as connected. */
   private static readonly SIP_STATUS_ATTR = 'sip.callStatus';
   private static readonly IDLE_FIRST_MS = 18_000;
   private static readonly IDLE_FOLLOWUP_MS = 25_000;
-  /** After this many unanswered probes we give up and end the call so
-   *  we don't run forever talking to nobody and burning balance. */
   private static readonly IDLE_MAX_PROBES = 3;
   private static readonly IDLE_PROBES_UA = [
     'Алло? Ви мене чуєте?',
@@ -240,33 +102,10 @@ export class AgentCallHandler {
     'Здається, нас не чути. Я ще трохи зачекаю і покладу слухавку.',
   ];
 
-  /**
-   * Per-call "preview before speak" controls. When ON (default), the
-   * LLM's reply for each interlocutor turn pauses briefly as a
-   * candidate that the user can see, accept, or cancel before TTS
-   * plays. The auto-accept timer fires after AUTO_ACCEPT_DELAY_MS so
-   * normal flow still feels conversational. When OFF, every reply
-   * waits for an explicit accept WS command from mobile.
-   *
-   * Per-call (not per-user) on purpose: a sensitive call to a doctor
-   * warrants tighter control than a delivery dispatch; the toggle
-   * lives on the in-call drawer.
-   */
   private autoMode = true;
   private static readonly AUTO_ACCEPT_DELAY_MS = 5_000;
-  /** Manual mode has a long-tail safety timeout so a stuck mobile
-   *  client (lost the candidate event, never accepted) doesn't leak
-   *  the pending Promise forever. 60s is long enough for any human
-   *  decision; past that we fail closed (cancel). */
   private static readonly MANUAL_TIMEOUT_MS = 60_000;
 
-  /**
-   * Display-only mirror of SuggestionsService.REPLY_TIER_BY_PROVIDER for
-   * the ai.text.candidate card's llmModel field. Kept inline rather than
-   * imported so the suggestions service stays the single source of truth
-   * for what's actually called — this map only needs to be roughly right
-   * for the badge in the UI. Provider keys match `defaultLlmProvider`.
-   */
   private static readonly REPLY_TIER_DISPLAY: Record<string, string> = {
     openai: 'gpt-4.1-mini',
     gemini: 'gemini-2.5-flash',
@@ -274,38 +113,16 @@ export class AgentCallHandler {
     groq: 'llama-3.1-8b-instant',
   };
 
-  /**
-   * The single in-flight AI candidate awaiting a user decision. Only
-   * ever one at a time. Speech is NOT gated through a Promise anymore —
-   * resolveCandidate(accept) calls session.say() directly. The timer
-   * is the auto-accept (auto mode) or safety-cancel (manual mode).
-   */
   private currentCandidate: {
     id: string;
     text: string;
     timer: NodeJS.Timeout | null;
-    /** False while the reply is still streaming in; true once generation
-     *  completes. The auto-accept/safety timer is only armed after this. */
     finalized: boolean;
-    /** Set if the user hit accept while the text was still streaming —
-     *  we speak the full text the moment generation finalizes. */
     acceptedEarly: boolean;
   } | null = null;
 
-  /** Aborts the in-flight streaming generation (cancel / supersede). */
   private candidateAbort: AbortController | null = null;
 
-  /**
-   * Conversational-turn accumulator. STT segments naturally split a long
-   * utterance into several "finals" (one per inhale / clause). Without
-   * batching, every one of those kicked a fresh AI candidate that the next
-   * clause immediately superseded — the live preview card "blinked" through
-   * 3-4 partial replies before settling. We instead buffer finals here and
-   * only commit the turn (one transcript.final + one AI generation + one
-   * suggestion batch) after TURN_DEBOUNCE_MS of silence. While the turn is
-   * still accumulating, transcript.partial carries the cumulative text so
-   * the mobile chat shows ONE growing bubble per turn.
-   */
   private turnText = '';
   private turnDebounceTimer: NodeJS.Timeout | null = null;
   private static readonly TURN_DEBOUNCE_MS = 1_500;
@@ -331,7 +148,6 @@ export class AgentCallHandler {
     });
   }
 
-  /** Convenience accessor — present when api-gateway populated context. */
   get conversationId(): string | null {
     return this.userContext.conversationId ?? null;
   }
@@ -347,11 +163,6 @@ export class AgentCallHandler {
     this.logger.log(`📞 [Call Lifecycle] Initiating connection sequence...`);
     this.clog.event('agent.start', { callType: this.userContext.callType ?? 'sip' });
 
-    // Track which step failed so the catch can pick a specific errorCode
-    // instead of always reporting AGENT_LOST. Mobile maps the code to a
-    // localized message + recovery action — a generic catch hides whether
-    // the problem is "phone-network unreachable" (user can retry now) or
-    // "TTS provider down" (user should wait / switch voice).
     let phase:
       | 'config'
       | 'token'
@@ -375,19 +186,9 @@ export class AgentCallHandler {
 
       phase = 'room_connect';
       this.room = new Room();
-      // A remote participant appearing means different things per call type:
-      // a peer caller joining IS the answer, but a SIP participant joins at
-      // DIAL time and only counts as answered once sip.callStatus === 'active'
-      // (tracked separately via ParticipantAttributesChanged below). We record
-      // its identity immediately so a disconnect during ringing is still
-      // attributable.
       this.room.on(RoomEvent.ParticipantConnected, (p: RemoteParticipant) => {
         this.handleInterlocutorPresent(p, false);
       });
-      // SIP leg state transitions: dialing → ringing → active → hangup. This
-      // is the ONLY truthful "did the phone ring / was it picked up" signal,
-      // and the one missing from the logs before. We log every change and
-      // promote to answered only on "active".
       this.room.on(
         RoomEvent.ParticipantAttributesChanged,
         (changed: Record<string, string>, p: Participant) => {
@@ -411,12 +212,6 @@ export class AgentCallHandler {
         },
       );
       this.room.on(RoomEvent.Disconnected, () => {
-        // If we already started tearing down (user pressed end_call,
-        // start() failed, fatal mid-call error), the call.ended event
-        // for the real cause was already emitted. The LiveKit SDK will
-        // fire Disconnected as part of OUR own room.disconnect() —
-        // re-emitting here would overwrite the user-initiated reason
-        // with "interlocutor". Idempotent: only the first reason wins.
         if (this.state === 'ending' || this.state === 'ended') {
           this.logger.debug(
             `RoomEvent.Disconnected ignored — already ${this.state}.`,
@@ -429,10 +224,6 @@ export class AgentCallHandler {
           `🚪 [Call Lifecycle] Room disconnected after ${durationMs}ms (answered=${wasAnswered}).`,
         );
         this.clog.event('agent.roomDisconnected', { durationMs, wasAnswered });
-        // If the room drops before anyone answered, it's a "no answer" outcome,
-        // not an interlocutor hang-up. When it was answered we can't tell a
-        // clean hang-up from a network drop here (no SIP code on the room
-        // event), so keep the neutral 'interlocutor' reason.
         const reason = wasAnswered ? 'interlocutor' : 'no_answer';
         const errorCode = wasAnswered ? undefined : CallErrorCode.CALL_UNANSWERED;
         this.beginEnd('interlocutor', reason, errorCode);
@@ -448,12 +239,6 @@ export class AgentCallHandler {
         });
         this.cleanup();
       });
-      // The interlocutor leaving (phone hung up / peer caller left) while the
-      // agent is still in the room does NOT raise RoomEvent.Disconnected — the
-      // agent only gets that when IT leaves. Without handling this we keep the
-      // call alive and idle-probe a draining session (LiveKit Agents closes
-      // the session on participant disconnect), which throws "agent is
-      // draining" and pages on a benign hang-up. End the call promptly here.
       this.room.on(RoomEvent.ParticipantDisconnected, (p: RemoteParticipant) => {
         if (this.state === 'ending' || this.state === 'ended') return;
         if (!this.interlocutorIdentity || p.identity !== this.interlocutorIdentity) {
@@ -497,12 +282,6 @@ export class AgentCallHandler {
 
       this.emitTyped({ type: 'call.connected', data: {} });
 
-      // The interlocutor can already be in the room by the time we finish
-      // connecting — for peer calls the caller joins first, and for SIP the
-      // leg can be mid-dial. ParticipantConnected only fires for participants
-      // that arrive AFTER us, so without this sweep we'd miss them entirely.
-      // handleInterlocutorPresent records the identity and, for SIP, only
-      // marks answered if the leg is ALREADY active.
       if (!this.participantAnswered) {
         for (const p of this.room.remoteParticipants.values()) {
           this.handleInterlocutorPresent(p, true);
@@ -510,27 +289,14 @@ export class AgentCallHandler {
         }
       }
 
-      // Start the heartbeat AFTER we've successfully joined the room. The
-      // realtime-service watchdog tolerates ~15s gaps, so a 5s tick gives
-      // us 3 misses before it declares AGENT_LOST — plenty of margin for
-      // a single GC pause or Redis blip.
       this.startHeartbeat();
 
-      // Resolve the conversation style into the prompt block BEFORE the
-      // session is created — AgentFactory.createAgent reads it from
-      // userContext.styleInstructions when assembling the system prompt
-      // so the user's chosen tone (OFFICIAL / FRIENDLY / PERSONAL /
-      // custom) shapes the actual agent voice, not just suggestions.
-      // resolveStyle never throws — on any failure it returns null and
-      // the prompt falls back to neutral.
       try {
         this.userContext.styleInstructions = await this.styleResolver.resolve(
           this.userContext.userId ?? null,
           this.userContext.activeStyleId,
         );
       } catch (err) {
-        // Style resolution is decorative — a failure must NEVER block
-        // the call. Worst case: neutral tone. Log + continue.
         reportError(this.logger, '[Style] resolve failed (continuing with neutral tone)', err, {
           conversationId: this.conversationId,
           styleId: this.userContext.activeStyleId,
@@ -544,10 +310,6 @@ export class AgentCallHandler {
         this.userContext,
       );
       this.session = sessionResult.session;
-      // Surface a degradation banner from the very first turn when the
-      // user's preferred LLM was unhealthy and the registry routed us to
-      // a fallback. Mobile shows the existing recoverable provider.failure
-      // banner — no silent substitution.
       if (sessionResult.llmProvenance.viaFallback) {
         this.logger.warn(
           `[Provider] LLM requested=${sessionResult.llmProvenance.requestedProvider} ` +
@@ -563,13 +325,6 @@ export class AgentCallHandler {
           },
         });
       }
-      // Broadcast the active call config so the mobile UI can show
-      // "now using GPT-4o + ElevenLabs (Rachel)" at-a-glance. Emitted as
-      // three separate \`call.config.changed\` events because the existing
-      // event shape carries one providerType at a time; mobile's reducer
-      // updates the right slot per event. styleId rides on the LLM event
-      // (the agent-context already resolved it; the suggestion service
-      // will read the same value on its first turn).
       this.emitTyped({
         type: 'call.config.changed',
         data: {
@@ -595,31 +350,12 @@ export class AgentCallHandler {
           voice: sessionResult.ttsProvenance.voice,
         },
       });
-      // Plain agent — the session has no llm (see AgentFactory), so the
-      // framework does STT only and never auto-replies. We generate each
-      // reply ourselves in commitTurn (after a turn-debounce groups STT
-      // segments into one logical turn) and speak it via session.say() on
-      // candidate-accept. No ttsNode gating needed.
       const agent = this.agentFactory.createAgent(this.userContext);
 
       this.bindSessionEvents(this.session);
 
       this.session.start({ room: this.room, agent });
 
-      // Greeting MUST be interruptible. LiveKit Agents JS keeps the
-      // non-interruptible SpeechHandle pinned as `_currentSpeech` and then
-      // refuses every subsequent `userTurnCompleted` with the warning
-      // "skipping user input, current speech generation cannot be
-      // interrupted" — i.e. the LLM is never triggered for any user
-      // reply for the rest of the call. The cost of allowing
-      // interruption is that an instantly-talking caller cuts the
-      // greeting short by half a word, which is acceptable. Hard-blocking
-      // the LLM is not.
-      //
-      // The greeting doubles as a TTS preflight: if it fails or hangs,
-      // we know the audio pipeline is broken before the SIP leg starts
-      // wasting balance on silent air. Failure here is FATAL
-      // (TTS_UNAVAILABLE) — without TTS there is literally no call.
       phase = 'greeting';
       const greetingText = this.agentFactory.getInitialGreeting(this.userContext);
       const greetingResult = await this.safeSay(
@@ -633,20 +369,10 @@ export class AgentCallHandler {
             (greetingResult.error?.message ?? 'no error detail'),
         );
       }
-      // Surface the greeting as a chat bubble. conversation_item_added
-      // no longer emits (it raced the candidate gate), so direct say()s
-      // publish their own ai.text.final. The greeting is the AI's
-      // opening line — the user should see it land in chat as the call
-      // goes live.
       this.emitTyped({
         type: 'ai.text.final',
         data: { text: greetingText, llmProvider: 'greeting', llmModel: 'static' },
       });
-      // Greeting done — promote to active. Start the idle-probe timer
-      // so a non-responsive interlocutor doesn't strand the call in
-      // silence, arm the STT-stall watchdog now that SIP audio is
-      // expected to be flowing, and arm the hard call-duration deadline
-      // so a leaked / crashed session can't run indefinitely.
       this.state = 'active';
       this.armIdleProbe();
       this.armSttStall();
@@ -660,9 +386,6 @@ export class AgentCallHandler {
       phase = 'done';
     } catch (error) {
       const err = error as Error;
-      // Map the failed phase to a specific CallErrorCode. Mobile picks
-      // the right banner / modal copy from the code; "fatal_error" alone
-      // would render generic "internal error" everywhere.
       const errorCode: string = (() => {
         switch (phase) {
           case 'config':
@@ -671,9 +394,6 @@ export class AgentCallHandler {
           case 'room_connect':
             return CallErrorCode.LIVEKIT_DISCONNECTED;
           case 'session_init':
-            // Most likely: STT/LLM/TTS plugin init failed (bad API key,
-            // provider down). LLM_UNAVAILABLE is the most actionable
-            // generic — user can swap providers and retry.
             return CallErrorCode.LLM_UNAVAILABLE;
           case 'greeting':
             return CallErrorCode.TTS_UNAVAILABLE;
@@ -696,10 +416,6 @@ export class AgentCallHandler {
     }
   }
 
-  /**
-   * Interrupt current TTS (if any) and speak the supplied text on behalf of
-   * the user. Triggered by `user.speak` and `user.accept_suggestion`.
-   */
   async interruptAndSpeak(text: string): Promise<void> {
     if (!this.session) {
       this.logger.warn(`🛑 [Agent Control] Cannot speak — session not initialized.`);
@@ -711,13 +427,6 @@ export class AgentCallHandler {
       );
       return;
     }
-    // The active SpeechHandle may have been created with `allowInterruptions:
-    // false` (we do this for the initial greeting so the call doesn't
-    // half-introduce itself if the user types instantly). Calling
-    // `interrupt()` on it throws `This generation handle does not allow
-    // interruptions` — which is not really an error in our flow: we just
-    // want the new utterance to queue after the current one finishes.
-    // Swallow that specific failure at warn level; surface any other.
     try {
       this.session.interrupt();
     } catch (err) {
@@ -732,11 +441,6 @@ export class AgentCallHandler {
         });
       }
     }
-    // Same rule as for the greeting: this MUST be interruptible. A
-    // non-interruptible say() pins `_currentSpeech` and starves every
-    // future LLM turn ("skipping user input" warn). User-typed lines
-    // are short anyway; if the user types a second one in quick
-    // succession, interrupting the first is the right behavior.
     const result = await this.safeSay(
       text,
       AgentCallHandler.TTS_SAY_TIMEOUT_MS,
@@ -744,9 +448,6 @@ export class AgentCallHandler {
     );
     if (result.ok) {
       this.recordRecent('user_typed', text);
-      // user.spoke goes to api-gateway persistence so the typed message
-      // shows up in chat history. source=typed; the control handler can
-      // override before publish if it knows it's actually a suggestion.
       this.emitTyped({
         type: 'user.spoke',
         data: {
@@ -758,10 +459,6 @@ export class AgentCallHandler {
       });
       this.publishLegacyFinal('user_manual', text);
     } else {
-      // The user typed a line and we couldn't speak it. Don't end the
-      // call — typed input is the secondary channel; let them keep
-      // trying with text. Surface as a recoverable TTS_DEGRADED banner
-      // so the UI can show "couldn't speak that — try again".
       reportError(this.logger, '[Agent Control] safeSay failed for user text', result.error, {
         conversationId: this.conversationId,
         textLength: text.length,
@@ -779,13 +476,11 @@ export class AgentCallHandler {
     }
   }
 
-  /** Stop the current TTS playback without saying anything new. */
   async stopTts(): Promise<void> {
     if (!this.session) return;
     try {
       this.session.interrupt();
     } catch (err) {
-      // Same expected-noise case as interruptAndSpeak.
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes('does not allow interruptions')) {
         this.logger.debug(
@@ -799,17 +494,6 @@ export class AgentCallHandler {
     }
   }
 
-  /**
-   * Mid-call conversation style swap. Cheap: just rewires the field that
-   * SuggestionsService reads on the next turn. No audio is interrupted.
-   *
-   * We do NOT verify the styleId here — that's the resolver's job. If the
-   * caller (realtime-service → Redis) passes a malformed id, the resolver
-   * falls back to a built-in and logs.
-   *
-   * Emits a `call.config.changed` event so all subscribed clients (multiple
-   * devices on the same call) converge on the new active selection.
-   */
   async setActiveStyle(styleId: string): Promise<void> {
     if (this.state === 'ending' || this.state === 'ended') {
       this.logger.debug(`setActiveStyle ignored — call is ${this.state}.`);
@@ -823,13 +507,7 @@ export class AgentCallHandler {
     });
   }
 
-  /** Forced end of the call from the user side. */
   async stop(): Promise<void> {
-    // State guard: stop() is called from at least three places (mobile
-    // end_call control, idle-probe exhaustion, OnApplicationShutdown
-    // drain). Two of them firing within the same tick used to double-
-    // emit call.ended and double-run deleteRoom. The guard makes stop()
-    // safely idempotent.
     if (this.state === 'ending' || this.state === 'ended') {
       this.logger.debug(`stop() ignored — already ${this.state}.`);
       return;
@@ -841,29 +519,10 @@ export class AgentCallHandler {
       type: 'call.ended',
       data: { endedBy: 'user', reason: 'user', durationMs },
     });
-    // `room.disconnect()` alone only drops the agent — the SIP participant
-    // (the phone) stays in the room and the real call keeps ringing/talking.
-    // Deleting the room kicks every participant, which terminates the SIP
-    // leg on the trunk side. We retry on transient LiveKit control-plane
-    // failures with exponential backoff so a single 503 doesn't leave the
-    // caller's phone ringing for 5 minutes (default room idle timeout).
     await this.deleteRoomWithRetry();
     this.cleanup();
   }
 
-  /**
-   * Three-attempt deleteRoom with exponential backoff. Why a custom
-   * loop instead of a generic retry utility:
-   *
-   *   - We only want to retry on network / 5xx; a 404 ("room already
-   *     gone") is success.
-   *   - We don't want to hold up cleanup() longer than ~3.5s total —
-   *     the user already pressed hang-up; their UI is waiting.
-   *   - On total failure we MUST still proceed to cleanup() so we don't
-   *     leak the local AgentSession / room handle. The orphan-SIP risk
-   *     is then handed off to the LiveKit room idle timeout — not ideal,
-   *     but better than blocking forever.
-   */
   private async deleteRoomWithRetry(): Promise<void> {
     const wssUrl = this.config.get<string>('LIVEKIT_URL');
     const apiKey = this.config.get<string>('LIVEKIT_API_KEY');
@@ -888,7 +547,6 @@ export class AgentCallHandler {
         return;
       } catch (err) {
         const message = (err as Error).message ?? String(err);
-        // 404 / "not found" / "room does not exist" — already gone, that's success.
         if (/not.?found|does not exist|404/i.test(message)) {
           this.logger.debug(`deleteRoom: room already gone (${message})`);
           return;
@@ -905,18 +563,11 @@ export class AgentCallHandler {
     }
   }
 
-  // ─── internals ─────────────────────────────────────
-
   private cleanup(): void {
     if (this.state === 'ended') {
-      // Already cleaned up — happens when stop() and RoomEvent.Disconnected
-      // both fire (e.g. mobile end_call → room.disconnect → SDK re-emits
-      // Disconnected). Returning is safe because all underlying handles
-      // are already null.
       this.logger.debug('cleanup() ignored — already ended.');
       return;
     }
-    // Don't downgrade an explicit ending → no-op; just promote to ended.
     if (this.state !== 'ending') this.state = 'ending';
     this.stopHeartbeat();
     this.clearIdleProbe();
@@ -955,12 +606,6 @@ export class AgentCallHandler {
     return DisconnectReason[code] ?? String(code);
   }
 
-  /**
-   * Translate an interlocutor disconnect into a precise call-end classification.
-   * An answered leg dropping is a normal hang-up; a leg that drops while still
-   * ringing is a "no answer" outcome whose flavour (rejected / unavailable /
-   * trunk failure) the mobile end screen renders as a specific message.
-   */
   private classifyInterlocutorEnd(
     reasonName: string,
     wasAnswered: boolean,
@@ -997,12 +642,6 @@ export class AgentCallHandler {
     }
   }
 
-  /**
-   * A remote participant is in the room. Peer callers count as answered the
-   * moment they join; SIP legs are only answered once sip.callStatus reads
-   * "active" — before that they're still dialing/ringing. Either way we pin
-   * interlocutorIdentity so a disconnect is attributable.
-   */
   private handleInterlocutorPresent(p: Participant, alreadyPresent: boolean): void {
     if (this.participantAnswered) return;
     const isPeer = this.userContext.callType === 'peer';
@@ -1050,24 +689,10 @@ export class AgentCallHandler {
       type: 'call.answered',
       data: { participantIdentity: p.identity },
     });
-    // Arm the silence/stall watchdogs the moment the leg is answered.
-    // For SIP, the greeting can finish (and run start()'s arm calls at
-    // lines 644-645) BEFORE the phone is picked up — at that point
-    // participantAnswered is still false, so those arm calls no-op and
-    // the watchdogs would otherwise never start unless a transcript
-    // happens to arrive. Both helpers self-clear and are idempotent, so
-    // re-arming here is safe even when answer preceded the greeting.
     this.armSttStall();
     this.armIdleProbe();
   }
 
-  /**
-   * Record the first-wins reason a call ended. Idempotent: if endedBy
-   * is already set we keep the prior values (the first signal — user
-   * stop, fatal error in start(), interlocutor disconnect — represents
-   * the actual cause; later ones are just downstream consequences).
-   * Also moves state to 'ending' so concurrent guards short-circuit.
-   */
   private beginEnd(
     endedBy: 'user' | 'interlocutor' | 'system' | 'admin',
     reason:
@@ -1097,35 +722,14 @@ export class AgentCallHandler {
       const text = (ev['text'] as string) ?? (ev['transcript'] as string) ?? '';
       if (!text) return;
 
-      // Any sound from the interlocutor — partial or final — proves
-      // they're alive AND that STT is delivering transcripts. Stand the
-      // idle-probe down, reset its count, and re-arm the STT-stall
-      // watchdog (which counts time since the LAST transcript activity).
       this.clearIdleProbe();
       this.idleProbeCount = 0;
       this.armSttStall();
-      // STT recovered after a stall — let the UI clear the banner on
-      // the next provider.failure of a different type. The flag stays
-      // true so we don't re-emit STT_STALLED for every recovery cycle.
 
       this.bufferInterlocutorChunk(text, Boolean(ev['isFinal']));
     });
 
-    // NOTE: conversation_item_added is intentionally NOT used to emit
-    // chat events. The session has no LLM, so it never auto-generates a
-    // reply — we own the whole reply lifecycle: bufferInterlocutorChunk →
-    // commitTurn → generateAndPresentReply (preview) →
-    // resolveCandidate(accept) → onAiFinal emits ai.text.final +
-    // session.say() speaks it. Direct
-    // say()s (greeting / fallback / idle-probe) emit their own
-    // ai.text.final explicitly; user-typed emits user.spoke. A listener
-    // here would double-publish, so it's removed entirely.
-
     sessionEmitter.on('error', (err: Record<string, unknown> | Error) => {
-      // If we're already tearing down, every "session closed" / "stream
-      // aborted" error is downstream noise — propagating them to mobile
-      // as provider.failure would show a confusing banner just before
-      // the call.ended modal pops up.
       if (this.state === 'ending' || this.state === 'ended') return;
       const innerError = (
         err && 'error' in (err as object) ? (err as { error: Error }).error : err
@@ -1133,9 +737,6 @@ export class AgentCallHandler {
       if (innerError?.name === 'APIUserAbortError' || innerError?.message?.includes('aborted')) {
         return;
       }
-      // Try to identify which plugin failed by inspecting the event's
-      // `source` field; fall back to 'llm' since that's the most common
-      // failure surface and the fallback line speaks the same regardless.
       const source = (err as { source?: { constructor?: { name?: string } } } | null)
         ?.source?.constructor?.name?.toLowerCase() ?? '';
       const providerType: 'stt' | 'llm' | 'tts' =
@@ -1145,11 +746,6 @@ export class AgentCallHandler {
         providerType,
         sourceClass: source || 'unknown',
       });
-      // Map providerType to the canonical CallErrorCode so mobile shows
-      // the right localized message instead of a raw exception name.
-      // Recoverable codes — the call continues with a degradation banner;
-      // the watchdog / idle probe / safeSay timeouts handle real fatal
-      // failures separately (those become FATAL_INTERNAL / TTS_UNAVAILABLE).
       const errorCode: string = (() => {
         switch (providerType) {
           case 'tts':
@@ -1160,7 +756,6 @@ export class AgentCallHandler {
             return CallErrorCode.LLM_DEGRADED;
         }
       })();
-      // Surface to the mobile client as a recoverable degradation banner.
       this.emitTyped({
         type: 'provider.failure',
         data: {
@@ -1173,23 +768,10 @@ export class AgentCallHandler {
     });
   }
 
-  // ─── AI candidate gate (preview-before-speak) ──────────
-
-  /**
-   * Public toggle for the mobile drawer's auto-mode switch.
-   * - true  → candidates auto-accept after AUTO_ACCEPT_DELAY_MS
-   * - false → candidates wait for explicit user.accept_ai_reply
-   *
-   * If a candidate is currently pending we adjust ITS timer too: a
-   * mid-flight flip from auto→manual cancels the auto-accept; a flip
-   * from manual→auto starts one. This way the toggle "feels live".
-   */
   setAutoMode(enabled: boolean): void {
     if (this.autoMode === enabled) return;
     this.autoMode = enabled;
     const candidate = this.currentCandidate;
-    // Only a FINALIZED candidate has (or needs) an auto-accept timer. A
-    // still-streaming one picks up the new mode when it finalizes.
     if (!candidate || !candidate.finalized) {
       this.logger.log(`[Candidate] auto-mode → ${enabled ? 'ON' : 'OFF'}`);
       return;
@@ -1204,15 +786,10 @@ export class AgentCallHandler {
         AgentCallHandler.AUTO_ACCEPT_DELAY_MS,
       );
     }
-    // Re-emit so mobile flips the card between countdown ring and manual
-    // mic affordance live.
     this.emitCandidate(candidate.id, candidate.text, false);
     this.logger.log(`[Candidate] auto-mode → ${enabled ? 'ON' : 'OFF'}`);
   }
 
-  /** Public — called from the WS control handler. Idempotent on a
-   *  stale candidateId (different turn already resolved) so a delayed
-   *  network packet can't double-promote. */
   acceptAiReply(candidateId: string): void {
     this.resolveCandidate(candidateId, true);
   }
@@ -1221,31 +798,15 @@ export class AgentCallHandler {
     this.resolveCandidate(candidateId, false);
   }
 
-  /**
-   * Generate the main reply for an interlocutor turn and present it as
-   * a candidate. Called (fire-and-forget) from commitTurn.
-   * The session has no LLM, so nothing auto-speaks — we own the whole
-   * reply lifecycle: generate → preview → (accept) speak.
-   *
-   * On generation failure we DON'T silently drop — the AI-silence
-   * fallback covers it (handleAiSilence speaks "can you repeat?") so
-   * the line never goes mute.
-   */
   private async generateAndPresentReply(parentText: string): Promise<void> {
     if (!this.conversationId || !this.userContext.template) return;
-    // A newer interlocutor turn supersedes any in-flight candidate:
-    // abort its generation and drop it (mobile replaces the card on the
-    // new candidate event).
     this.clearCandidate();
 
-    // Surface a "thinking" indicator until the first token lands.
     this.emitTyped({ type: 'ai.thinking', data: {} });
 
     const preferProvider = this.userContext.config?.llm?.provider as
       | LlmProviderEnum
       | undefined;
-    // Explicit per-call / template-pinned model wins over the reply-tier
-    // default in SuggestionsService.resolveReplyModel.
     const modelOverride =
       this.userContext.config?.llm?.model ??
       this.userContext.template?.defaultLlmModel ??
@@ -1261,7 +822,6 @@ export class AgentCallHandler {
       finalized: false,
       acceptedEarly: false,
     };
-    // Initial streaming card — empty text, no countdown yet.
     this.emitCandidate(id, '', true);
 
     let lastEmit = 0;
@@ -1277,11 +837,8 @@ export class AgentCallHandler {
         styleId: this.userContext.activeStyleId,
       },
       (cumulative) => {
-        // Drop chunks for a candidate that was cancelled / superseded.
         if (this.currentCandidate?.id !== id) return;
         this.currentCandidate.text = cumulative;
-        // Throttle WS chatter — emit at most ~8/s; the finalize emit below
-        // always lands the complete text.
         const now = Date.now();
         if (now - lastEmit < 120) return;
         lastEmit = now;
@@ -1292,14 +849,12 @@ export class AgentCallHandler {
       abort.signal,
     );
 
-    // Cancelled / superseded mid-generation → nothing left to do.
     if (this.currentCandidate?.id !== id) return;
     if (this.state !== 'active') {
       this.clearCandidate();
       return;
     }
     if (!reply) {
-      // Nothing usable — drop the card and let the silence fallback speak.
       this.clearCandidate();
       void this.handleAiSilence('timeout');
       return;
@@ -1307,19 +862,11 @@ export class AgentCallHandler {
     this.finalizeCandidate(id, reply);
   }
 
-  /**
-   * Emit an ai.text.candidate event. `streaming=true` while the reply is
-   * still being generated (mobile shows a generating state, no countdown);
-   * `streaming=false` is the final emit that arms the countdown ring.
-   */
   private emitCandidate(id: string, text: string, streaming: boolean): void {
     const llmProvider =
       this.userContext.config?.llm?.provider ??
       this.userContext.template?.defaultLlmProvider ??
       'openai';
-    // Display the reply-tier model for the chosen provider when nothing
-    // is pinned — otherwise the card would read the chip-tier id while
-    // the spoken line was actually generated by the reply-tier model.
     const llmModel =
       this.userContext.config?.llm?.model ??
       this.userContext.template?.defaultLlmModel ??
@@ -1341,11 +888,6 @@ export class AgentCallHandler {
     });
   }
 
-  /**
-   * Generation finished. Lock in the full text, emit the final card, and
-   * either speak immediately (user already hit accept mid-stream) or arm
-   * the auto-accept (auto) / safety-cancel (manual) timer.
-   */
   private finalizeCandidate(id: string, fullText: string): void {
     const candidate = this.currentCandidate;
     if (!candidate || candidate.id !== id) return;
@@ -1372,7 +914,6 @@ export class AgentCallHandler {
     );
   }
 
-  /** Drop the in-flight candidate: abort its generation, clear its timer. */
   private clearCandidate(): void {
     this.candidateAbort?.abort();
     this.candidateAbort = null;
@@ -1380,13 +921,6 @@ export class AgentCallHandler {
     this.currentCandidate = null;
   }
 
-  /**
-   * Resolve the current candidate (if id matches). Idempotent on stale
-   * ids. If accept lands while the reply is still streaming we remember it
-   * and speak the moment generation finalizes. ACCEPT (finalized) → speak
-   * via session.say() and emit ai.text.final. CANCEL → drop it (aborting
-   * generation if still running) and re-arm the idle probe.
-   */
   private resolveCandidate(candidateId: string, accepted: boolean): void {
     const candidate = this.currentCandidate;
     if (!candidate || candidate.id !== candidateId) return;
@@ -1405,10 +939,6 @@ export class AgentCallHandler {
       `[Candidate] ${candidateId} → ${accepted ? 'ACCEPT (speaking)' : 'CANCEL'}`,
     );
     if (accepted) {
-      // Speak via the proven say() path (same as greeting/fallback).
-      // onAiFinal emits the ai.text.final bubble + records the turn +
-      // re-arms the idle probe. We emit the bubble first so it lands
-      // as the voice begins.
       this.onAiFinal(text);
       void this.safeSay(text, AgentCallHandler.TTS_SAY_TIMEOUT_MS, {
         allowInterruptions: true,
@@ -1424,25 +954,13 @@ export class AgentCallHandler {
         }
       });
     } else {
-      // Cancelled — nothing spoken. Re-arm idle probe so we still
-      // notice if the interlocutor goes quiet after this.
       this.armIdleProbe();
     }
   }
 
-  // ─── Idle-probe (interlocutor goes silent) ─────────────
-
   private armIdleProbe(): void {
     this.clearIdleProbe();
-    // Don't probe before the SIP leg picked up — there's literally nobody
-    // on the line yet.
     if (!this.participantAnswered) return;
-    // NOTE: we intentionally do NOT early-return when the probe cap has
-    // been reached. We still arm one final timer so fireIdleProbe re-enters
-    // and hits its `idleProbeCount >= IDLE_MAX_PROBES -> stop()` branch,
-    // ending the call instead of leaving a silent interlocutor stranded
-    // until the much-longer call-duration deadline. (fireIdleProbe's MAX
-    // branch does not re-arm, so this cannot loop.)
     const delay =
       this.idleProbeCount === 0
         ? AgentCallHandler.IDLE_FIRST_MS
@@ -1463,20 +981,11 @@ export class AgentCallHandler {
     this.clearIdleProbe();
     if (!this.session) return;
     if (this.state !== 'active') return;
-    // The interlocutor may have hung up moments before this timer fired. If
-    // they're gone the LiveKit Agents session is draining and any say() throws
-    // "cannot schedule new speech, the agent is draining" — a benign race we
-    // must not report as an error. Stand down; the ParticipantDisconnected /
-    // Disconnected flow ends the call with the right reason.
     if (!this.room || this.room.remoteParticipants.size === 0) {
       this.clog.debug('agent.idleProbe.skippedDraining');
       return;
     }
     if (this.idleProbeCount >= AgentCallHandler.IDLE_MAX_PROBES) {
-      // We've prompted enough times with no answer — give up and end
-      // the call so we don't keep talking to dead air on the user's
-      // balance. The end emits the standard call.ended event so the
-      // mobile post-call sheet renders normally.
       this.logger.warn(
         `[Idle probe] No response after ${AgentCallHandler.IDLE_MAX_PROBES} probes — ending call.`,
       );
@@ -1494,21 +1003,14 @@ export class AgentCallHandler {
       { allowInterruptions: true },
     );
     if (result.ok) {
-      // Probe was actually spoken — count it and emit transcript.
       this.idleProbeCount += 1;
       this.recordRecent('ai', line);
       this.emitTyped({
         type: 'ai.text.final',
         data: { text: line, llmProvider: 'idle_probe', llmModel: 'static' },
       });
-      // Re-arm with the longer follow-up window so we don't pester.
       this.armIdleProbe();
     } else {
-      // TTS broke for this probe. DON'T bump idleProbeCount — otherwise
-      // three TTS failures in a row end the call as "user didn't reply"
-      // when actually the user heard nothing. Re-arm a shorter retry
-      // window; if TTS stays broken the safeSay timeout for the GREETING
-      // path would have caught it. Here we just keep trying.
       reportError(this.logger, '[Idle probe] safeSay failed — will retry', result.error, {
         conversationId: this.conversationId,
         reason: result.reason,
@@ -1517,32 +1019,11 @@ export class AgentCallHandler {
     }
   }
 
-  // ─── AI silence fallback ───────────────────────────────
-
-  /**
-   * Speak a generic fallback line when reply generation yields nothing
-   * usable (timeout, LLM error, anything). The goal is "never let the
-   * called party listen to silence" — even a "give me a sec" beats a
-   * dead line. We rotate through a small set of phrases so back-to-back
-   * fallbacks don't sound stuck.
-   *
-   * Marked `allowInterruptions: true` so a later real reply cleanly
-   * overrides this placeholder instead of queueing behind it.
-   */
   private async handleAiSilence(
     reason: 'timeout' | 'plugin_error',
   ): Promise<void> {
     if (!this.session) return;
     if (this.state !== 'active') return;
-    // If the SIP participant has just hung up, LiveKit Agents starts
-    // draining the session asynchronously — any new say() call will
-    // throw "cannot schedule new speech, the agent is draining". That
-    // exception bubbles into safeSay → triggers our fatal-end branch
-    // and emits a phantom TTS_UNAVAILABLE modal even though the call
-    // is already ending for a non-TTS reason (participant disconnect).
-    // If there's no remote participant present anymore, skip the
-    // fallback — the regular RoomEvent.Disconnected flow will end the
-    // call with the correct reason.
     if (!this.room || this.room.remoteParticipants.size === 0) {
       this.logger.debug(
         `[AI fallback] Skipped — no remote participants (room draining).`,
@@ -1562,9 +1043,6 @@ export class AgentCallHandler {
     );
     if (result.ok) {
       this.recordRecent('ai', line);
-      // Mirror to the chat so the user sees the placeholder too —
-      // otherwise they hear it but the transcript jumps from their
-      // last turn straight to the eventual real reply.
       this.emitTyped({
         type: 'ai.text.final',
         data: {
@@ -1574,10 +1052,6 @@ export class AgentCallHandler {
         },
       });
     } else {
-      // The fallback itself failed to speak. This is the worst case:
-      // the LLM didn't reply AND TTS is now broken. Continuing means
-      // dead air both ways. End the call with TTS_UNAVAILABLE so mobile
-      // shows the right modal instead of a frozen call screen.
       reportError(this.logger, '[AI fallback] safeSay failed — ending call', result.error, {
         conversationId: this.conversationId,
         reason,
@@ -1598,18 +1072,8 @@ export class AgentCallHandler {
     }
   }
 
-  /**
-   * Feed one STT chunk (partial or final) into the current turn. While the
-   * turn accumulates, transcript.partial carries the cumulative text so the
-   * mobile chat shows ONE growing bubble. On each final we also (re)arm the
-   * turn-debounce timer — the first final of a turn additionally aborts any
-   * stale candidate from the previous turn and re-emits ai.thinking so the
-   * UI immediately signals "we hear you, holding the reply".
-   */
   private bufferInterlocutorChunk(text: string, isFinal: boolean): void {
     const cumulative = this.turnText ? `${this.turnText} ${text}` : text;
-    // Live preview reflects the whole turn-so-far, not just the latest STT
-    // segment. Keeps the partial bubble growing across mid-utterance pauses.
     this.emitTyped({ type: 'transcript.partial', data: { text: cumulative } });
     this.publishLegacyInterim('user', cumulative);
 
@@ -1617,8 +1081,6 @@ export class AgentCallHandler {
 
     const firstFinalOfTurn = this.turnText === '';
     if (firstFinalOfTurn) {
-      // Any candidate that was sitting on screen is now answering a
-      // superseded turn — drop it and let the user know we're listening.
       this.clearCandidate();
       this.emitTyped({ type: 'ai.thinking', data: {} });
     }
@@ -1630,8 +1092,6 @@ export class AgentCallHandler {
     );
   }
 
-  /** Reset turn accumulator + debounce. Called on cleanup so a call ending
-   *  mid-turn doesn't leave a timer pointing at a torn-down handler. */
   private clearTurn(): void {
     if (this.turnDebounceTimer) {
       clearTimeout(this.turnDebounceTimer);
@@ -1640,11 +1100,6 @@ export class AgentCallHandler {
     this.turnText = '';
   }
 
-  /**
-   * The debounce timer elapsed without another STT final landing — treat
-   * the accumulated text as one committed interlocutor turn: persist it,
-   * kick the AI reply, and ask for parallel quick-reply chips.
-   */
   private commitTurn(): void {
     this.turnDebounceTimer = null;
     const text = this.turnText.trim();
@@ -1658,8 +1113,6 @@ export class AgentCallHandler {
     this.emitTyped({
       type: 'transcript.final',
       data: {
-        // Carry the id so api-gateway persists the Message under it and the
-        // parallel suggestions.generated (parentMessageId=messageId) FK holds.
         messageId,
         text,
         sttProvider: this.userContext.config?.stt?.provider ?? 'deepgram',
@@ -1668,15 +1121,8 @@ export class AgentCallHandler {
     this.publishLegacyFinal('user', text);
 
     if (this.conversationId && this.userContext.template) {
-      // Main reply: generate (streaming) → present as a candidate (NOT
-      // auto-spoken). This is the primary turn now that the session has no
-      // LLM — generateAndPresentReply emits ai.thinking, streams the reply
-      // into a live candidate card, then finalizes or falls back to silence.
       void this.generateAndPresentReply(text);
 
-      // Quick replies in parallel — best-effort chips the user can tap
-      // instead of waiting for / accepting the main candidate. Never
-      // blocks the main turn.
       void this.suggestions.generateAndEmit({
         conversationId: this.conversationId,
         parentMessageId: messageId,
@@ -1691,17 +1137,12 @@ export class AgentCallHandler {
   }
 
   private onAiFinal(text: string): void {
-    // AI replied — re-arm the idle probe because now we're back to
-    // waiting on the interlocutor.
     this.armIdleProbe();
     this.recordRecent('ai', text);
     const llmProvider =
       this.userContext.config?.llm?.provider ??
       this.userContext.template?.defaultLlmProvider ??
       'openai';
-    // Display the reply-tier model for the chosen provider when nothing
-    // is pinned — otherwise the card would read the chip-tier id while
-    // the spoken line was actually generated by the reply-tier model.
     const llmModel =
       this.userContext.config?.llm?.model ??
       this.userContext.template?.defaultLlmModel ??
@@ -1715,15 +1156,8 @@ export class AgentCallHandler {
     this.publishLegacyFinal('agent', text);
   }
 
-  /**
-   * Build the full InternalCallEvent + publish through CallEventPublisher.
-   * Caller passes type + data; we fill conversationId + occurredAt so every
-   * emit satisfies the Zod schema downstream.
-   */
   private emitTyped(partial: Pick<InternalCallEvent, 'type' | 'data'>): void {
     if (!this.conversationId) {
-      // Legacy calls without a Conversation row — typed protocol can't be
-      // satisfied. The legacy channels still carry the event.
       return;
     }
     const event = {
@@ -1735,26 +1169,6 @@ export class AgentCallHandler {
     void this.publisher.publish(event);
   }
 
-  /**
-   * Promise.race wrapper around `session.say()`. The bare SDK promise
-   * can hang silently when a TTS provider stream drops mid-chunk —
-   * neither resolving nor emitting the session.error event we listen to
-   * in bindSessionEvents. Without this timeout the entire call freezes:
-   * idle probe can't fire (no AI turn boundary), watchdog can't fire
-   * (we never armed the response watchdog for an internal say), the
-   * caller hears dead air, and nothing tells the user why.
-   *
-   * Returns a structured result rather than throwing so each call site
-   * (greeting / probe / fallback / user-typed) can apply its own
-   * policy without try/catch boilerplate.
-   *
-   * Note: we cannot CANCEL the underlying say() on timeout — the SDK
-   * has no abort API on the SpeechHandle. The dangling promise is
-   * caught with a .catch to keep it from becoming an unhandled
-   * rejection. If TTS recovers later, the audio plays orphaned
-   * (the SDK still pushes the audio frames); this is acceptable
-   * because we've already moved on (probe retry, call ended, etc.).
-   */
   private async safeSay(
     text: string,
     timeoutMs: number,
@@ -1774,8 +1188,6 @@ export class AgentCallHandler {
         });
       }, timeoutMs);
     });
-    // Wrap session.say so the .catch() can't surface as unhandled if
-    // the SDK rejects AFTER our timeout already resolved the race.
     const sayPromise: Promise<SaySafeResult> = (async (): Promise<SaySafeResult> => {
       try {
         await session.say(text, opts);
@@ -1789,24 +1201,11 @@ export class AgentCallHandler {
       }
     })();
     sayPromise.catch(() => {
-      /* swallowed — already handled inside the IIFE above */
     });
     const result = await Promise.race([sayPromise, timeoutPromise]);
     if (timer) clearTimeout(timer);
     return result;
   }
-
-  // ─── STT stall watchdog (silent transcription failure) ───
-  //
-  // We can't tell whether the SIP audio is actually arriving at the
-  // STT plugin from inside our process — the LiveKit Agents SDK
-  // doesn't expose VAD-level frame counters. Instead we time the gap
-  // between transcript events (partial OR final). After
-  // STT_STALL_TIMEOUT_MS without any transcript activity — but with
-  // the SIP participant joined — we assume STT silently died and
-  // surface STT_STALLED. The call keeps going (the user can switch
-  // to typed input; the AI agent can still talk OUT) but mobile
-  // shows the warning banner.
 
   private armSttStall(): void {
     this.clearSttStall();
@@ -1841,22 +1240,12 @@ export class AgentCallHandler {
         errorMessage: 'STT delivered no transcripts for 30s.',
       },
     });
-    // Re-arm: if STT recovers we'll get user_input_transcribed and reset
-    // sttStalledEmitted is intentionally NOT reset — we don't want to
-    // flap the banner every 30s if the connection is genuinely flaky.
     this.armSttStall();
   }
-
-  // ─── Hard call-duration deadline ───────────────────────
 
   private armCallDeadline(): void {
     this.clearCallDeadline();
     const cap = this.userContext.maxCallDurationSeconds;
-    // cap can legitimately be 0 (BillingService returns 0 when the user
-    // has zero remaining balance) — in that case the call should already
-    // have been refused upstream by assertEligible, so reaching here
-    // implies a bug. Defaulting to DEFAULT_CALL_DEADLINE_MS keeps us safe
-    // either way: even a buggy upstream can't strand a session forever.
     const deadlineMs =
       cap && cap > 0
         ? cap * 1000
@@ -1864,9 +1253,6 @@ export class AgentCallHandler {
     this.callDeadlineTimer = setTimeout(() => {
       void this.fireCallDeadline(deadlineMs);
     }, deadlineMs);
-    // Don't let this long (default 1h) watchdog keep the Node event loop
-    // (or a Jest worker) alive on its own - a live call always has other
-    // active handles, so the timer still fires normally.
     this.callDeadlineTimer.unref?.();
     this.logger.log(
       `[Deadline] Armed call-duration watchdog: ${Math.round(deadlineMs / 1000)}s`,
@@ -1880,15 +1266,6 @@ export class AgentCallHandler {
     }
   }
 
-  /**
-   * Fire the deadline: emit a system-initiated CALL_TIMEOUT and run the
-   * same teardown path as user-stop. We deliberately do NOT call
-   * `stop()` here because stop()'s state guard would short-circuit
-   * (we already moved to 'ending' via beginEnd) AND its own emitTyped
-   * would double-fire call.ended with the wrong reason. Instead we
-   * inline the two teardown steps (deleteRoom + cleanup) that the
-   * stop() path is responsible for.
-   */
   private async fireCallDeadline(deadlineMs: number): Promise<void> {
     if (this.state !== 'active') return;
     const durationMs = this.callStartTime ? Date.now() - this.callStartTime : deadlineMs;
@@ -1909,14 +1286,6 @@ export class AgentCallHandler {
     this.cleanup();
   }
 
-  /**
-   * Start emitting a heartbeat every 5s to `heartbeat:{conversationId}`.
-   * realtime-service subscribes to this pattern; absence > ~15s triggers
-   * AGENT_LOST in the watchdog there. We use a separate Redis channel
-   * (not the event publisher) to keep this off the typed-event hot path —
-   * heartbeat volume is irrelevant for persistence but constant for
-   * presence detection.
-   */
   private startHeartbeat(): void {
     if (!this.conversationId) return;
     const channel = `heartbeat:${this.conversationId}`;
@@ -1924,16 +1293,10 @@ export class AgentCallHandler {
       this.redis
         .publish(channel, JSON.stringify({ ts: Date.now() }))
         .then(() => {
-          // Reset counter on any successful publish so transient blips
-          // don't accumulate forever and trigger a false alarm later.
           this.heartbeatFailures = 0;
         })
         .catch((err: Error) => {
           this.heartbeatFailures += 1;
-          // Below alarm threshold this is just noise (single blip → next
-          // tick recovers). At/above threshold mobile has almost
-          // certainly seen AGENT_LOST on its side; we need the loud log
-          // so ops can correlate the user's complaint with our trace.
           if (this.heartbeatFailures >= AgentCallHandler.HEARTBEAT_FAIL_ALARM) {
             this.logger.error(
               `Heartbeat publish failed ${this.heartbeatFailures}× in a row — realtime-service likely sees AGENT_LOST. Last error: ${err.message}`,
@@ -1943,11 +1306,8 @@ export class AgentCallHandler {
           }
         });
     };
-    // Fire immediately so the watchdog sees us within 5s of room join.
     tick();
     this.heartbeatInterval = setInterval(tick, AgentCallHandler.HEARTBEAT_INTERVAL_MS);
-    // Heartbeat is a background presence ping - it must not by itself keep
-    // the process / Jest worker from exiting once the call is gone.
     this.heartbeatInterval.unref?.();
   }
 
@@ -1958,13 +1318,6 @@ export class AgentCallHandler {
     }
   }
 
-  /**
-   * Emit a billing-countdown tick every 5s while the call is active. Idempotent
-   * re-arm (clears any prior timer first, per the timer contract). secondsRemaining
-   * counts down the at-start maxCallDurationSeconds snapshot the agent already
-   * holds — null when no cap was provided so the mobile counter hides rather than
-   * showing a fake number. unref()'d so it never keeps the process / Jest alive.
-   */
   private armUsageTick(): void {
     this.clearUsageTick();
     const cap = this.userContext.maxCallDurationSeconds;
@@ -1990,7 +1343,6 @@ export class AgentCallHandler {
     }
   }
 
-  /** Rolling buffer for suggestions context. */
   private recordRecent(
     role: 'interlocutor' | 'ai' | 'user_typed',
     text: string,
@@ -2001,7 +1353,6 @@ export class AgentCallHandler {
     }
   }
 
-  /** Legacy flat-channel publishes — kept for any non-migrated consumer. */
   private publishLegacyFinal(sender: string, text: string): void {
     this.redis
       .publish(

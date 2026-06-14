@@ -19,20 +19,10 @@ interface UpdateProfileInput {
   preferredLlmProvider?: string;
   preferredLlmModel?: string;
   preferredTtsProvider?: string;
-  /**
-   * Wire ID — "builtin:<key>" or "custom:<uuid>". Validated by
-   * ConversationStylesService before this method is called. NULL clears.
-   */
   preferredStyleId?: string | null;
   isDeafMute?: boolean;
 }
 
-/**
- * UsersService — the only place that reads/writes the User table.
- * Other modules go through here to keep ownership clear and to add
- * cross-cutting concerns (email normalization, soft-delete filtering,
- * cache invalidation later in Phase 5).
- */
 @Injectable()
 export class UsersService {
   constructor(
@@ -40,11 +30,6 @@ export class UsersService {
     private readonly usersRepository: Repository<User>,
   ) {}
 
-  /**
-   * Find an active user (not soft-deleted) by email. Email is lower-cased
-   * upstream in DTO validation, but we defensively normalize again here so
-   * callers can't accidentally bypass that.
-   */
   async findByEmail(email: string): Promise<User | null> {
     return this.usersRepository.findOne({
       where: { email: email.trim().toLowerCase(), deletedAt: IsNull() },
@@ -63,9 +48,6 @@ export class UsersService {
     });
   }
 
-  /**
-   * @deprecated kept for JwtStrategy back-compat. Prefer `findActiveById`.
-   */
   async findById(id: string): Promise<User | null> {
     return this.findActiveById(id);
   }
@@ -86,12 +68,9 @@ export class UsersService {
   }
 
   async updateProfile(userId: string, patch: UpdateProfileInput): Promise<User> {
-    // We use update + reload to keep the operation a single UPDATE statement;
-    // findOneOrFail on an active user enforces soft-delete invariant.
     await this.usersRepository.update({ id: userId }, patch);
     const user = await this.findActiveById(userId);
     if (!user) {
-      // Defensive: only happens if the user was deleted concurrently.
       throw new ConflictException('User no longer exists');
     }
     return user;

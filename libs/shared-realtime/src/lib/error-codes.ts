@@ -1,17 +1,4 @@
-/**
- * Canonical typed error codes that can be surfaced to the mobile client during
- * an active call. The mobile UI maps each code to a localized message and a
- * recovery action (banner vs full-screen modal).
- *
- * RULES:
- *   - Never add a generic "UNKNOWN" — every failure path must have a specific code.
- *   - `recoverable: true` ⇒ banner, call continues.
- *   - `recoverable: false` ⇒ modal, call ends.
- *   - Server-side `message` is human-readable Ukrainian and serves as a fallback
- *     if the client lacks a translation for that code.
- */
 export const CallErrorCode = {
-  // ── Provider degradation (recoverable) ─────────────
   STT_UNAVAILABLE: 'STT_UNAVAILABLE',
   STT_DEGRADED: 'STT_DEGRADED',
   STT_STALLED: 'STT_STALLED',
@@ -20,21 +7,17 @@ export const CallErrorCode = {
   TTS_UNAVAILABLE: 'TTS_UNAVAILABLE',
   TTS_DEGRADED: 'TTS_DEGRADED',
 
-  // ── Safety / moderation (recoverable) ──────────────
   PROMPT_INJECTION: 'PROMPT_INJECTION',
   CONTENT_BLOCKED: 'CONTENT_BLOCKED',
 
-  // ── Rate / fair-use (recoverable) ──────────────────
   RATE_LIMITED: 'RATE_LIMITED',
 
-  // ── Peer (app-to-app) call setup (fatal) ───────────
   CALLEE_OFFLINE: 'CALLEE_OFFLINE',
   CALLEE_BUSY: 'CALLEE_BUSY',
   CALLEE_UNAVAILABLE: 'CALLEE_UNAVAILABLE',
   CALL_DECLINED: 'CALL_DECLINED',
   CALL_UNANSWERED: 'CALL_UNANSWERED',
 
-  // ── Fatal — call ends ──────────────────────────────
   BALANCE_EXHAUSTED: 'BALANCE_EXHAUSTED',
   LIVEKIT_DISCONNECTED: 'LIVEKIT_DISCONNECTED',
   AGENT_LOST: 'AGENT_LOST',
@@ -44,10 +27,6 @@ export const CallErrorCode = {
 
 export type CallErrorCode = (typeof CallErrorCode)[keyof typeof CallErrorCode];
 
-/**
- * Whether a given error code is recoverable. Used by the server to decide
- * whether to keep the call session alive or terminate it.
- */
 export function isRecoverable(code: CallErrorCode): boolean {
   return RECOVERABLE_CODES.has(code);
 }
@@ -64,10 +43,6 @@ const RECOVERABLE_CODES: ReadonlySet<CallErrorCode> = new Set<CallErrorCode>([
   CallErrorCode.RATE_LIMITED,
 ]);
 
-/**
- * Default Ukrainian messages. Client may override with its own translations
- * — these are the contract fallback.
- */
 export const DEFAULT_ERROR_MESSAGES_UK: Readonly<Record<CallErrorCode, string>> = {
   STT_UNAVAILABLE: 'Розпізнавання мовлення недоступне. Ви можете писати вручну.',
   STT_DEGRADED: 'Перемикаємо на резервне розпізнавання мовлення.',

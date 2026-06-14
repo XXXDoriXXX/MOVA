@@ -7,19 +7,6 @@ import { Repository } from 'typeorm';
 
 import { Conversation, ConversationStatus } from '@mova-back/shared-database';
 
-/**
- * Periodically syncs `mova_active_calls` gauge from the DB.
- *
- * Why a periodic poll vs. event-driven:
- *   - Increment-on-start / decrement-on-end is fragile under crashes: a
- *     pod restart loses in-memory counter and the gauge drifts.
- *   - A bounded SELECT every 5s is cheap (< 1ms with the partial index)
- *     and self-healing — every tick re-establishes ground truth.
- *
- * The watchdog cron (Phase 8) marks zombie conversations as failed within
- * 5 minutes, so this gauge converges to reality at most that fast after
- * an agent crash.
- */
 @Injectable()
 export class ActiveCallsGauge {
   private readonly logger = new Logger(ActiveCallsGauge.name);

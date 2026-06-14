@@ -3,11 +3,6 @@ import * as Sentry from '@sentry/nestjs';
 
 import { reportError } from './report-error';
 
-/**
- * Correlation fields stamped on every call-scoped log line. conversationId
- * and roomName are the primary keys used to grep a single call's whole
- * lifecycle across api-gateway, realtime-service and agent-worker.
- */
 export interface CallLogFields {
   conversationId?: string | null;
   roomName?: string | null;
@@ -36,27 +31,15 @@ function breadcrumb(
   try {
     Sentry.addBreadcrumb({ category: 'call', type: 'default', level, message: evt, data });
   } catch {
-    // observability must never throw into the call path
   }
 }
 
-/**
- * Call-scoped structured logger. Emits pino-structured logs (msg = event
- * name, correlation fields inline) AND mirrors each event to a Sentry
- * breadcrumb so a later captured exception carries the full call trail.
- *
- * Usage:
- *   const clog = new CallLogger(this.logger, { conversationId, roomName, userId });
- *   clog.event('call.peer.start.ringing', { calleeUserId });
- *   clog.error('call.peer.start.sipFailed', err, { targetPhone });
- */
 export class CallLogger {
   constructor(
     private readonly logger: Logger,
     private readonly fields: CallLogFields = {},
   ) {}
 
-  /** Derive a new logger with additional/overridden correlation fields. */
   child(extra: CallLogFields): CallLogger {
     return new CallLogger(this.logger, { ...this.fields, ...extra });
   }

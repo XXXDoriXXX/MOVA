@@ -142,11 +142,32 @@ export class ConversationLifecycleService {
     });
 
     const secondsBilled = Math.max(0, conversation.durationSeconds);
-    const summary = await this.billing.getSummary(conversation.userId);
-    const source =
-      summary.plan.code === PlanCode.FREE ? UsageSource.FREE : UsageSource.PAID;
+    // Bill at the plan SNAPSHOTTED at call-start (initialPlanSource/Price), not
+    // a fresh read — a mid-call plan switch (POST /billing/subscribe) or the
+    // monthly reset must not retroactively re-price an in-flight call. Legacy
+    // rows (NULL snapshot) fall back to the live end-of-call summary.
+    let source: UsageSource;
+    let pricePerSecondCents: number;
+    let planLabel: string;
+    if (
+      conversation.initialPlanSource === UsageSource.FREE ||
+      conversation.initialPlanSource === UsageSource.PAID
+    ) {
+      source =
+        conversation.initialPlanSource === UsageSource.FREE
+          ? UsageSource.FREE
+          : UsageSource.PAID;
+      pricePerSecondCents = conversation.initialPricePerSecondCents ?? 0;
+      planLabel = `${conversation.initialPlanSource} (start-snapshot)`;
+    } else {
+      const summary = await this.billing.getSummary(conversation.userId);
+      source =
+        summary.plan.code === PlanCode.FREE ? UsageSource.FREE : UsageSource.PAID;
+      pricePerSecondCents = summary.plan.pricePerSecondCents;
+      planLabel = summary.plan.code;
+    }
     const costCents =
-      source === UsageSource.PAID ? secondsBilled * summary.plan.pricePerSecondCents : 0;
+      source === UsageSource.PAID ? secondsBilled * pricePerSecondCents : 0;
     this.logger.log({
       msg: 'call.lifecycle.ended',
       evt: 'call.lifecycle.ended',
@@ -157,7 +178,7 @@ export class ConversationLifecycleService {
       errorCode: input.errorCode,
       secondsBilled,
       costCents,
-      plan: summary.plan.code,
+      plan: planLabel,
     });
 
     let charged = true;

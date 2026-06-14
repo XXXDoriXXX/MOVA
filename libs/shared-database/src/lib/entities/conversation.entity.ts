@@ -169,6 +169,20 @@ export class Conversation {
   @Column({ type: 'varchar', length: 100, nullable: true })
   initialVoice!: string | null;
 
+  /**
+   * Plan snapshot captured at call START from the eligibility check. End-of-call
+   * billing derives source + cost from THESE (not a fresh read), so a mid-call
+   * plan switch or monthly reset cannot re-price an in-flight call. Null on rows
+   * created before this column existed → end-of-call falls back to the live
+   * summary. `initialPlanSource` is a UsageSource ('free'/'paid') that routes the
+   * applyCharge branch — NOT the LLM-provider snapshot above.
+   */
+  @Column({ type: 'varchar', length: 10, nullable: true })
+  initialPlanSource!: string | null;
+
+  @Column({ type: 'int', nullable: true })
+  initialPricePerSecondCents!: number | null;
+
   @CreateDateColumn()
   createdAt!: Date;
 

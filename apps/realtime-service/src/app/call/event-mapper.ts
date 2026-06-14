@@ -154,11 +154,12 @@ export function mapInternalToServer(event: InternalCallEvent): ServerEvent | nul
         timestamp,
         data: {
           secondsElapsed: event.data.secondsConnected,
-          // secondsRemaining is computed against billing — set by realtime-bridge
-          // before forwarding when it has the eligibility snapshot. For now null.
-          secondsRemaining: null,
-          // planCode is also enriched at the bridge; placeholder here.
-          planCode: 'free',
+          // Carried on the internal event: agent-worker computes both against
+          // the at-start billing snapshot (maxCallDurationSeconds + planCode)
+          // it already holds, so this mapper stays a pure pass-through and
+          // realtime-bridge stays a thin synchronous forwarder.
+          secondsRemaining: event.data.secondsRemaining,
+          planCode: event.data.planCode,
         },
       };
 

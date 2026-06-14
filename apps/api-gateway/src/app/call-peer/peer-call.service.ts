@@ -281,6 +281,9 @@ export class PeerCallService {
           : {}),
       },
       maxCallDurationSeconds: eligibility.maxCallDurationSeconds,
+      // Snapshot the plan at start so agent-worker can stamp it onto each
+      // usage.tick without a billing call (mirrors maxCallDurationSeconds).
+      planCode: eligibility.summary.plan.code,
       createdAt: new Date().toISOString(),
     };
 

@@ -84,6 +84,28 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
   /** conversationId → grace timer. Bumped on each heartbeat. */
   private readonly timers = new Map<string, NodeJS.Timeout>();
 
+  /**
+   * Conversations that have already terminated (we declared AGENT_LOST, or we
+   * saw a clean call.ended on the events stream). A late/stale heartbeat for
+   * one of these must NOT re-arm a tracker — otherwise subsequent silence
+   * would fire a SECOND AGENT_LOST and publish a duplicate call.ended to the
+   * mobile client. Insertion-ordered; FIFO-evicted to stay bounded since
+   * conversationIds are unique per call and never reused.
+   */
+  private readonly ended = new Set<string>();
+  private static readonly MAX_ENDED_TOMBSTONES = 10_000;
+
+  private markEnded(conversationId: string): void {
+    if (this.ended.has(conversationId)) return;
+    this.ended.add(conversationId);
+    if (this.ended.size > HeartbeatWatchdog.MAX_ENDED_TOMBSTONES) {
+      // Evict the oldest tombstone. Worst case after eviction is the
+      // original pre-fix behavior for a very old conversation — acceptable.
+      const oldest = this.ended.values().next().value;
+      if (oldest !== undefined) this.ended.delete(oldest);
+    }
+  }
+
   constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {}
 
   async onModuleInit(): Promise<void> {
@@ -135,6 +157,7 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
       clearTimeout(timer);
     }
     this.timers.clear();
+    this.ended.clear();
   }
 
   /**
@@ -164,6 +187,11 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
 
   /** Reset the grace timer for a conversation that just heart-beat. */
   private markAlive(conversationId: string): void {
+    // A heartbeat arriving after the call already terminated (we declared
+    // AGENT_LOST, or a clean call.ended was seen) must be a no-op. Re-arming
+    // here would let later silence fire a second AGENT_LOST and publish a
+    // duplicate call.ended to the client.
+    if (this.ended.has(conversationId)) return;
     this.armTimer(conversationId, HEARTBEAT_GRACE_MS);
   }
 
@@ -182,7 +210,10 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
     }
     if (type !== 'call.ended') return;
     const conversationId = channel.slice('call-events:'.length);
-    if (conversationId) this.stopTracking(conversationId);
+    if (conversationId) {
+      this.markEnded(conversationId);
+      this.stopTracking(conversationId);
+    }
   }
 
   private stopTracking(conversationId: string): void {
@@ -205,8 +236,10 @@ export class HeartbeatWatchdog implements OnModuleInit, OnModuleDestroy {
 
   private async onAgentLost(conversationId: string): Promise<void> {
     // Drop the tracker first so we don't fire again if a stale heartbeat
-    // arrives during the publish.
+    // arrives during the publish. Tombstone the conversation so a late
+    // heartbeat after this declaration cannot re-arm and fire a duplicate.
     this.timers.delete(conversationId);
+    this.markEnded(conversationId);
     this.logger.warn(`AGENT_LOST detected for conversation ${conversationId}`);
 
     const event = {

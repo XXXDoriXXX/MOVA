@@ -1855,6 +1855,10 @@ export class AgentCallHandler {
     this.callDeadlineTimer = setTimeout(() => {
       void this.fireCallDeadline(deadlineMs);
     }, deadlineMs);
+    // Don't let this long (default 1h) watchdog keep the Node event loop
+    // (or a Jest worker) alive on its own - a live call always has other
+    // active handles, so the timer still fires normally.
+    this.callDeadlineTimer.unref?.();
     this.logger.log(
       `[Deadline] Armed call-duration watchdog: ${Math.round(deadlineMs / 1000)}s`,
     );
@@ -1933,6 +1937,9 @@ export class AgentCallHandler {
     // Fire immediately so the watchdog sees us within 5s of room join.
     tick();
     this.heartbeatInterval = setInterval(tick, AgentCallHandler.HEARTBEAT_INTERVAL_MS);
+    // Heartbeat is a background presence ping - it must not by itself keep
+    // the process / Jest worker from exiting once the call is gone.
+    this.heartbeatInterval.unref?.();
   }
 
   private stopHeartbeat(): void {

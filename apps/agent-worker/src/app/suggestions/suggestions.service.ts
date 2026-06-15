@@ -1,11 +1,9 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
-import { Redis } from 'ioredis';
+import { Injectable, Logger } from '@nestjs/common';
 import { z } from 'zod';
 
 import { LlmProviderEnum } from '@mova-back/shared-agent';
-import { REDIS_CLIENT } from '@mova-back/shared-redis';
-import { RedisChannels } from '@mova-back/shared-realtime';
 
+import { CallEventPublisher } from '../events/call-event.publisher';
 import { ProviderRegistry } from '../providers/provider-registry.service';
 import { StyleResolverService } from './style-resolver.service';
 
@@ -41,7 +39,7 @@ export class SuggestionsService {
 
   constructor(
     private readonly registry: ProviderRegistry,
-    @Inject(REDIS_CLIENT) private readonly redis: Redis,
+    private readonly publisher: CallEventPublisher,
     private readonly styleResolver: StyleResolverService,
   ) {}
 
@@ -288,16 +286,18 @@ export class SuggestionsService {
   }
 
   private async publish(req: SuggestionsRequest, items: string[]): Promise<void> {
-    const event = {
-      type: 'suggestions.generated' as const,
+    // Route through CallEventPublisher (XADD to the replay stream + live PUBLISH
+    // with a streamId) like every other call event, instead of a raw publish —
+    // otherwise suggestions are delivered live but lost on a WS reconnect.
+    await this.publisher.publish({
+      type: 'suggestions.generated',
       conversationId: req.conversationId,
       occurredAt: new Date().toISOString(),
       data: {
         parentMessageId: req.parentMessageId,
         items: items.map((content) => ({ content })),
       },
-    };
-    await this.redis.publish(RedisChannels.callEvents(req.conversationId), JSON.stringify(event));
+    });
     this.logger.log(
       `[Suggestions] published ${items.length} for conversation ${req.conversationId} (e.g. "${items[0]?.slice(0, 40) ?? ''}")`,
     );

@@ -1,4 +1,4 @@
-import type { Redis } from 'ioredis';
+import type { CallEventPublisher } from '../events/call-event.publisher';
 
 import {
   LlmProviderEnum,
@@ -35,10 +35,10 @@ function makeRegistry(generateOutput: string | Error): {
   return { registry, provider };
 }
 
-function makeRedis(): jest.Mocked<Redis> {
+function makePublisher(): jest.Mocked<CallEventPublisher> {
   return {
-    publish: jest.fn().mockResolvedValue(1),
-  } as unknown as jest.Mocked<Redis>;
+    publish: jest.fn().mockResolvedValue(undefined),
+  } as unknown as jest.Mocked<CallEventPublisher>;
 }
 
 function makeStyleResolver(
@@ -67,7 +67,7 @@ describe('SuggestionsService.generate', () => {
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: ['За 5 хвилин', 'Вже їду', 'Чекайте біля під\'їзду'] }),
     );
-    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
+    const svc = new SuggestionsService(registry, makePublisher(), makeStyleResolver());
     const result = await svc.generate(baseRequest());
     expect(result).toEqual(['За 5 хвилин', 'Вже їду', 'Чекайте біля під\'їзду']);
   });
@@ -76,14 +76,14 @@ describe('SuggestionsService.generate', () => {
     const wrapped =
       '```json\n{"suggestions":["Так","Ні","Уточніть"]}\n```';
     const { registry } = makeRegistry(wrapped);
-    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
+    const svc = new SuggestionsService(registry, makePublisher(), makeStyleResolver());
     const result = await svc.generate(baseRequest());
     expect(result).toEqual(['Так', 'Ні', 'Уточніть']);
   });
 
   it('returns null on unparseable output (no throw)', async () => {
     const { registry } = makeRegistry('this is not JSON at all');
-    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
+    const svc = new SuggestionsService(registry, makePublisher(), makeStyleResolver());
     const result = await svc.generate(baseRequest());
     expect(result).toBeNull();
   });
@@ -92,7 +92,7 @@ describe('SuggestionsService.generate', () => {
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: ['Так', 'Ні'] }),
     );
-    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
+    const svc = new SuggestionsService(registry, makePublisher(), makeStyleResolver());
     const result = await svc.generate(baseRequest());
     expect(result).toEqual(['Так', 'Ні', 'Ні']);
   });
@@ -101,7 +101,7 @@ describe('SuggestionsService.generate', () => {
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: ['a', 'b', 'c', 'd', 'e'] }),
     );
-    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
+    const svc = new SuggestionsService(registry, makePublisher(), makeStyleResolver());
     const result = await svc.generate(baseRequest());
     expect(result).toEqual(['a', 'b', 'c']);
   });
@@ -110,7 +110,7 @@ describe('SuggestionsService.generate', () => {
     const { registry } = makeRegistry(
       'Sure, here are 3 replies:\n{"suggestions":["Привіт","Як справи","Бувай"]}',
     );
-    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
+    const svc = new SuggestionsService(registry, makePublisher(), makeStyleResolver());
     const result = await svc.generate(baseRequest());
     expect(result).toEqual(['Привіт', 'Як справи', 'Бувай']);
   });
@@ -120,65 +120,60 @@ describe('SuggestionsService.generate', () => {
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: [longText, 'Ні', 'Уточніть'] }),
     );
-    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
+    const svc = new SuggestionsService(registry, makePublisher(), makeStyleResolver());
     const result = await svc.generate(baseRequest());
     expect(result).toBeNull();
   });
 
   it('returns null when LLM throws (registry already filed incident)', async () => {
     const { registry } = makeRegistry(new Error('timeout'));
-    const svc = new SuggestionsService(registry, makeRedis(), makeStyleResolver());
+    const svc = new SuggestionsService(registry, makePublisher(), makeStyleResolver());
     const result = await svc.generate(baseRequest());
     expect(result).toBeNull();
   });
 });
 
 describe('SuggestionsService.generateAndEmit', () => {
-  it('publishes a suggestions.generated event to Redis', async () => {
+  it('publishes a suggestions.generated event through the replay-backed publisher', async () => {
     const { registry } = makeRegistry(
       JSON.stringify({ suggestions: ['Так', 'Ні', 'Уточніть'] }),
     );
-    const redis = makeRedis();
-    const svc = new SuggestionsService(registry, redis, makeStyleResolver());
+    const publisher = makePublisher();
+    const svc = new SuggestionsService(registry, publisher, makeStyleResolver());
 
     await svc.generateAndEmit(baseRequest());
 
-    expect(redis.publish).toHaveBeenCalledTimes(1);
-    const [channel, payload] = redis.publish.mock.calls[0] as [string, string];
-    expect(channel).toBe(`call-events:${CONV_ID}`);
-    const parsed = JSON.parse(payload) as {
-      type: string;
-      conversationId: string;
-      data: { parentMessageId: string; items: { content: string }[] };
-    };
-    expect(parsed.type).toBe('suggestions.generated');
-    expect(parsed.conversationId).toBe(CONV_ID);
-    expect(parsed.data.parentMessageId).toBe(PARENT_ID);
-    expect(parsed.data.items).toEqual([
-      { content: 'Так' },
-      { content: 'Ні' },
-      { content: 'Уточніть' },
-    ]);
+    expect(publisher.publish).toHaveBeenCalledTimes(1);
+    expect(publisher.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'suggestions.generated',
+        conversationId: CONV_ID,
+        data: {
+          parentMessageId: PARENT_ID,
+          items: [{ content: 'Так' }, { content: 'Ні' }, { content: 'Уточніть' }],
+        },
+      }),
+    );
   });
 
   it('does not publish when generation fails', async () => {
     const { registry } = makeRegistry(new Error('boom'));
-    const redis = makeRedis();
-    const svc = new SuggestionsService(registry, redis, makeStyleResolver());
+    const publisher = makePublisher();
+    const svc = new SuggestionsService(registry, publisher, makeStyleResolver());
 
     await svc.generateAndEmit(baseRequest());
 
-    expect(redis.publish).not.toHaveBeenCalled();
+    expect(publisher.publish).not.toHaveBeenCalled();
   });
 
   it('does not publish when output is unparseable', async () => {
     const { registry } = makeRegistry('garbage output');
-    const redis = makeRedis();
-    const svc = new SuggestionsService(registry, redis, makeStyleResolver());
+    const publisher = makePublisher();
+    const svc = new SuggestionsService(registry, publisher, makeStyleResolver());
 
     await svc.generateAndEmit(baseRequest());
 
-    expect(redis.publish).not.toHaveBeenCalled();
+    expect(publisher.publish).not.toHaveBeenCalled();
   });
 });
 
@@ -188,7 +183,7 @@ describe('SuggestionsService — style addendum injection', () => {
       JSON.stringify({ suggestions: ['Так', 'Ні', 'Уточніть'] }),
     );
     const resolver = makeStyleResolver('--- official style block ---');
-    const svc = new SuggestionsService(registry, makeRedis(), resolver);
+    const svc = new SuggestionsService(registry, makePublisher(), resolver);
 
     await svc.generate({
       ...baseRequest(),
@@ -204,7 +199,7 @@ describe('SuggestionsService — style addendum injection', () => {
       JSON.stringify({ suggestions: ['Так', 'Ні', 'Уточніть'] }),
     );
     const resolver = makeStyleResolver('--- Conversation style: OFFICIAL ---');
-    const svc = new SuggestionsService(registry, makeRedis(), resolver);
+    const svc = new SuggestionsService(registry, makePublisher(), resolver);
 
     await svc.generate({
       ...baseRequest(),
@@ -230,7 +225,7 @@ describe('SuggestionsService — style addendum injection', () => {
       JSON.stringify({ suggestions: ['Так', 'Ні', 'Уточніть'] }),
     );
     const resolver = makeStyleResolver(null);
-    const svc = new SuggestionsService(registry, makeRedis(), resolver);
+    const svc = new SuggestionsService(registry, makePublisher(), resolver);
 
     await svc.generate({ ...baseRequest(), userId: 'user-42' });
 
@@ -250,7 +245,7 @@ describe('SuggestionsService — style addendum injection', () => {
       JSON.stringify({ suggestions: ['Так', 'Ні', 'Уточніть'] }),
     );
     const resolver = makeStyleResolver(null);
-    const svc = new SuggestionsService(registry, makeRedis(), resolver);
+    const svc = new SuggestionsService(registry, makePublisher(), resolver);
 
     await svc.generate({ ...baseRequest(), userId: 'user-42' });
 

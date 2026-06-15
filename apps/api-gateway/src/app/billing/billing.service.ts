@@ -98,12 +98,15 @@ export class BillingService {
   }
 
   async getSummary(userId: string): Promise<BillingSummary> {
-    const sub = await this.loadSubscription(userId);
+    // Self-heal: lazily seed the free subscription if the post-register listener
+    // failed to (idempotent + race-safe), so a half-registered account recovers
+    // on first access instead of throwing SubscriptionNotFoundError forever.
+    const sub = await this.ensureSubscriptionForUser(userId);
     return this.toSummary(sub);
   }
 
   async checkEligibility(userId: string): Promise<EligibilityResult> {
-    const sub = await this.loadSubscription(userId);
+    const sub = await this.ensureSubscriptionForUser(userId);
     const summary = this.toSummary(sub);
 
     if (sub.status !== SubscriptionStatus.ACTIVE) {

@@ -96,8 +96,8 @@ services:
       # Inside the network postgres resolves by service name. Override the
       # .env DATABASE_URL so host-side npm scripts can also keep using
       # localhost without conflict.
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/mova_dev
-      DATABASE_SSL: "false"
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/mova_dev}
+      DATABASE_SSL: "${DATABASE_SSL:-false}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -124,8 +124,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/mova_dev
-      DATABASE_SSL: "false"
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/mova_dev}
+      DATABASE_SSL: "${DATABASE_SSL:-false}"
       REDIS_HOST: redis
       REDIS_PORT: 6379
       AGENT_SERVICE_URL: http://agent-worker:3001
@@ -165,8 +165,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3002
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/mova_dev
-      DATABASE_SSL: "false"
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/mova_dev}
+      DATABASE_SSL: "${DATABASE_SSL:-false}"
       REDIS_HOST: redis
       REDIS_PORT: 6379
     depends_on:
@@ -209,8 +209,8 @@ services:
       NODE_ENV: production
       PORT: 3001
       RUN_MODE: start
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/mova_dev
-      DATABASE_SSL: "false"
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/mova_dev}
+      DATABASE_SSL: "${DATABASE_SSL:-false}"
       REDIS_HOST: redis
       REDIS_PORT: 6379
     depends_on:

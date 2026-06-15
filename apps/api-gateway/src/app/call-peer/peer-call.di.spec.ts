@@ -23,6 +23,7 @@ import { ConversationsService } from '../conversations/conversations.service';
 import { ConversationLifecycleService } from '../conversations/conversation-lifecycle.service';
 import { TemplatesService } from '../templates/templates.service';
 import { UsersService } from '../users/users.service';
+import { ContactsService } from '../contacts/contacts.service';
 import { MetricsModule } from '../metrics/metrics.module';
 import { LivekitService } from './livekit.service';
 import { PeerCallService } from './peer-call.service';
@@ -41,6 +42,7 @@ describe('api-gateway DI wiring (peer-call metrics)', () => {
         { provide: BillingService, useValue: {} },
         { provide: TemplatesService, useValue: {} },
         { provide: UsersService, useValue: {} },
+        { provide: ContactsService, useValue: {} },
         { provide: LivekitService, useValue: {} },
         { provide: PushTokenService, useValue: {} },
         { provide: PushNotifierService, useValue: {} },

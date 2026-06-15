@@ -10,7 +10,6 @@ import {
 } from '@nestjs/common';
 import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import { Redis } from 'ioredis';
-import parsePhoneNumberFromString from 'libphonenumber-js';
 import type { Counter } from 'prom-client';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -37,6 +36,7 @@ import { ConversationsService } from '../conversations/conversations.service';
 import { ConversationLifecycleService } from '../conversations/conversation-lifecycle.service';
 import { TemplatesService } from '../templates/templates.service';
 import { UsersService } from '../users/users.service';
+import { ContactsService } from '../contacts/contacts.service';
 import { PushNotifierService } from '../push/push-notifier.service';
 import { PushTokenService } from '../push/push-token.service';
 import { LivekitService } from './livekit.service';
@@ -47,13 +47,6 @@ interface StartPeerCallResult {
   roomName: string;
   livekitUrl: string;
   livekitToken: string;
-}
-
-export interface PeerLookupResult {
-  id: string;
-  name: string;
-  isDeafMute: boolean;
-  online: boolean;
 }
 
 const RING_TTL_SECONDS = 3600;
@@ -78,6 +71,7 @@ export class PeerCallService implements OnModuleDestroy {
     private readonly billing: BillingService,
     private readonly templates: TemplatesService,
     private readonly users: UsersService,
+    private readonly contacts: ContactsService,
     private readonly livekit: LivekitService,
     private readonly pushTokens: PushTokenService,
     private readonly pushNotifier: PushNotifierService,
@@ -151,6 +145,19 @@ export class PeerCallService implements OnModuleDestroy {
       callerName: caller.name,
       calleeName: callee.name,
     });
+
+    // You may only place a call to someone in your accepted contacts — the
+    // identity model is username/email + mutual approval, not an open directory.
+    if (!(await this.contacts.areContacts(callerId, callee.id))) {
+      this.reject(
+        clog,
+        'NOT_A_CONTACT',
+        new ForbiddenException({
+          code: 'NOT_A_CONTACT',
+          message: 'You can only call your contacts.',
+        }),
+      );
+    }
 
     if ((await this.conversations.countActiveInvolving(callerId)) > 0) {
       this.reject(
@@ -408,40 +415,6 @@ export class PeerCallService implements OnModuleDestroy {
       clearTimeout(timer);
     }
     this.ringTimers.clear();
-  }
-
-  async lookupByPhone(
-    requesterId: string,
-    rawPhone: string,
-  ): Promise<PeerLookupResult> {
-    const parsed = parsePhoneNumberFromString(rawPhone);
-    if (!parsed?.isValid()) {
-      throw new NotFoundException('User not found');
-    }
-    const user = await this.users.findActiveByPhone(parsed.number);
-    if (!user || user.isBlocked || user.id === requesterId) {
-      this.logger.debug({
-        msg: 'call.peer.lookup.miss',
-        evt: 'call.peer.lookup.miss',
-        requesterId,
-      });
-      throw new NotFoundException('User not found');
-    }
-    const online = await this.isOnline(user.id);
-    this.logger.debug({
-      msg: 'call.peer.lookup.hit',
-      evt: 'call.peer.lookup.hit',
-      requesterId,
-      foundUserId: user.id,
-      isDeafMute: user.isDeafMute,
-      online,
-    });
-    return {
-      id: user.id,
-      name: user.name,
-      isDeafMute: user.isDeafMute,
-      online,
-    };
   }
 
   async answer(calleeId: string, conversationId: string): Promise<void> {

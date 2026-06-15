@@ -21,6 +21,7 @@ import {
 import { ConversationAccessService } from './conversation-access.service';
 import { RealtimeBridgeService } from './realtime-bridge.service';
 import { ReplayService } from './replay.service';
+import { makeStreamDeduper } from './stream-dedupe';
 
 interface SocketData {
   userId: string;
@@ -33,6 +34,7 @@ interface SocketData {
 function sockData(socket: Socket): SocketData {
   return socket.data as SocketData;
 }
+
 
 function sockLog(logger: Logger, socket: Socket): CallLogger {
   const data = socket.data as Partial<SocketData> | undefined;
@@ -87,6 +89,15 @@ export class CallGateway implements OnModuleDestroy {
     const data = sockData(socket);
     const { userId, conversationId, lastStreamId } = data;
 
+    // Monotonic de-dup: replay (from lastStreamId) and the live bridge buffer
+    // overlap, so an event can be both replayed AND buffered live. Track the
+    // highest stream id already emitted and drop any event at or below it, so a
+    // reconnect never delivers duplicate transcript / AI / suggestion bubbles.
+    const shouldEmit = makeStreamDeduper();
+    const emitEvent = (event: ServerEvent): void => {
+      if (shouldEmit(event.id)) socket.emit('event', event);
+    };
+
     const liveBuffer: ServerEvent[] = [];
     let liveOpen = false;
     const unsubscribe = this.bridge.attach(conversationId, (event: ServerEvent) => {
@@ -101,7 +112,7 @@ export class CallGateway implements OnModuleDestroy {
         buffered: !liveOpen,
       });
       if (liveOpen) {
-        socket.emit('event', event);
+        emitEvent(event);
       } else {
         liveBuffer.push(event);
       }
@@ -123,7 +134,7 @@ export class CallGateway implements OnModuleDestroy {
       try {
         const replayed = await this.replay.replayMissed(conversationId, lastStreamId);
         for (const event of replayed) {
-          socket.emit('event', event);
+          emitEvent(event);
         }
         if (replayed.length > 0) {
           clog.event('ws.replay', { events: replayed.length, fromStreamId: lastStreamId });
@@ -134,7 +145,7 @@ export class CallGateway implements OnModuleDestroy {
     }
 
     for (const event of liveBuffer) {
-      socket.emit('event', event);
+      emitEvent(event);
     }
     liveBuffer.length = 0;
     liveOpen = true;

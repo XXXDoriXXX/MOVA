@@ -11,6 +11,7 @@ import {
 } from '@mova-back/shared-database';
 
 import {
+  IdempotencyKeyConflictError,
   InsufficientBalanceError,
   PlanNotFoundError,
 } from './billing.errors';
@@ -402,6 +403,20 @@ describe('BillingService', () => {
         expect(txFn).toBeUndefined();
       });
 
+      it('rejects key reuse with a DIFFERENT amount (no silent wrong credit)', async () => {
+        const existing: Partial<PaymentEvent> = {
+          id: 'pay-existing',
+          userId: USER_ID,
+          amountCents: 500,
+          idempotencyKey: 'client-key-abc',
+        };
+        payments.findOne.mockResolvedValueOnce(existing as PaymentEvent);
+
+        await expect(
+          svc.fakeTopup(USER_ID, 999, 'client-key-abc'),
+        ).rejects.toBeInstanceOf(IdempotencyKeyConflictError);
+      });
+
       it('persists idempotencyKey on the new PaymentEvent when no prior row exists', async () => {
         payments.findOne.mockResolvedValueOnce(null);
         subs.findOne.mockResolvedValue(makeSub({ balanceCents: 0 }));
@@ -449,6 +464,7 @@ describe('BillingService', () => {
           id: 'pay-winner',
           userId: USER_ID,
           idempotencyKey: 'race-key',
+          amountCents: 500,
         };
         payments.findOne.mockResolvedValueOnce(winner as PaymentEvent);
 

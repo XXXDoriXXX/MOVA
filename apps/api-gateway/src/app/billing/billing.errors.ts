@@ -32,3 +32,9 @@ export class IdempotencyKeyConflictError extends BillingError {
     super('Idempotency-Key was already used with different request parameters');
   }
 }
+
+export class SubscriptionBlockedError extends BillingError {
+  constructor() {
+    super('Subscription is suspended or cancelled');
+  }
+}

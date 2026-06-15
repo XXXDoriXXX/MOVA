@@ -5,6 +5,7 @@ import {
   IdempotencyKeyConflictError,
   InsufficientBalanceError,
   PlanNotFoundError,
+  SubscriptionBlockedError,
   SubscriptionNotFoundError,
 } from './billing.errors';
 
@@ -66,6 +67,17 @@ describe('BillingExceptionFilter', () => {
     expect(status).toHaveBeenCalledWith(HttpStatus.CONFLICT);
     expect(json).toHaveBeenCalledWith(
       expect.objectContaining({ error: 'IDEMPOTENCY_KEY_CONFLICT' }),
+    );
+  });
+
+  it('maps SubscriptionBlockedError to 403 SUBSCRIPTION_BLOCKED', () => {
+    const { host, status, json } = mockHost();
+
+    new BillingExceptionFilter().catch(new SubscriptionBlockedError(), host);
+
+    expect(status).toHaveBeenCalledWith(HttpStatus.FORBIDDEN);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'SUBSCRIPTION_BLOCKED' }),
     );
   });
 

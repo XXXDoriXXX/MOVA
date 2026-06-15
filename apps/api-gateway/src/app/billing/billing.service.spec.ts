@@ -14,6 +14,7 @@ import {
   IdempotencyKeyConflictError,
   InsufficientBalanceError,
   PlanNotFoundError,
+  SubscriptionBlockedError,
 } from './billing.errors';
 import {
   BillingService,
@@ -223,10 +224,21 @@ describe('BillingService', () => {
   });
 
   describe('assertEligible', () => {
-    it('throws InsufficientBalanceError when not eligible', async () => {
+    it('throws InsufficientBalanceError when out of quota', async () => {
       const sub = makeSub({ freeSecondsUsed: 300 });
       subs.findOne.mockResolvedValue(sub);
       await expect(svc.assertEligible(USER_ID)).rejects.toThrow(InsufficientBalanceError);
+    });
+
+    it('throws SubscriptionBlockedError (not "insufficient balance") for a suspended subscription', async () => {
+      const sub = makeSub({
+        status: SubscriptionStatus.SUSPENDED,
+        freeSecondsUsed: 0,
+      });
+      subs.findOne.mockResolvedValue(sub);
+      await expect(svc.assertEligible(USER_ID)).rejects.toBeInstanceOf(
+        SubscriptionBlockedError,
+      );
     });
   });
 

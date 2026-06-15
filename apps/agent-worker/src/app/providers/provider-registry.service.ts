@@ -148,11 +148,23 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
         return { provider, viaFallback: id !== (prefer ?? this.defaultLlmOrder[0]) };
       }
     }
-    const best = [...this.llmHealth.entries()].sort((a, b) => b[1].score - a[1].score)[0];
-    if (!best) {
+    // All providers are degraded (score < 10). Prefer one whose breaker is NOT
+    // open — firing an open breaker rejects immediately with EOPENBREAKER and
+    // strands the live reply with no further fallback. Among non-open breakers
+    // pick the highest score; only if every breaker is open do we return the
+    // best-scoring one (genuinely all-down) and let it surface the failure.
+    const ranked = [...this.llmHealth.entries()].sort(
+      (a, b) => b[1].score - a[1].score,
+    );
+    const usable = ranked.find(([id]) => {
+      const breaker = this.llmBreakers.get(id);
+      return Boolean(breaker) && !breaker!.opened && this.llmProviders.has(id);
+    });
+    const chosen = usable ?? ranked[0];
+    if (!chosen) {
       throw new ProviderError('breaker_open', 'registry', 'No LLM providers registered');
     }
-    const provider = this.llmProviders.get(best[0]);
+    const provider = this.llmProviders.get(chosen[0]);
     if (!provider) {
       throw new ProviderError('breaker_open', 'registry', 'Selected provider missing');
     }

@@ -96,6 +96,36 @@ describe('ProviderRegistry', () => {
       expect(provider.id).not.toBe(LlmProviderEnum.OPENAI);
       expect(viaFallback).toBe(true);
     });
+
+    it('when all providers are degraded, picks one whose breaker is NOT open', () => {
+      const health = (
+        registry as unknown as {
+          llmHealth: Map<LlmProviderEnum, { score: number }>;
+        }
+      ).llmHealth;
+      const breakers = (
+        registry as unknown as {
+          llmBreakers: Map<LlmProviderEnum, { opened: boolean }>;
+        }
+      ).llmBreakers;
+
+      // Everyone degraded (score < 10). The highest-scoring (Gemini) has an OPEN
+      // breaker; the next (OpenAI) is closed. Firing the open one would just
+      // reject with EOPENBREAKER, so selectLlm must skip it.
+      health.set(LlmProviderEnum.GEMINI, { score: 9 });
+      health.set(LlmProviderEnum.OPENAI, { score: 7 });
+      health.set(LlmProviderEnum.ANTHROPIC, { score: 5 });
+      health.set(LlmProviderEnum.GROQ, { score: 5 });
+      breakers.set(LlmProviderEnum.GEMINI, { opened: true });
+      breakers.set(LlmProviderEnum.OPENAI, { opened: false });
+      breakers.set(LlmProviderEnum.ANTHROPIC, { opened: true });
+      breakers.set(LlmProviderEnum.GROQ, { opened: true });
+
+      const { provider, viaFallback } = registry.selectLlm();
+
+      expect(provider.id).toBe(LlmProviderEnum.OPENAI);
+      expect(viaFallback).toBe(true);
+    });
   });
 
   describe('runLlm', () => {

@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   UnauthorizedException,
@@ -14,6 +15,7 @@ import { JwtService } from '@nestjs/jwt';
 import type { AppEnv } from '@mova-back/shared-config';
 
 import { EMAIL_SENDER, type EmailSender } from '../email/email-sender';
+import { verificationEmailHtml } from '../email/email-templates';
 import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import * as bcrypt from 'bcrypt';
 import type { Counter } from 'prom-client';
@@ -64,7 +66,9 @@ interface AuthResponse {
 export interface PublicUser {
   id: string;
   email: string;
+  emailVerified: boolean;
   name: string;
+  username: string | null;
   role: User['role'];
   language: User['language'];
   phoneNumber: string | null;
@@ -109,12 +113,12 @@ export class AuthService {
     const link = `${base}/v1/auth/email/confirm?token=${encodeURIComponent(token)}`;
     await this.emailSender.send({
       to: email,
-      subject: 'Підтвердіть пошту — Mova',
-      text: `Підтвердіть свою пошту для Mova: ${link}\n\nПосилання дійсне 24 години.`,
-      html:
-        `<p>Підтвердіть свою пошту для Mova:</p>` +
-        `<p><a href="${link}">Підтвердити пошту</a></p>` +
-        `<p>Посилання дійсне 24 години.</p>`,
+      subject: 'Вітаємо в Mova — підтвердіть пошту 👋',
+      text:
+        `Вітаємо в Mova!\n\n` +
+        `Залишився один крок — підтвердіть свою пошту за посиланням:\n${link}\n\n` +
+        `Посилання дійсне 24 години. Якщо ви не реєструвались — проігноруйте цей лист.`,
+      html: verificationEmailHtml(link),
     });
   }
 
@@ -160,7 +164,10 @@ export class AuthService {
     return { phoneNumber };
   }
 
-  async register(dto: RegisterDto, ctx: ClientContext): Promise<AuthResponse> {
+  // Registration is gated on email verification: we create the account, mail a
+  // confirmation link, and issue NO session — the user must verify before they
+  // can log in. So nobody gets a callable identity on an unowned email.
+  async register(dto: RegisterDto): Promise<{ verificationRequired: true; email: string }> {
     await this.passwordBreach.assertNotBreached(dto.password);
 
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
@@ -169,6 +176,7 @@ export class AuthService {
       email: dto.email,
       passwordHash,
       name: dto.name,
+      username: dto.username,
     });
 
     const event: UserRegisteredPayload = {
@@ -180,7 +188,18 @@ export class AuthService {
 
     this.signupsCounter.inc();
 
-    return this.buildAuthResponse(user, ctx);
+    await this.sendEmailVerification(user.id, user.email);
+
+    return { verificationRequired: true, email: user.email };
+  }
+
+  // Re-send the verification link. Always succeeds (never reveals whether the
+  // email exists or is already verified).
+  async resendVerification(email: string): Promise<void> {
+    const user = await this.usersService.findByEmail(email);
+    if (user && user.emailVerifiedAt === null && !user.isBlocked) {
+      await this.sendEmailVerification(user.id, user.email);
+    }
   }
 
   async login(dto: LoginDto, ctx: ClientContext): Promise<AuthResponse> {
@@ -199,6 +218,13 @@ export class AuthService {
 
     if (user.isBlocked) {
       throw new UnauthorizedException('Account is blocked');
+    }
+
+    if (user.emailVerifiedAt === null) {
+      throw new ForbiddenException({
+        code: 'EMAIL_NOT_VERIFIED',
+        message: 'Confirm your email before signing in',
+      });
     }
 
     return this.buildAuthResponse(user, ctx);
@@ -341,7 +367,9 @@ export class AuthService {
     return {
       id: user.id,
       email: user.email,
+      emailVerified: user.emailVerifiedAt !== null,
       name: user.name,
+      username: user.username,
       role: user.role,
       language: user.language,
       phoneNumber: user.phoneNumber,

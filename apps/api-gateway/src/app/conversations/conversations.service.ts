@@ -1,6 +1,6 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, QueryFailedError, Repository } from 'typeorm';
+import { Brackets, IsNull, QueryFailedError, Repository } from 'typeorm';
 
 import {
   Conversation,
@@ -187,14 +187,34 @@ export class ConversationsService {
       .getCount();
   }
 
-  async findStaleActive(staleMinutes: number): Promise<Conversation[]> {
-    const cutoff = new Date(Date.now() - staleMinutes * 60 * 1000);
+  async findOrphaned(
+    maxCallDurationSeconds: number,
+    pendingStaleMinutes: number,
+    activeMarginSeconds: number,
+  ): Promise<Conversation[]> {
+    const now = Date.now();
+    const pendingCutoff = new Date(now - pendingStaleMinutes * 60_000);
+    const activeCutoff = new Date(
+      now - (maxCallDurationSeconds + activeMarginSeconds) * 1000,
+    );
     return this.conversations
       .createQueryBuilder('c')
-      .where('c."status" IN (:...statuses)', {
-        statuses: [ConversationStatus.PENDING, ConversationStatus.ACTIVE],
-      })
-      .andWhere('c."updatedAt" < :cutoff', { cutoff })
+      .where(
+        new Brackets((qb) => {
+          qb.where(
+            'c."status" = :pending AND c."updatedAt" < :pendingCutoff',
+            { pending: ConversationStatus.PENDING, pendingCutoff },
+          )
+            .orWhere(
+              'c."status" = :active AND c."answeredAt" IS NOT NULL AND c."answeredAt" < :activeCutoff',
+              { active: ConversationStatus.ACTIVE, activeCutoff },
+            )
+            .orWhere(
+              'c."status" = :activeStuck AND c."answeredAt" IS NULL AND c."updatedAt" < :pendingCutoff',
+              { activeStuck: ConversationStatus.ACTIVE, pendingCutoff },
+            );
+        }),
+      )
       .getMany();
   }
 
@@ -358,21 +378,4 @@ export class ConversationsService {
     return (result.raw as Suggestion[])[0] ?? null;
   }
 
-  async pruneStale(cutoff: Date): Promise<number> {
-    const result = await this.conversations
-      .createQueryBuilder()
-      .update(Conversation)
-      .set({
-        status: ConversationStatus.FAILED,
-        endedAt: () => 'now()',
-        endReason: ConversationEndReason.FATAL_ERROR,
-        errorCode: 'AGENT_LOST',
-      })
-      .where('"status" IN (:...statuses) AND "updatedAt" < :cutoff', {
-        statuses: [ConversationStatus.PENDING, ConversationStatus.ACTIVE],
-        cutoff,
-      })
-      .execute();
-    return result.affected ?? 0;
-  }
 }

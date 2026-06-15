@@ -16,6 +16,7 @@ import {
 } from '@mova-back/shared-database';
 
 import {
+  IdempotencyKeyConflictError,
   InsufficientBalanceError,
   PlanNotFoundError,
   SubscriptionNotFoundError,
@@ -407,6 +408,11 @@ export class BillingService {
         where: { userId, idempotencyKey: normalizedKey },
       });
       if (existing) {
+        // Guard against key reuse with a DIFFERENT amount: returning the stale
+        // event would silently credit the wrong sum. Reject with a 409 instead.
+        if (existing.amountCents !== amountCents) {
+          throw new IdempotencyKeyConflictError(normalizedKey);
+        }
         this.logger.log(
           `Topup idempotency hit userId=${userId} key=${normalizedKey} → reused paymentEvent=${existing.id}`,
         );
@@ -464,6 +470,9 @@ export class BillingService {
           where: { userId, idempotencyKey: normalizedKey },
         });
         if (winner) {
+          if (winner.amountCents !== amountCents) {
+            throw new IdempotencyKeyConflictError(normalizedKey);
+          }
           const refreshed = await this.loadSubscription(userId);
           this.logger.log(
             `Topup idempotency race resolved userId=${userId} key=${normalizedKey} → reused paymentEvent=${winner.id}`,

@@ -9,6 +9,7 @@ import type { Response } from 'express';
 
 import {
   BillingError,
+  IdempotencyKeyConflictError,
   InsufficientBalanceError,
   PlanNotFoundError,
   SubscriptionNotFoundError,
@@ -32,6 +33,15 @@ export class BillingExceptionFilter implements ExceptionFilter {
         secondsNeeded: exception.required.secondsNeeded,
         secondsRemaining: exception.available.secondsRemaining,
         balanceCents: exception.available.balanceCents,
+      });
+      return;
+    }
+
+    if (exception instanceof IdempotencyKeyConflictError) {
+      res.status(HttpStatus.CONFLICT).json({
+        statusCode: HttpStatus.CONFLICT,
+        error: 'IDEMPOTENCY_KEY_CONFLICT',
+        message: exception.message,
       });
       return;
     }

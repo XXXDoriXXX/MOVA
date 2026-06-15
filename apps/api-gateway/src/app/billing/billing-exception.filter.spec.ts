@@ -2,6 +2,7 @@ import { HttpStatus } from '@nestjs/common';
 
 import { BillingExceptionFilter } from './billing-exception.filter';
 import {
+  IdempotencyKeyConflictError,
   InsufficientBalanceError,
   PlanNotFoundError,
   SubscriptionNotFoundError,
@@ -51,6 +52,20 @@ describe('BillingExceptionFilter', () => {
     expect(status).toHaveBeenCalledWith(HttpStatus.CONFLICT);
     expect(json).toHaveBeenCalledWith(
       expect.objectContaining({ error: 'SUBSCRIPTION_NOT_FOUND' }),
+    );
+  });
+
+  it('maps IdempotencyKeyConflictError to 409 IDEMPOTENCY_KEY_CONFLICT', () => {
+    const { host, status, json } = mockHost();
+
+    new BillingExceptionFilter().catch(
+      new IdempotencyKeyConflictError('key-1'),
+      host,
+    );
+
+    expect(status).toHaveBeenCalledWith(HttpStatus.CONFLICT);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'IDEMPOTENCY_KEY_CONFLICT' }),
     );
   });
 

@@ -26,3 +26,9 @@ export class PlanNotFoundError extends BillingError {
     super(`Plan not found: ${planCode}`);
   }
 }
+
+export class IdempotencyKeyConflictError extends BillingError {
+  constructor(readonly key: string) {
+    super('Idempotency-Key was already used with different request parameters');
+  }
+}

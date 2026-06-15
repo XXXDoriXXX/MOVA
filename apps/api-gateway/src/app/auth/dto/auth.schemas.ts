@@ -25,10 +25,22 @@ const PasswordSchema = z
 const NameSchema = z.string().trim().min(1).max(120);
 
 
+// Public handle: 3–30 chars, letters/digits/underscore/dot, case-insensitive.
+export const UsernameSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(30)
+  .regex(/^[a-zA-Z0-9_.]+$/, {
+    message: 'Username: letters, digits, "_" or "." only',
+  })
+  .transform((s) => s.toLowerCase());
+
 export const RegisterSchema = z.object({
   email: EmailSchema,
   password: PasswordSchema,
   name: NameSchema,
+  username: UsernameSchema,
 });
 export class RegisterDto extends createZodDto(RegisterSchema) {}
 
@@ -37,6 +49,13 @@ export const LoginSchema = z.object({
   password: z.string().min(1).max(72),
 });
 export class LoginDto extends createZodDto(LoginSchema) {}
+
+export const ResendVerificationSchema = z.object({
+  email: EmailSchema,
+});
+export class ResendVerificationDto extends createZodDto(
+  ResendVerificationSchema,
+) {}
 
 export const RefreshSchema = z.object({
   refreshToken: z.string().min(1).max(500),

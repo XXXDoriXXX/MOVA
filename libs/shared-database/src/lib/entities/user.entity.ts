@@ -20,6 +20,12 @@ export enum UserLanguage {
 
 @Entity('users')
 @Index('idx_users_email_active', ['email'], { where: '"deletedAt" IS NULL', unique: true })
+// Nickname — the public handle a hearing user searches by to send a contact
+// request. Stored already-lowercased; unique among live accounts.
+@Index('uq_users_username_active', ['username'], {
+  unique: true,
+  where: '"username" IS NOT NULL AND "deletedAt" IS NULL',
+})
 // One verified phone = one account. Partial-unique so unverified/null numbers
 // don't collide; the peer-call lookup only ever resolves verified rows.
 @Index('uq_users_phone_verified', ['phoneNumber'], {
@@ -41,6 +47,9 @@ export class User {
 
   @Column()
   name!: string;
+
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  username!: string | null;
 
   @Column({ type: 'varchar', length: 20, nullable: true })
   phoneNumber!: string | null;

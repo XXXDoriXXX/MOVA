@@ -19,6 +19,10 @@ export const RedisChannels = {
 export const RedisKeys = {
   callContext: (conversationId: string) => `call:${conversationId}:context`,
 
+  // Conversation-keyed ownership index so realtime-service can authorize a WS
+  // with a single O(1) GET instead of a blocking KEYS scan over all contexts.
+  callOwner: (conversationId: string) => `call:owner:${conversationId}`,
+
   eventStream: (conversationId: string) => `events:${conversationId}`,
 
   billingReserve: (userId: string) => `billing:reserve:${userId}`,

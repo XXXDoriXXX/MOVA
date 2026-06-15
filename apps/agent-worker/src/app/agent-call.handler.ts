@@ -800,6 +800,14 @@ export class AgentCallHandler {
         () => this.resolveCandidate(candidate.id, true),
         AgentCallHandler.AUTO_ACCEPT_DELAY_MS,
       );
+    } else {
+      // Manual mode still needs a fallback timer — mirror finalizeCandidate's
+      // manual path — or toggling auto-mode OFF leaves the finalized candidate
+      // with no timer and the card lingers forever with no auto-resolution.
+      candidate.timer = setTimeout(
+        () => this.resolveCandidate(candidate.id, false),
+        AgentCallHandler.MANUAL_TIMEOUT_MS,
+      );
     }
     this.emitCandidate(candidate.id, candidate.text, false);
     this.logger.log(`[Candidate] auto-mode → ${enabled ? 'ON' : 'OFF'}`);

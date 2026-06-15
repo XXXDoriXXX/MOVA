@@ -33,6 +33,7 @@ import {
 
 import { BillingService } from '../billing/billing.service';
 import { ConversationsService } from '../conversations/conversations.service';
+import { ConversationLifecycleService } from '../conversations/conversation-lifecycle.service';
 import { TemplatesService } from '../templates/templates.service';
 import { UsersService } from '../users/users.service';
 import { PushNotifierService } from '../push/push-notifier.service';
@@ -65,6 +66,7 @@ export class PeerCallService {
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly conversations: ConversationsService,
+    private readonly lifecycle: ConversationLifecycleService,
     private readonly billing: BillingService,
     private readonly templates: TemplatesService,
     private readonly users: UsersService,
@@ -480,11 +482,21 @@ export class PeerCallService {
     await this.redis
       .del(RedisKeys.callContext(conv.livekitRoom))
       .catch(() => undefined);
-    await this.conversations.markEnded({
-      conversationId: conv.id,
-      reason,
-      errorCode,
-    });
+    if (conv.status === ConversationStatus.ACTIVE) {
+      // An ANSWERED peer call is billable (to the caller — billedUserId =
+      // callerUserId). Route it through the atomic-claim + billing path so a
+      // caller hanging up the normal way is charged, and a concurrent agent
+      // call.ended loses the claim instead of zero-billing it (golden rule 1).
+      await this.lifecycle.endCall({ conversationId: conv.id, reason, errorCode });
+    } else {
+      // Pre-answer (still ringing) cancel/decline: nothing billable
+      // (answeredAt is null → duration 0), so a light close is enough.
+      await this.conversations.markEnded({
+        conversationId: conv.id,
+        reason,
+        errorCode,
+      });
+    }
   }
 
   private async failConversation(conversationId: string): Promise<void> {

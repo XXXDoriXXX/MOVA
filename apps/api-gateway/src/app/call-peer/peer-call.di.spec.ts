@@ -20,6 +20,7 @@ import { REDIS_CLIENT } from '@mova-back/shared-redis';
 
 import { BillingService } from '../billing/billing.service';
 import { ConversationsService } from '../conversations/conversations.service';
+import { ConversationLifecycleService } from '../conversations/conversation-lifecycle.service';
 import { TemplatesService } from '../templates/templates.service';
 import { UsersService } from '../users/users.service';
 import { MetricsModule } from '../metrics/metrics.module';
@@ -36,6 +37,7 @@ describe('api-gateway DI wiring (peer-call metrics)', () => {
         PeerCallService,
         { provide: REDIS_CLIENT, useValue: {} },
         { provide: ConversationsService, useValue: {} },
+        { provide: ConversationLifecycleService, useValue: {} },
         { provide: BillingService, useValue: {} },
         { provide: TemplatesService, useValue: {} },
         { provide: UsersService, useValue: {} },

@@ -246,10 +246,21 @@ export class CallService {
       throw new InternalServerErrorException(`Failed to initiate SIP call: ${message}`);
     }
 
-    await this.redis.publish(
-      RedisChannels.callDispatch,
-      JSON.stringify({ roomName, conversationId: conversation.id }),
-    );
+    try {
+      await this.redis.publish(
+        RedisChannels.callDispatch,
+        JSON.stringify({ roomName, conversationId: conversation.id }),
+      );
+    } catch (err) {
+      // The SIP leg is already ringing but no agent will ever attach. Don't
+      // leave the call orphaned (PENDING, blocking the user for 5 min) behind a
+      // generic 500: drop the stashed context, mark the conversation failed, and
+      // return a mapped error — same compensation as the SIP-dial failure above.
+      callLog.error('call.sip.start.dispatchFailed', err, { roomName });
+      await this.redis.del(contextKey).catch(() => undefined);
+      await this.markFailed(conversation.id, 'FATAL_INTERNAL');
+      throw new InternalServerErrorException('Failed to dispatch call to an agent');
+    }
 
     this.callsStartedCounter.inc({ plan: eligibility.summary.plan.code });
     callLog.event('call.sip.start.dispatched', { setupMs: Date.now() - startedAt });

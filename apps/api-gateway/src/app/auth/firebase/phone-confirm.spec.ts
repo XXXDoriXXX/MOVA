@@ -9,7 +9,10 @@ import { PasswordBreachService } from '@mova-back/shared-auth';
 import { AuthService } from '../auth.service';
 import { UsersService } from '../../users/users.service';
 import { RefreshTokenService } from '../refresh-token.service';
+import { ConfigService } from '@nestjs/config';
+
 import { GOOGLE_TOKEN_VERIFIER } from '../google/google-token-verifier';
+import { EMAIL_SENDER } from '../../email/email-sender';
 import {
   FIREBASE_TOKEN_VERIFIER,
   InvalidFirebaseTokenError,
@@ -29,6 +32,8 @@ async function makeService() {
       { provide: getToken('mova_signups_total'), useValue: { inc: jest.fn() } },
       { provide: GOOGLE_TOKEN_VERIFIER, useValue: { verify: jest.fn() } },
       { provide: FIREBASE_TOKEN_VERIFIER, useValue: firebase },
+      { provide: ConfigService, useValue: { get: jest.fn() } },
+      { provide: EMAIL_SENDER, useValue: { send: jest.fn() } },
     ],
   }).compile();
   return { service: moduleRef.get(AuthService), users, firebase };

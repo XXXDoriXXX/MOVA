@@ -75,6 +75,13 @@ export class BillingController {
     reused: boolean;
   }> {
     const idempotencyKey = this.parseIdempotencyKey(idempotencyKeyHeader);
+    // Require the key: a keyless top-up has no dedup, so a double-tap or a
+    // network retry double-credits the wallet. The client always sends one.
+    if (!idempotencyKey) {
+      throw new BadRequestException(
+        'Idempotency-Key header is required for top-ups',
+      );
+    }
     const { paymentEvent, balanceCents, reused } = await this.billing.fakeTopup(
       user.id,
       dto.amountCents,

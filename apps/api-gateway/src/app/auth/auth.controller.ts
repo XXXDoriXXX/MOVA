@@ -25,6 +25,7 @@ import {
   GoogleSignInDto,
   LoginDto,
   LogoutDto,
+  PhoneConfirmDto,
   RefreshDto,
   RegisterDto,
   UpdateProfileDto,
@@ -130,6 +131,20 @@ export class AuthController {
   ): Promise<PublicUser> {
     const updated = await this.usersService.updateProfile(user.id, dto);
     return this.authService.toPublic(updated);
+  }
+
+  @Post('phone/confirm')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ auth: { limit: 10, ttl: 15 * 60 * 1000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Verify the caller phone via a Firebase phone-auth token',
+  })
+  confirmPhone(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: PhoneConfirmDto,
+  ): Promise<{ phoneNumber: string }> {
+    return this.authService.confirmPhone(user.id, dto.firebaseIdToken);
   }
 
   @Post('change-password')

@@ -25,6 +25,11 @@ import {
   InvalidGoogleTokenError,
   type GoogleTokenVerifier,
 } from './google/google-token-verifier';
+import {
+  FIREBASE_TOKEN_VERIFIER,
+  InvalidFirebaseTokenError,
+  type FirebaseTokenVerifier,
+} from './firebase/firebase-token-verifier';
 import type {
   ChangePasswordDto,
   LoginDto,
@@ -78,7 +83,38 @@ export class AuthService {
     private readonly signupsCounter: Counter<string>,
     @Inject(GOOGLE_TOKEN_VERIFIER)
     private readonly googleVerifier: GoogleTokenVerifier,
+    @Inject(FIREBASE_TOKEN_VERIFIER)
+    private readonly firebaseVerifier: FirebaseTokenVerifier,
   ) {}
+
+  // Verify the Firebase phone-auth token the mobile obtained via SMS OTP and
+  // claim the proven number for this user. The partial-unique index turns a
+  // number already verified by someone else into a 23505 → 409.
+  async confirmPhone(
+    userId: string,
+    firebaseIdToken: string,
+  ): Promise<{ phoneNumber: string }> {
+    let phoneNumber: string;
+    try {
+      ({ phoneNumber } = await this.firebaseVerifier.verifyPhone(firebaseIdToken));
+    } catch (err) {
+      if (err instanceof InvalidFirebaseTokenError) {
+        throw new UnauthorizedException(err.message);
+      }
+      throw err;
+    }
+    try {
+      await this.usersService.setVerifiedPhone(userId, phoneNumber);
+    } catch (err) {
+      if ((err as { code?: string }).code === '23505') {
+        throw new ConflictException(
+          'This phone number is already verified on another account',
+        );
+      }
+      throw err;
+    }
+    return { phoneNumber };
+  }
 
   async register(dto: RegisterDto, ctx: ClientContext): Promise<AuthResponse> {
     await this.passwordBreach.assertNotBreached(dto.password);

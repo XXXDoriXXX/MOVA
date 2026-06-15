@@ -99,6 +99,9 @@ export const envSchema = z.object({
   RATE_LIMIT_DEFAULT: z.coerce.number().int().positive().default(100),
 
   GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
+  // Firebase project id (e.g. mova-c4f51) — audience/issuer for verifying the
+  // phone-auth ID token the mobile sends to /auth/phone/confirm.
+  FIREBASE_PROJECT_ID: z.string().optional(),
 
   FREE_SECONDS_PER_MONTH: z.coerce.number().int().positive().default(300),
   PAID_PRICE_PER_SECOND_CENTS: z.coerce.number().int().positive().default(1),

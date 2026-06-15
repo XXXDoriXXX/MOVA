@@ -51,6 +51,10 @@
     "dev": "npm run docker:doctor && npm run nx:reset && npm run docker:up && npm run logs:web"
   },
   "private": true,
+  "engines": {
+    "node": ">=20.19",
+    "npm": ">=10"
+  },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.77",
     "@ai-sdk/google": "^3.0.77",
@@ -83,6 +87,7 @@
     "@nestjs/websockets": "^11.1.14",
     "@sentry/nestjs": "^10.53.1",
     "@sentry/node": "^10.53.1",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/opossum": "^8.1.9",
     "@willsoto/nestjs-prometheus": "^6.1.0",
     "ai": "^6.0.182",
@@ -96,6 +101,7 @@
     "helmet": "^8.1.0",
     "ioredis": "^5.9.3",
     "joi": "^18.0.2",
+    "jsonwebtoken": "^9.0.3",
     "libphonenumber-js": "^1.13.1",
     "livekit-server-sdk": "^2.15.0",
     "nestjs-pino": "^4.6.1",

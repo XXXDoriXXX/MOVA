@@ -14,6 +14,7 @@ import {
   InvalidGoogleTokenError,
   type GoogleIdentity,
 } from './google-token-verifier';
+import { FIREBASE_TOKEN_VERIFIER } from '../firebase/firebase-token-verifier';
 
 const ctx = { userAgent: 'jest', ipAddress: '127.0.0.1' };
 
@@ -80,6 +81,10 @@ async function buildSubject(overrides: {
         useValue: { inc: jest.fn() },
       },
       { provide: GOOGLE_TOKEN_VERIFIER, useValue: verifier },
+      {
+        provide: FIREBASE_TOKEN_VERIFIER,
+        useValue: { verifyPhone: jest.fn() },
+      },
     ],
   }).compile();
 

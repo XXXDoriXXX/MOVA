@@ -12,6 +12,7 @@ import {
   IdempotencyKeyConflictError,
   InsufficientBalanceError,
   PlanNotFoundError,
+  SubscriptionBlockedError,
   SubscriptionNotFoundError,
 } from './billing.errors';
 
@@ -33,6 +34,15 @@ export class BillingExceptionFilter implements ExceptionFilter {
         secondsNeeded: exception.required.secondsNeeded,
         secondsRemaining: exception.available.secondsRemaining,
         balanceCents: exception.available.balanceCents,
+      });
+      return;
+    }
+
+    if (exception instanceof SubscriptionBlockedError) {
+      res.status(HttpStatus.FORBIDDEN).json({
+        statusCode: HttpStatus.FORBIDDEN,
+        error: 'SUBSCRIPTION_BLOCKED',
+        message: exception.message,
       });
       return;
     }

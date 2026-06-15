@@ -19,6 +19,7 @@ import {
   IdempotencyKeyConflictError,
   InsufficientBalanceError,
   PlanNotFoundError,
+  SubscriptionBlockedError,
   SubscriptionNotFoundError,
 } from './billing.errors';
 
@@ -166,6 +167,12 @@ export class BillingService {
         freeSecondsPerMonth: result.summary.plan.freeSecondsPerMonth,
         pricePerSecondCents: result.summary.plan.pricePerSecondCents,
       });
+      // A suspended/cancelled subscription is NOT an out-of-balance case —
+      // throwing InsufficientBalanceError told a blocked user to "top up" (and
+      // reported a large positive secondsRemaining). Surface it distinctly.
+      if (result.reason === 'BLOCKED') {
+        throw new SubscriptionBlockedError();
+      }
       throw new InsufficientBalanceError(
         { secondsNeeded: 1, costCents: result.summary.plan.pricePerSecondCents },
         {

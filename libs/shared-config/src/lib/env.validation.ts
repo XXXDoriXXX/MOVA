@@ -30,6 +30,9 @@ export const envSchema = z.object({
   DATABASE_SSL: envBool(false),
   DATABASE_POOL_SIZE: z.coerce.number().int().positive().default(20),
 
+  // Managed Redis providers (Heroku Key-Value Store, etc.) expose a single
+  // connection URL instead of discrete host/port/password. When set it wins.
+  REDIS_URL: z.string().optional(),
   REDIS_HOST: z.string().default('localhost'),
   REDIS_PORT: z.coerce.number().int().positive().default(6379),
   REDIS_PASSWORD: z.string().default(''),

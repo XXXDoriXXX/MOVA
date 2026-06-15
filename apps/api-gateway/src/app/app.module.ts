@@ -93,14 +93,27 @@ import { UsersModule } from './users/users.module';
     CacheModule.registerAsync({
       isGlobal: true,
       inject: [ConfigService],
-      useFactory: (config: ConfigService<AppEnv, true>) => ({
-        stores: [
-          new KeyvRedis({
-            url: `redis://:${config.get('REDIS_PASSWORD', { infer: true })}@${config.get('REDIS_HOST', { infer: true })}:${config.get('REDIS_PORT', { infer: true })}/${config.get('REDIS_DB', { infer: true })}`,
-          }),
-        ],
-        ttl: 5 * 60 * 1000,
-      }),
+      useFactory: (config: ConfigService<AppEnv, true>) => {
+        // Prefer a managed REDIS_URL (Heroku etc.); its rediss:// endpoint
+        // uses a self-signed cert, so relax verification. Fall back to the
+        // discrete host/port/password URL for local/dev.
+        const managedUrl = config.get('REDIS_URL', { infer: true });
+        const url =
+          managedUrl ??
+          `redis://:${config.get('REDIS_PASSWORD', { infer: true })}@${config.get('REDIS_HOST', { infer: true })}:${config.get('REDIS_PORT', { infer: true })}/${config.get('REDIS_DB', { infer: true })}`;
+        const isTls = url.startsWith('rediss');
+        return {
+          stores: [
+            new KeyvRedis({
+              url,
+              ...(isTls
+                ? { socket: { tls: true, rejectUnauthorized: false } }
+                : {}),
+            }),
+          ],
+          ttl: 5 * 60 * 1000,
+        };
+      },
     }),
 
     EventEmitterModule.forRoot({

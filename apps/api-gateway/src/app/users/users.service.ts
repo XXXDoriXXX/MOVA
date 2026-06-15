@@ -1,6 +1,6 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Not, Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 
 import { User, UserLanguage } from '@mova-back/shared-database';
 
@@ -14,9 +14,6 @@ interface CreateUserInput {
 
 interface UpdateProfileInput {
   name?: string;
-  // phoneNumber is intentionally NOT here — a phone is set only through the
-  // verification flow (setVerifiedPhone), never a plain profile patch, so an
-  // unverified number can never enter the system.
   language?: UserLanguage;
   preferredVoice?: string;
   preferredLlmProvider?: string;
@@ -62,29 +59,6 @@ export class UsersService {
     return this.usersRepository.findOne({
       where: { id, deletedAt: IsNull() },
     });
-  }
-
-  // Directory resolution for placing a call — VERIFIED numbers only. An
-  // unverified phoneNumber is never reachable, so claiming someone else's
-  // number in a profile can't hijack their incoming calls.
-  async findActiveByPhone(phoneNumber: string): Promise<User | null> {
-    return this.usersRepository.findOne({
-      where: {
-        phoneNumber,
-        phoneVerifiedAt: Not(IsNull()),
-        deletedAt: IsNull(),
-      },
-    });
-  }
-
-  // Sole writer of phoneNumber: claims the (already-OTP-proven) number for this
-  // user and stamps phoneVerifiedAt atomically. The partial-unique index
-  // (uq_users_phone_verified) makes a duplicate verified claim fail with 23505.
-  async setVerifiedPhone(userId: string, phoneE164: string): Promise<void> {
-    await this.usersRepository.update(
-      { id: userId },
-      { phoneNumber: phoneE164, phoneVerifiedAt: new Date() },
-    );
   }
 
   async markEmailVerified(userId: string): Promise<void> {

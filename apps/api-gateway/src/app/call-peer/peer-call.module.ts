@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { SharedRedisModule } from '@mova-back/shared-redis';
 
 import { BillingModule } from '../billing/billing.module';
+import { ContactsModule } from '../contacts/contacts.module';
 import { ConversationsModule } from '../conversations/conversations.module';
 import { TemplatesModule } from '../templates/templates.module';
 import { UsersModule } from '../users/users.module';
@@ -15,6 +16,7 @@ import { PeerCallService } from './peer-call.service';
   imports: [
     SharedRedisModule,
     ConversationsModule,
+    ContactsModule,
     BillingModule,
     TemplatesModule,
     UsersModule,

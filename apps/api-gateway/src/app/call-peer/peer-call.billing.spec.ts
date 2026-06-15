@@ -41,6 +41,7 @@ function build() {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
     livekit as never,
     {} as never,
     {} as never,

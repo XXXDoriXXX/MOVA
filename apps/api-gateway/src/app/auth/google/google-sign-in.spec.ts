@@ -14,7 +14,6 @@ import {
   InvalidGoogleTokenError,
   type GoogleIdentity,
 } from './google-token-verifier';
-import { FIREBASE_TOKEN_VERIFIER } from '../firebase/firebase-token-verifier';
 import { ConfigService } from '@nestjs/config';
 import { EMAIL_SENDER } from '../../email/email-sender';
 
@@ -83,10 +82,6 @@ async function buildSubject(overrides: {
         useValue: { inc: jest.fn() },
       },
       { provide: GOOGLE_TOKEN_VERIFIER, useValue: verifier },
-      {
-        provide: FIREBASE_TOKEN_VERIFIER,
-        useValue: { verifyPhone: jest.fn() },
-      },
       { provide: ConfigService, useValue: { get: jest.fn() } },
       { provide: EMAIL_SENDER, useValue: { send: jest.fn() } },
     ],

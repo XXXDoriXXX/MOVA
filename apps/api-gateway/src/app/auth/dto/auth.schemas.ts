@@ -81,8 +81,6 @@ export class ChangePasswordDto extends createZodDto(ChangePasswordSchema) {}
 export const UpdateProfileSchema = z
   .object({
     name: NameSchema.optional(),
-    // phoneNumber is NOT settable here — it is owned by the phone-verification
-    // flow (POST /auth/phone/confirm). A profile patch must never write it.
     language: z.nativeEnum(UserLanguage).optional(),
     preferredVoice: z.string().trim().min(1).max(100).optional(),
     preferredLlmProvider: z.string().trim().min(1).max(50).optional(),
@@ -100,10 +98,3 @@ export const DeleteAccountSchema = z.object({
   password: z.string().min(1).max(72),
 });
 export class DeleteAccountDto extends createZodDto(DeleteAccountSchema) {}
-
-// The mobile completes Firebase Phone Auth (SMS OTP) and posts the resulting
-// Firebase ID token here; the server verifies it and claims the number.
-export const PhoneConfirmSchema = z.object({
-  firebaseIdToken: z.string().min(1).max(4096),
-});
-export class PhoneConfirmDto extends createZodDto(PhoneConfirmSchema) {}

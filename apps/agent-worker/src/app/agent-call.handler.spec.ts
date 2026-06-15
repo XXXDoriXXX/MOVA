@@ -443,10 +443,17 @@ describe('AgentCallHandler — lifecycle guards', () => {
     expect(ended!.data.errorCode).toBe('LIVEKIT_DISCONNECTED');
   });
 
-  it('call-deadline timer force-ends call with CALL_TIMEOUT', async () => {
+  it('call-deadline timer force-ends an ANSWERED call with CALL_TIMEOUT', async () => {
     jest.useFakeTimers();
     try {
       const { handler, publisher } = makeHarness({ maxCallDurationSeconds: 1 });
+      // The max-duration budget only starts on answer, so the interlocutor must
+      // be on the line for the deadline to arm.
+      participantsMap.set('phone-101', {
+        kind: 1,
+        identity: 'phone-101',
+        attributes: { 'sip.callStatus': 'active' },
+      });
       await handler.start();
 
       jest.advanceTimersByTime(1500);
@@ -458,6 +465,25 @@ describe('AgentCallHandler — lifecycle guards', () => {
       expect(ended!.data.reason).toBe('timeout');
       expect(ended!.data.errorCode).toBe(CallErrorCode.CALL_TIMEOUT);
       expect(ended!.data.endedBy).toBe('system');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does NOT arm the max-duration deadline while the call is still ringing (budget starts at answer)', async () => {
+    jest.useFakeTimers();
+    try {
+      const { handler, publisher } = makeHarness({ maxCallDurationSeconds: 1 });
+      // No participant answers — the leg only rings. Ringback must not consume
+      // the duration budget, so no CALL_TIMEOUT should fire.
+      await handler.start();
+
+      jest.advanceTimersByTime(5000);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const ended = lastCallEnded(publisher);
+      expect(ended?.data.errorCode).not.toBe(CallErrorCode.CALL_TIMEOUT);
     } finally {
       jest.useRealTimers();
     }

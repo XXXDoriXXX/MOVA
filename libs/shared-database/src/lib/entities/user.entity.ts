@@ -20,6 +20,12 @@ export enum UserLanguage {
 
 @Entity('users')
 @Index('idx_users_email_active', ['email'], { where: '"deletedAt" IS NULL', unique: true })
+// One verified phone = one account. Partial-unique so unverified/null numbers
+// don't collide; the peer-call lookup only ever resolves verified rows.
+@Index('uq_users_phone_verified', ['phoneNumber'], {
+  unique: true,
+  where: '"phoneVerifiedAt" IS NOT NULL AND "deletedAt" IS NULL',
+})
 export class User {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -38,6 +44,16 @@ export class User {
 
   @Column({ type: 'varchar', length: 20, nullable: true })
   phoneNumber!: string | null;
+
+  // Set only after the number is proven via Firebase Phone Auth (SMS OTP).
+  // The peer-call directory matches verified numbers ONLY — an unverified
+  // phone must never be reachable, or anyone could claim someone else's number
+  // and hijack their incoming calls.
+  @Column({ type: 'timestamptz', nullable: true })
+  phoneVerifiedAt!: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  emailVerifiedAt!: Date | null;
 
   @Column({
     type: 'enum',

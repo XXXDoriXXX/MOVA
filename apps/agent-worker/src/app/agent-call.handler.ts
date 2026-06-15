@@ -90,6 +90,7 @@ export class AgentCallHandler {
   private idleProbeTimer: NodeJS.Timeout | null = null;
   private idleProbeCount = 0;
   private participantAnswered = false;
+  private answeredAtMs: number | null = null;
   private interlocutorIdentity: string | null = null;
   private lastSipStatus: string | null = null;
   private static readonly SIP_STATUS_ATTR = 'sip.callStatus';
@@ -376,8 +377,12 @@ export class AgentCallHandler {
       this.state = 'active';
       this.armIdleProbe();
       this.armSttStall();
-      this.armCallDeadline();
-      this.armUsageTick();
+      // armCallDeadline / armUsageTick are NOT armed here: the call may still be
+      // ringing (participantAnswered is false). The max-duration budget and the
+      // seconds-remaining countdown must count from ANSWER, not room-connect, or
+      // ringback time is billed against the user's quota and cuts the actual
+      // conversation short. They are armed in markInterlocutorAnswered instead
+      // (CLAUDE.md rule 4: arm watchdogs at the real lifecycle edge).
 
       this.logger.log(
         `🎉 [Call Lifecycle] Connection sequence completed in ${Date.now() - callStartTime}ms`,
@@ -673,6 +678,7 @@ export class AgentCallHandler {
   private markInterlocutorAnswered(p: Participant, alreadyPresent: boolean): void {
     if (this.participantAnswered) return;
     this.participantAnswered = true;
+    this.answeredAtMs = Date.now();
     this.interlocutorIdentity = p.identity;
     const waitedMs = this.callStartTime ? Date.now() - this.callStartTime : 0;
     this.logger.log(
@@ -691,6 +697,10 @@ export class AgentCallHandler {
     });
     this.armSttStall();
     this.armIdleProbe();
+    // The max-duration budget and the seconds-remaining countdown start NOW, at
+    // answer — not at room-connect — so ringback never eats the user's quota.
+    this.armCallDeadline();
+    this.armUsageTick();
   }
 
   private beginEnd(
@@ -1245,6 +1255,8 @@ export class AgentCallHandler {
 
   private armCallDeadline(): void {
     this.clearCallDeadline();
+    // Defensive: the max-duration budget only applies once the call is answered.
+    if (!this.participantAnswered) return;
     const cap = this.userContext.maxCallDurationSeconds;
     const deadlineMs =
       cap && cap > 0
@@ -1323,8 +1335,11 @@ export class AgentCallHandler {
     const cap = this.userContext.maxCallDurationSeconds;
     const planCode = this.userContext.planCode ?? 'free';
     const tick = (): void => {
-      if (this.state !== 'active' || !this.callStartTime) return;
-      const secondsConnected = Math.floor((Date.now() - this.callStartTime) / 1000);
+      if (this.state !== 'active' || !this.answeredAtMs) return;
+      // Count from ANSWER, not room-connect: secondsConnected mirrors the
+      // billable duration (which also runs from answeredAt), so the user's
+      // remaining-seconds counter doesn't drain during ringback.
+      const secondsConnected = Math.floor((Date.now() - this.answeredAtMs) / 1000);
       const secondsRemaining =
         cap && cap > 0 ? Math.max(0, cap - secondsConnected) : null;
       this.emitTyped({

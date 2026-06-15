@@ -93,3 +93,34 @@ describe('PeerCallService caller-hangup billing', () => {
     expect(lifecycle.endCall).not.toHaveBeenCalled();
   });
 });
+
+describe('PeerCallService ring timeout', () => {
+  type RingTimeoutSvc = { onRingTimeout: (id: string) => Promise<void> };
+
+  it('ends a still-ringing call as NO_ANSWER when nobody answers in time', async () => {
+    const { svc, conversations } = build();
+    conversations.findById.mockResolvedValue({
+      ...baseConv,
+      status: ConversationStatus.PENDING,
+    });
+
+    await (svc as unknown as RingTimeoutSvc).onRingTimeout('c1');
+
+    expect(conversations.markEnded).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: ConversationEndReason.NO_ANSWER }),
+    );
+  });
+
+  it('does nothing if the call was already answered or ended', async () => {
+    const { svc, conversations, lifecycle } = build();
+    conversations.findById.mockResolvedValue({
+      ...baseConv,
+      status: ConversationStatus.ACTIVE,
+    });
+
+    await (svc as unknown as RingTimeoutSvc).onRingTimeout('c1');
+
+    expect(conversations.markEnded).not.toHaveBeenCalled();
+    expect(lifecycle.endCall).not.toHaveBeenCalled();
+  });
+});

@@ -204,4 +204,13 @@ describe('ProviderRegistry', () => {
       expect(snap[LlmProviderEnum.GROQ]?.score).toBe(100);
     });
   });
+
+  describe('recordProviderTimeout', () => {
+    it('decays the provider health on a client-side timeout (so it drops in ranking)', async () => {
+      await registry.recordProviderTimeout(LlmProviderEnum.GROQ);
+      const snap = registry.getHealthSnapshot();
+      expect(snap[LlmProviderEnum.GROQ]?.score).toBe(75); // 100 - timeout penalty (25)
+      expect(snap[LlmProviderEnum.GROQ]?.lastErrorCode).toBe('timeout');
+    });
+  });
 });

@@ -224,54 +224,79 @@ export class BillingService {
     secondsUsed: number;
     costCents: number;
     source: UsageSource;
-  }): Promise<Subscription> {
+  }): Promise<{ subscription: Subscription; chargedCents: number }> {
     const seconds = Number(input.secondsUsed);
     const cost = Number(input.costCents);
     if (!Number.isFinite(seconds) || seconds < 0 || !Number.isFinite(cost) || cost < 0) {
       throw new Error(`applyCharge: invalid input ${JSON.stringify(input)}`);
     }
 
-    const baseQuery = this.subscriptions
-      .createQueryBuilder()
-      .update(Subscription);
-
-    const result =
-      input.source === UsageSource.FREE
-        ? await baseQuery
-            .set({
-              freeSecondsUsed: () =>
-                `"freeSecondsUsed" + LEAST(:seconds, (SELECT "freeSecondsPerMonth" FROM "plans" WHERE "plans"."id" = "subscriptions"."planId") - "freeSecondsUsed")`,
-            })
-            .where(
-              '"userId" = :userId AND ' +
-                '"freeSecondsUsed" < (SELECT "freeSecondsPerMonth" FROM "plans" WHERE "plans"."id" = "subscriptions"."planId")',
-              { userId: input.userId },
-            )
-            .setParameters({ seconds })
-            .returning('*')
-            .execute()
-        : await baseQuery
-            .set({ balanceCents: () => `"balanceCents" - :cost` })
-            .where('"userId" = :userId AND "balanceCents" >= :cost', {
-              userId: input.userId,
-              cost,
-            })
-            .setParameters({ cost })
-            .returning('*')
-            .execute();
-
-    const updated = (result.raw as Subscription[])[0];
-    if (updated) {
-      this.logger.log({
-        msg: 'billing.applyCharge',
-        userId: input.userId,
-        source: input.source,
-        secondsCharged: seconds,
-        costCents: cost,
-        balanceCentsAfter: updated.balanceCents,
-        freeSecondsUsedAfter: updated.freeSecondsUsed,
-      });
-      return updated;
+    if (input.source === UsageSource.FREE) {
+      const result = await this.subscriptions
+        .createQueryBuilder()
+        .update(Subscription)
+        .set({
+          freeSecondsUsed: () =>
+            `"freeSecondsUsed" + LEAST(:seconds, (SELECT "freeSecondsPerMonth" FROM "plans" WHERE "plans"."id" = "subscriptions"."planId") - "freeSecondsUsed")`,
+        })
+        .where(
+          '"userId" = :userId AND ' +
+            '"freeSecondsUsed" < (SELECT "freeSecondsPerMonth" FROM "plans" WHERE "plans"."id" = "subscriptions"."planId")',
+          { userId: input.userId },
+        )
+        .setParameters({ seconds })
+        .returning('*')
+        .execute();
+      const updated = (result.raw as Subscription[])[0];
+      if (updated) {
+        this.logger.log({
+          msg: 'billing.applyCharge',
+          userId: input.userId,
+          source: input.source,
+          secondsCharged: seconds,
+          costCents: 0,
+          balanceCentsAfter: updated.balanceCents,
+          freeSecondsUsedAfter: updated.freeSecondsUsed,
+        });
+        return { subscription: updated, chargedCents: 0 };
+      }
+    } else {
+      // PAID: clamp the deduction to the available balance (drain to 0) instead
+      // of the previous all-or-nothing CAS (`balanceCents >= :cost`), which
+      // charged NOTHING when the cost slightly exceeded the balance — letting
+      // the whole call run free. The CTE snapshots the pre-charge balance
+      // (FOR UPDATE, single atomic statement) so we record the cents ACTUALLY
+      // deducted, keeping the subscription balance-delta == UsageRecord sum.
+      const rows: Array<Subscription & { balanceBefore: number }> =
+        await this.subscriptions.query(
+          `UPDATE "subscriptions" AS s
+              SET "balanceCents" = GREATEST(0, prev."bal" - $2)
+             FROM (
+               SELECT "balanceCents" AS "bal"
+                 FROM "subscriptions"
+                WHERE "userId" = $1
+                FOR UPDATE
+             ) AS prev
+            WHERE s."userId" = $1 AND prev."bal" > 0
+          RETURNING s.*, prev."bal" AS "balanceBefore"`,
+          [input.userId, cost],
+        );
+      const updated = rows[0];
+      if (updated) {
+        const chargedCents =
+          Number(updated.balanceBefore) - Number(updated.balanceCents);
+        this.logger.log({
+          msg: 'billing.applyCharge',
+          userId: input.userId,
+          source: input.source,
+          secondsCharged: seconds,
+          costCents: chargedCents,
+          costCentsRequested: cost,
+          balanceCentsAfter: updated.balanceCents,
+          freeSecondsUsedAfter: updated.freeSecondsUsed,
+        });
+        return { subscription: updated as Subscription, chargedCents };
+      }
     }
 
     const existing = await this.subscriptions.findOne({

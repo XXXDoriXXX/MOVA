@@ -30,6 +30,7 @@ function makeRepo<T>(): jest.Mocked<Repository<T>> {
     findOne: jest.fn(),
     save: jest.fn(async (e) => e as T),
     createQueryBuilder: jest.fn(),
+    query: jest.fn(),
   } as unknown as jest.Mocked<Repository<T>>;
 }
 
@@ -245,22 +246,12 @@ describe('BillingService', () => {
       ).rejects.toThrow(/applyCharge: invalid input/);
     });
 
-    it('throws InsufficientBalanceError on PAID with 0 rows affected', async () => {
-      const updateBuilder = {
-        set: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        setParameters: jest.fn().mockReturnThis(),
-        returning: jest.fn().mockReturnThis(),
-        execute: jest.fn().mockResolvedValue({ raw: [], affected: 0 }),
-      };
-      const queryBuilder = {
-        update: jest.fn().mockReturnValue(updateBuilder),
-      };
-      (subs.createQueryBuilder as jest.Mock).mockReturnValue(queryBuilder);
+    it('throws InsufficientBalanceError on PAID when the wallet is already empty (no row updated)', async () => {
+      (subs.query as jest.Mock).mockResolvedValue([]);
       subs.findOne.mockResolvedValue(
         makeSub({
           plan: makePlan({ code: PlanCode.PAID, pricePerSecondCents: 1 }),
-          balanceCents: 5,
+          balanceCents: 0,
         }),
       );
 
@@ -272,6 +263,42 @@ describe('BillingService', () => {
           source: UsageSource.PAID,
         }),
       ).rejects.toThrow(InsufficientBalanceError);
+    });
+  });
+
+  describe('applyCharge — PAID clamps to balance (no free overage)', () => {
+    it('drains the wallet to 0 and reports the cents ACTUALLY deducted when cost exceeds balance', async () => {
+      (subs.query as jest.Mock).mockResolvedValue([
+        { balanceCents: 0, balanceBefore: 50, freeSecondsUsed: 0 },
+      ]);
+
+      const result = await svc.applyCharge({
+        userId: USER_ID,
+        secondsUsed: 53,
+        costCents: 53,
+        source: UsageSource.PAID,
+      });
+
+      expect(result.chargedCents).toBe(50);
+      expect(subs.query).toHaveBeenCalledWith(
+        expect.stringContaining('GREATEST(0'),
+        [USER_ID, 53],
+      );
+    });
+
+    it('deducts the full cost when the balance covers the whole call', async () => {
+      (subs.query as jest.Mock).mockResolvedValue([
+        { balanceCents: 70, balanceBefore: 100, freeSecondsUsed: 0 },
+      ]);
+
+      const result = await svc.applyCharge({
+        userId: USER_ID,
+        secondsUsed: 30,
+        costCents: 30,
+        source: UsageSource.PAID,
+      });
+
+      expect(result.chargedCents).toBe(30);
     });
   });
 

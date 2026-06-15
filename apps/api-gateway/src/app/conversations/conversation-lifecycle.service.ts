@@ -132,21 +132,27 @@ export class ConversationLifecycleService {
     });
 
     let charged = true;
+    let actualCostCents = 0;
     if (secondsBilled > 0) {
       try {
-        await this.billing.applyCharge({
+        const result = await this.billing.applyCharge({
           userId: billedUserId,
           secondsUsed: secondsBilled,
           costCents,
           source,
         });
+        // Record the cents ACTUALLY deducted, not the nominal cost — a PAID
+        // overage drains the wallet to 0, so the deducted amount can be less
+        // than `costCents`. Keeps the UsageRecord audit == the balance delta.
+        actualCostCents = result.chargedCents;
         this.logger.debug({
           msg: 'call.lifecycle.charged',
           evt: 'call.lifecycle.charged',
           conversationId: conversation.id,
           userId: conversation.userId,
           secondsBilled,
-          costCents,
+          costCents: actualCostCents,
+          costCentsRequested: costCents,
           source,
         });
       } catch (err) {
@@ -167,7 +173,7 @@ export class ConversationLifecycleService {
           userId: billedUserId,
           conversationId: conversation.id,
           secondsBilled,
-          costCents: charged ? costCents : 0,
+          costCents: actualCostCents,
           source,
         });
       } catch (err) {
@@ -204,7 +210,7 @@ export class ConversationLifecycleService {
     return {
       conversation,
       secondsBilled,
-      costCents,
+      costCents: actualCostCents,
       source,
       idempotentReplay: false,
     };

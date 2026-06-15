@@ -8,6 +8,7 @@ interface CreateUserInput {
   email: string;
   passwordHash: string;
   name: string;
+  username?: string;
   language?: UserLanguage;
 }
 
@@ -36,6 +37,25 @@ export class UsersService {
     return this.usersRepository.findOne({
       where: { email: email.trim().toLowerCase(), deletedAt: IsNull() },
     });
+  }
+
+  async findByUsername(username: string): Promise<User | null> {
+    return this.usersRepository.findOne({
+      where: { username: username.trim().toLowerCase(), deletedAt: IsNull() },
+    });
+  }
+
+  // Resolve a search query (nickname or email) to a live, email-verified user —
+  // the target a hearing user sends a contact request to.
+  async findVerifiedByHandle(query: string): Promise<User | null> {
+    const handle = query.trim().toLowerCase();
+    const byEmail = handle.includes('@')
+      ? await this.findByEmail(handle)
+      : await this.findByUsername(handle);
+    if (!byEmail || byEmail.emailVerifiedAt === null || byEmail.isBlocked) {
+      return null;
+    }
+    return byEmail;
   }
 
   async findActiveById(id: string): Promise<User | null> {
@@ -80,17 +100,29 @@ export class UsersService {
 
   async create(input: CreateUserInput): Promise<User> {
     const email = input.email.trim().toLowerCase();
-    const existing = await this.findByEmail(email);
-    if (existing) {
+    const username = input.username?.trim().toLowerCase();
+    if (await this.findByEmail(email)) {
       throw new ConflictException('Email already in use');
+    }
+    if (username && (await this.findByUsername(username))) {
+      throw new ConflictException('Username already taken');
     }
     const user = this.usersRepository.create({
       email,
+      username: username ?? null,
       passwordHash: input.passwordHash,
       name: input.name,
       language: input.language ?? UserLanguage.UK,
     });
-    return this.usersRepository.save(user);
+    try {
+      return await this.usersRepository.save(user);
+    } catch (err) {
+      // Lost the race against a concurrent signup with the same email/username.
+      if ((err as { code?: string }).code === '23505') {
+        throw new ConflictException('Email or username already taken');
+      }
+      throw err;
+    }
   }
 
   async updateProfile(userId: string, patch: UpdateProfileInput): Promise<User> {
@@ -130,6 +162,8 @@ export class UsersService {
       passwordHash: input.passwordHash,
       name: input.name,
       language: input.language ?? UserLanguage.UK,
+      // Google already proved ownership of this email — no separate verification.
+      emailVerifiedAt: new Date(),
     });
     return this.usersRepository.save(user);
   }

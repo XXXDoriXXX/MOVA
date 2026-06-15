@@ -30,6 +30,7 @@ import {
   PhoneConfirmDto,
   RefreshDto,
   RegisterDto,
+  ResendVerificationDto,
   UpdateProfileDto,
 } from './dto/auth.schemas';
 
@@ -42,19 +43,22 @@ export class AuthController {
   ) {}
 
   @Public()
+  @Public()
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
   @Throttle({ auth: { limit: 5, ttl: 15 * 60 * 1000 } })
-  @ApiOperation({ summary: 'Register a new user account' })
-  register(
-    @Body() dto: RegisterDto,
-    @Req() req: Request,
-    @Ip() ip: string,
-  ): Promise<unknown> {
-    return this.authService.register(dto, {
-      userAgent: this.extractUserAgent(req),
-      ipAddress: ip,
-    });
+  @ApiOperation({ summary: 'Register; emails a verification link (no session)' })
+  register(@Body() dto: RegisterDto): Promise<unknown> {
+    return this.authService.register(dto);
+  }
+
+  @Public()
+  @Post('email/resend')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Throttle({ auth: { limit: 5, ttl: 15 * 60 * 1000 } })
+  @ApiOperation({ summary: 'Resend the email verification link' })
+  async resendVerification(@Body() dto: ResendVerificationDto): Promise<void> {
+    await this.authService.resendVerification(dto.email);
   }
 
   @Public()

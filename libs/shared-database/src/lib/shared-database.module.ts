@@ -19,6 +19,7 @@ import { UsageRecord } from './entities/usage-record.entity';
 import { User } from './entities/user.entity';
 import { PushToken } from './entities/push-token.entity';
 import { ClientErrorReport } from './entities/client-error-report.entity';
+import { Contact } from './entities/contact.entity';
 
 const ENTITIES = [
   User,
@@ -38,6 +39,7 @@ const ENTITIES = [
   ConversationStyle,
   PushToken,
   ClientErrorReport,
+  Contact,
 ];
 
 /**

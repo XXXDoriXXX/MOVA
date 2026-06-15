@@ -432,6 +432,11 @@ export class AgentCallHandler {
       );
       return;
     }
+    // The user is taking over this turn (manual text or a chosen suggestion).
+    // Cancel any in-flight AI candidate and its pending auto-accept timer, or it
+    // will ALSO be spoken right after — putting a sentence the deaf user never
+    // chose into the interlocutor's ear (double-speak).
+    this.clearCandidate();
     try {
       this.session.interrupt();
     } catch (err) {

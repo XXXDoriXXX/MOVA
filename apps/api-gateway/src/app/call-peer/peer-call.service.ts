@@ -393,10 +393,26 @@ export class PeerCallService {
         message: 'This call is no longer ringing.',
       });
     }
-    await this.redis.publish(
-      RedisChannels.callDispatch,
-      JSON.stringify({ roomName: conv.livekitRoom, conversationId: conv.id }),
-    );
+    try {
+      await this.redis.publish(
+        RedisChannels.callDispatch,
+        JSON.stringify({ roomName: conv.livekitRoom, conversationId: conv.id }),
+      );
+    } catch (err) {
+      // The callee accepted but no agent will attach. Tear the call down (delete
+      // the room, drop the context, mark it ended — no billing, it never went
+      // active) and tell the caller it's over, instead of leaving both parties
+      // staring at a connecting screen behind an opaque 500.
+      clog.error('call.peer.answer.dispatchFailed', err, {
+        roomName: conv.livekitRoom,
+      });
+      await this.teardown(conv, ConversationEndReason.FATAL_ERROR, 'FATAL_INTERNAL');
+      await this.publishSignal(conv.callerUserId, {
+        type: 'call.cancelled',
+        data: { conversationId: conv.id },
+      });
+      throw new InternalServerErrorException('Failed to connect the call');
+    }
     await this.publishSignal(conv.callerUserId, {
       type: 'call.accepted',
       data: { conversationId: conv.id },

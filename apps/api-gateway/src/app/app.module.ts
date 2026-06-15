@@ -6,6 +6,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 import { UserOrIpThrottlerGuard } from './common/user-or-ip-throttler.guard';
+import { BillingExceptionFilter } from './billing/billing-exception.filter';
 import { SentryGlobalFilter, SentryModule } from '@sentry/nestjs/setup';
 import KeyvRedis from '@keyv/redis';
 import { LoggerModule } from 'nestjs-pino';
@@ -124,6 +125,11 @@ import { UsersModule } from './users/users.module';
   ],
   providers: [
     { provide: APP_FILTER, useClass: SentryGlobalFilter },
+    // Registered AFTER Sentry so it is applied FIRST for BillingError: maps the
+    // domain errors (insufficient balance, missing subscription/plan) to precise
+    // HTTP codes the client can act on, instead of an opaque 500 that also
+    // pollutes Sentry/5xx dashboards with expected business outcomes.
+    { provide: APP_FILTER, useClass: BillingExceptionFilter },
     { provide: APP_GUARD, useClass: UserOrIpThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
   ],

@@ -13,7 +13,6 @@ import {
 import {
   InsufficientBalanceError,
   PlanNotFoundError,
-  SubscriptionNotFoundError,
 } from './billing.errors';
 import {
   BillingService,
@@ -192,10 +191,32 @@ describe('BillingService', () => {
       expect(result.reason).toBe('BLOCKED');
     });
 
-    it('throws when subscription is missing', async () => {
+    it('self-heals a missing subscription (lazy seed) instead of throwing', async () => {
+      const freePlan = makePlan({ code: PlanCode.FREE });
+      plans.findOne.mockResolvedValue(freePlan);
+      const fresh = makeSub({ planId: freePlan.id, plan: freePlan, freeSecondsUsed: 0 });
+      subs.findOne.mockResolvedValueOnce(null).mockResolvedValue(fresh);
+      const insertBuilder = {
+        into: jest.fn().mockReturnThis(),
+        values: jest.fn().mockReturnThis(),
+        orIgnore: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ raw: [], identifiers: [] }),
+      };
+      (subs.createQueryBuilder as jest.Mock).mockReturnValue({
+        insert: jest.fn().mockReturnValue(insertBuilder),
+      });
+
+      const result = await svc.checkEligibility(USER_ID);
+
+      expect(insertBuilder.orIgnore).toHaveBeenCalled();
+      expect(result.allowed).toBe(true);
+    });
+
+    it('still surfaces PlanNotFoundError when the free plan is not seeded', async () => {
       subs.findOne.mockResolvedValue(null);
+      plans.findOne.mockResolvedValue(null);
       await expect(svc.checkEligibility(USER_ID)).rejects.toThrow(
-        SubscriptionNotFoundError,
+        PlanNotFoundError,
       );
     });
   });

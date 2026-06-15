@@ -209,8 +209,17 @@ export class CallService {
       createdAt: new Date().toISOString(),
     };
     const callLog = clog.child({ conversationId: conversation.id, roomName });
+    const ownerKey = RedisKeys.callOwner(conversation.id);
     try {
       await this.redis.set(contextKey, JSON.stringify(agentContext), 'EX', 3600);
+      // O(1) ownership index for realtime-service WS auth (keyed by conversation,
+      // not room) so it never has to scan all contexts.
+      await this.redis.set(
+        ownerKey,
+        JSON.stringify({ conversationId: conversation.id, userId, roomName }),
+        'EX',
+        3600,
+      );
     } catch (err) {
       callLog.error('call.sip.start.contextSaveFailed', err);
       await this.markFailed(conversation.id, 'FATAL_INTERNAL');
@@ -241,7 +250,7 @@ export class CallService {
       callLog.error('call.sip.start.dialFailed', err, {
         targetPhone: dto.targetPhone,
       });
-      await this.redis.del(contextKey).catch(() => undefined);
+      await this.redis.del(contextKey, ownerKey).catch(() => undefined);
       await this.markFailed(conversation.id, 'LIVEKIT_DISCONNECTED');
       throw new InternalServerErrorException(`Failed to initiate SIP call: ${message}`);
     }
@@ -257,7 +266,7 @@ export class CallService {
       // generic 500: drop the stashed context, mark the conversation failed, and
       // return a mapped error — same compensation as the SIP-dial failure above.
       callLog.error('call.sip.start.dispatchFailed', err, { roomName });
-      await this.redis.del(contextKey).catch(() => undefined);
+      await this.redis.del(contextKey, ownerKey).catch(() => undefined);
       await this.markFailed(conversation.id, 'FATAL_INTERNAL');
       throw new InternalServerErrorException('Failed to dispatch call to an agent');
     }

@@ -283,6 +283,19 @@ export class PeerCallService {
         'EX',
         RING_TTL_SECONDS,
       );
+      // O(1) ownership index for realtime-service WS auth. For a peer call the
+      // WS owner is the callee (the deaf user who sees the AI UI) = conversation
+      // userId, NOT the caller.
+      await this.redis.set(
+        RedisKeys.callOwner(conversation.id),
+        JSON.stringify({
+          conversationId: conversation.id,
+          userId: callee.id,
+          roomName,
+        }),
+        'EX',
+        RING_TTL_SECONDS,
+      );
     } catch (err) {
       callLog.error('call.peer.start.contextSaveFailed', err);
       await this.failConversation(conversation.id);
@@ -301,7 +314,9 @@ export class PeerCallService {
       });
     } catch (err) {
       callLog.error('call.peer.start.tokenFailed', err);
-      await this.redis.del(RedisKeys.callContext(roomName)).catch(() => undefined);
+      await this.redis
+        .del(RedisKeys.callContext(roomName), RedisKeys.callOwner(conversation.id))
+        .catch(() => undefined);
       await this.failConversation(conversation.id);
       throw new InternalServerErrorException('Failed to issue media token');
     }
@@ -496,7 +511,7 @@ export class PeerCallService {
     this.callLog(conv).event('call.peer.teardown', { reason, errorCode });
     await this.livekit.deleteRoom(conv.livekitRoom);
     await this.redis
-      .del(RedisKeys.callContext(conv.livekitRoom))
+      .del(RedisKeys.callContext(conv.livekitRoom), RedisKeys.callOwner(conv.id))
       .catch(() => undefined);
     if (conv.status === ConversationStatus.ACTIVE) {
       // An ANSWERED peer call is billable (to the caller — billedUserId =

@@ -103,6 +103,12 @@ export const envSchema = z.object({
   // phone-auth ID token the mobile sends to /auth/phone/confirm.
   FIREBASE_PROJECT_ID: z.string().optional(),
 
+  // Email verification. RESEND_API_KEY enables real sending; unset → emails are
+  // only logged (dev/CI). PUBLIC_API_URL is the base for the confirm link.
+  RESEND_API_KEY: z.string().optional(),
+  EMAIL_FROM: z.string().optional(),
+  PUBLIC_API_URL: z.string().url().optional(),
+
   FREE_SECONDS_PER_MONTH: z.coerce.number().int().positive().default(300),
   PAID_PRICE_PER_SECOND_CENTS: z.coerce.number().int().positive().default(1),
   MAX_CALL_DURATION_SECONDS: z.coerce.number().int().positive().default(3600),

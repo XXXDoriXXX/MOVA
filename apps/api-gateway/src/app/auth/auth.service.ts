@@ -1,13 +1,19 @@
 import { randomUUID } from 'crypto';
 
 import {
+  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
+
+import type { AppEnv } from '@mova-back/shared-config';
+
+import { EMAIL_SENDER, type EmailSender } from '../email/email-sender';
 import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import * as bcrypt from 'bcrypt';
 import type { Counter } from 'prom-client';
@@ -85,7 +91,45 @@ export class AuthService {
     private readonly googleVerifier: GoogleTokenVerifier,
     @Inject(FIREBASE_TOKEN_VERIFIER)
     private readonly firebaseVerifier: FirebaseTokenVerifier,
+    private readonly config: ConfigService<AppEnv, true>,
+    @Inject(EMAIL_SENDER)
+    private readonly emailSender: EmailSender,
   ) {}
+
+  // Send a one-click verification link (24h) to the user's email. The token is
+  // a self-signed JWT scoped with purpose=email_verify — stateless, no table.
+  async sendEmailVerification(userId: string, email: string): Promise<void> {
+    const token = this.jwtService.sign(
+      { sub: userId, email, purpose: 'email_verify' },
+      { expiresIn: '24h' },
+    );
+    const base =
+      this.config.get('PUBLIC_API_URL', { infer: true }) ??
+      'http://localhost:3000';
+    const link = `${base}/v1/auth/email/confirm?token=${encodeURIComponent(token)}`;
+    await this.emailSender.send({
+      to: email,
+      subject: 'Підтвердіть пошту — Mova',
+      text: `Підтвердіть свою пошту для Mova: ${link}\n\nПосилання дійсне 24 години.`,
+      html:
+        `<p>Підтвердіть свою пошту для Mova:</p>` +
+        `<p><a href="${link}">Підтвердити пошту</a></p>` +
+        `<p>Посилання дійсне 24 години.</p>`,
+    });
+  }
+
+  async confirmEmail(token: string): Promise<void> {
+    let payload: { sub?: string; purpose?: string };
+    try {
+      payload = this.jwtService.verify(token);
+    } catch {
+      throw new BadRequestException('Invalid or expired verification token');
+    }
+    if (payload.purpose !== 'email_verify' || !payload.sub) {
+      throw new BadRequestException('Invalid verification token');
+    }
+    await this.usersService.markEmailVerified(payload.sub);
+  }
 
   // Verify the Firebase phone-auth token the mobile obtained via SMS OTP and
   // claim the proven number for this user. The partial-unique index turns a

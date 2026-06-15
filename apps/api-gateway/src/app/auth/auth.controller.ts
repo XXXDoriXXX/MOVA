@@ -3,11 +3,13 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   HttpCode,
   HttpStatus,
   Ip,
   Patch,
   Post,
+  Query,
   Req,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -145,6 +147,32 @@ export class AuthController {
     @Body() dto: PhoneConfirmDto,
   ): Promise<{ phoneNumber: string }> {
     return this.authService.confirmPhone(user.id, dto.firebaseIdToken);
+  }
+
+  @Post('email/send-verification')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Throttle({ auth: { limit: 5, ttl: 15 * 60 * 1000 } })
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Email a verification link to the current user' })
+  async sendEmailVerification(
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<void> {
+    const fullUser = await this.usersService.findActiveById(user.id);
+    if (!fullUser) throw new UnauthorizedException();
+    await this.authService.sendEmailVerification(fullUser.id, fullUser.email);
+  }
+
+  @Public()
+  @Get('email/confirm')
+  @Header('content-type', 'text/html; charset=utf-8')
+  @ApiOperation({ summary: 'Confirm an email via the link token' })
+  async confirmEmail(@Query('token') token: string): Promise<string> {
+    try {
+      await this.authService.confirmEmail(token ?? '');
+    } catch {
+      return "<html><body style='font-family:sans-serif;text-align:center;padding:48px'><h2>Посилання недійсне або застаріле</h2><p>Запросіть новий лист у застосунку.</p></body></html>";
+    }
+    return "<html><body style='font-family:sans-serif;text-align:center;padding:48px'><h2>Пошту підтверджено ✅</h2><p>Можете повернутися до застосунку Mova.</p></body></html>";
   }
 
   @Post('change-password')

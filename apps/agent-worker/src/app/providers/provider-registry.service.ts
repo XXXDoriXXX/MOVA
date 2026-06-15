@@ -203,6 +203,24 @@ export class ProviderRegistry implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Penalize a provider's health for a CLIENT-SIDE timeout (our own deadline
+   * aborted the call). runLlm maps the resulting AbortError to 'cancelled'
+   * (health-neutral — correct for a caller supersede), so an unambiguous local
+   * timeout must be recorded explicitly, or a consistently-slow provider never
+   * decays and stays at the front of the ranking, timing out every turn.
+   */
+  async recordProviderTimeout(
+    providerId: LlmProviderEnum,
+    context?: { conversationId?: string },
+  ): Promise<void> {
+    await this.onFailure(
+      providerId,
+      new ProviderError('timeout', providerId, 'Client-side LLM timeout'),
+      context,
+    );
+  }
+
   getHealthSnapshot(): Record<string, { score: number; lastErrorCode?: string }> {
     const out: Record<string, { score: number; lastErrorCode?: string }> = {};
     for (const [id, h] of this.llmHealth) {

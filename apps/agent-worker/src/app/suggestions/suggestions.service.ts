@@ -181,7 +181,17 @@ export class SuggestionsService {
   async generate(request: SuggestionsRequest): Promise<string[] | null> {
     const { provider } = this.registry.selectLlm(LlmProviderEnum.GROQ);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+    // This controller is aborted ONLY by our own timeout (no external supersede
+    // on this path), so a fired timeout unambiguously means the provider was too
+    // slow — penalize its health, since runLlm will map the abort to the
+    // health-neutral 'cancelled'. clearTimeout in finally prevents penalizing a
+    // call that completed in time.
+    const timeout = setTimeout(() => {
+      controller.abort();
+      void this.registry.recordProviderTimeout(provider.id as LlmProviderEnum, {
+        conversationId: request.conversationId,
+      });
+    }, LLM_TIMEOUT_MS);
 
     const styleAddendum = await this.styleResolver.resolve(
       request.userId,

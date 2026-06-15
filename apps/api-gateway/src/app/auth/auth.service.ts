@@ -33,11 +33,6 @@ import {
   InvalidGoogleTokenError,
   type GoogleTokenVerifier,
 } from './google/google-token-verifier';
-import {
-  FIREBASE_TOKEN_VERIFIER,
-  InvalidFirebaseTokenError,
-  type FirebaseTokenVerifier,
-} from './firebase/firebase-token-verifier';
 import type {
   ChangePasswordDto,
   LoginDto,
@@ -71,7 +66,6 @@ export interface PublicUser {
   username: string | null;
   role: User['role'];
   language: User['language'];
-  phoneNumber: string | null;
   preferredVoice: string | null;
   preferredLlmProvider: string | null;
   preferredLlmModel: string | null;
@@ -93,8 +87,6 @@ export class AuthService {
     private readonly signupsCounter: Counter<string>,
     @Inject(GOOGLE_TOKEN_VERIFIER)
     private readonly googleVerifier: GoogleTokenVerifier,
-    @Inject(FIREBASE_TOKEN_VERIFIER)
-    private readonly firebaseVerifier: FirebaseTokenVerifier,
     private readonly config: ConfigService<AppEnv, true>,
     @Inject(EMAIL_SENDER)
     private readonly emailSender: EmailSender,
@@ -133,35 +125,6 @@ export class AuthService {
       throw new BadRequestException('Invalid verification token');
     }
     await this.usersService.markEmailVerified(payload.sub);
-  }
-
-  // Verify the Firebase phone-auth token the mobile obtained via SMS OTP and
-  // claim the proven number for this user. The partial-unique index turns a
-  // number already verified by someone else into a 23505 → 409.
-  async confirmPhone(
-    userId: string,
-    firebaseIdToken: string,
-  ): Promise<{ phoneNumber: string }> {
-    let phoneNumber: string;
-    try {
-      ({ phoneNumber } = await this.firebaseVerifier.verifyPhone(firebaseIdToken));
-    } catch (err) {
-      if (err instanceof InvalidFirebaseTokenError) {
-        throw new UnauthorizedException(err.message);
-      }
-      throw err;
-    }
-    try {
-      await this.usersService.setVerifiedPhone(userId, phoneNumber);
-    } catch (err) {
-      if ((err as { code?: string }).code === '23505') {
-        throw new ConflictException(
-          'This phone number is already verified on another account',
-        );
-      }
-      throw err;
-    }
-    return { phoneNumber };
   }
 
   // Registration is gated on email verification: we create the account, mail a
@@ -372,7 +335,6 @@ export class AuthService {
       username: user.username,
       role: user.role,
       language: user.language,
-      phoneNumber: user.phoneNumber,
       preferredVoice: user.preferredVoice,
       preferredLlmProvider: user.preferredLlmProvider,
       preferredLlmModel: user.preferredLlmModel,

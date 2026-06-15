@@ -11,7 +11,6 @@ import { AuthService } from '../auth/auth.service';
 import { UsersService } from '../users/users.service';
 import { RefreshTokenService } from '../auth/refresh-token.service';
 import { GOOGLE_TOKEN_VERIFIER } from '../auth/google/google-token-verifier';
-import { FIREBASE_TOKEN_VERIFIER } from '../auth/firebase/firebase-token-verifier';
 import { EMAIL_SENDER } from './email-sender';
 
 async function makeService() {
@@ -28,7 +27,6 @@ async function makeService() {
       { provide: EventEmitter2, useValue: {} },
       { provide: getToken('mova_signups_total'), useValue: { inc: jest.fn() } },
       { provide: GOOGLE_TOKEN_VERIFIER, useValue: { verify: jest.fn() } },
-      { provide: FIREBASE_TOKEN_VERIFIER, useValue: { verifyPhone: jest.fn() } },
       { provide: ConfigService, useValue: { get: jest.fn() } },
       { provide: EMAIL_SENDER, useValue: email },
     ],

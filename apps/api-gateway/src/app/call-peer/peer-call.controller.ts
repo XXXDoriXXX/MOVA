@@ -1,13 +1,11 @@
 import {
   Body,
   Controller,
-  Get,
   HttpCode,
   HttpStatus,
   Param,
   ParseUUIDPipe,
   Post,
-  Query,
   UseInterceptors,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
@@ -24,16 +22,6 @@ import { PeerCallService } from './peer-call.service';
 @Controller('calls/peer')
 export class PeerCallController {
   constructor(private readonly peerCalls: PeerCallService) {}
-
-  @Get('lookup')
-  @ApiOperation({ summary: 'Resolve a phone number to an app user (callee)' })
-  @ApiResponse({ status: 404, description: 'No app user with this phone' })
-  lookup(
-    @Query('phone') phone: string,
-    @CurrentUser() user: AuthenticatedUser,
-  ): Promise<unknown> {
-    return this.peerCalls.lookupByPhone(user.id, phone ?? '');
-  }
 
   @Post('start')
   @HttpCode(HttpStatus.OK)

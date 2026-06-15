@@ -14,8 +14,6 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { FetchGoogleTokenVerifier } from './google/fetch-google-token-verifier';
 import { GOOGLE_TOKEN_VERIFIER } from './google/google-token-verifier';
-import { FetchFirebaseTokenVerifier } from './firebase/fetch-firebase-token-verifier';
-import { FIREBASE_TOKEN_VERIFIER } from './firebase/firebase-token-verifier';
 import { JwtStrategy } from './jwt.strategy';
 import { RefreshTokenService } from './refresh-token.service';
 
@@ -41,7 +39,6 @@ import { RefreshTokenService } from './refresh-token.service';
     RefreshTokenService,
     PasswordBreachService,
     { provide: GOOGLE_TOKEN_VERIFIER, useClass: FetchGoogleTokenVerifier },
-    { provide: FIREBASE_TOKEN_VERIFIER, useClass: FetchFirebaseTokenVerifier },
   ],
   controllers: [AuthController],
   exports: [AuthService, RefreshTokenService, JwtModule],

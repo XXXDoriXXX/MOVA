@@ -6,6 +6,7 @@ import {
   InternalServerErrorException,
   Logger,
   NotFoundException,
+  OnModuleDestroy,
 } from '@nestjs/common';
 import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import { Redis } from 'ioredis';
@@ -59,9 +60,16 @@ const RING_TTL_SECONDS = 3600;
 
 const PEER_PRICE_FRACTION = 0.5;
 
+// How long an app-to-app call may ring unanswered before the server gives up
+// and tells both sides "no answer", instead of letting it hang until the 5-min
+// conversation watchdog reaps it.
+const RING_TIMEOUT_SECONDS = 35;
+
 @Injectable()
-export class PeerCallService {
+export class PeerCallService implements OnModuleDestroy {
   private readonly logger = new Logger(PeerCallService.name);
+
+  private readonly ringTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
@@ -344,6 +352,7 @@ export class PeerCallService {
     }
 
     this.peerCalls.inc({ event: 'ringing' });
+    this.armRingTimeout(conversation.id);
     callLog.event('call.peer.start.ringing', {
       setupMs: Date.now() - startedAt,
     });
@@ -354,6 +363,51 @@ export class PeerCallService {
       livekitUrl: this.livekit.url,
       livekitToken,
     };
+  }
+
+  private armRingTimeout(conversationId: string): void {
+    this.clearRingTimeout(conversationId);
+    const timer = setTimeout(() => {
+      void this.onRingTimeout(conversationId);
+    }, RING_TIMEOUT_SECONDS * 1000);
+    timer.unref?.();
+    this.ringTimers.set(conversationId, timer);
+  }
+
+  private clearRingTimeout(conversationId: string): void {
+    const timer = this.ringTimers.get(conversationId);
+    if (timer) {
+      clearTimeout(timer);
+      this.ringTimers.delete(conversationId);
+    }
+  }
+
+  private async onRingTimeout(conversationId: string): Promise<void> {
+    this.ringTimers.delete(conversationId);
+    const conv = await this.conversations.findById(conversationId);
+    // Only act if the call is still ringing — it may have been answered,
+    // declined, or cancelled (possibly on another pod) in the meantime.
+    if (!conv || conv.status !== ConversationStatus.PENDING) return;
+    const clog = this.callLog(conv);
+    clog.event('call.peer.ringTimeout');
+    this.peerCalls.inc({ event: 'no_answer' });
+    await this.teardown(conv, ConversationEndReason.NO_ANSWER, 'CALL_UNANSWERED');
+    // Tell both sides the call is over so their screens dismiss.
+    await this.publishSignal(conv.callerUserId, {
+      type: 'call.cancelled',
+      data: { conversationId: conv.id },
+    });
+    await this.publishSignal(conv.userId, {
+      type: 'call.cancelled',
+      data: { conversationId: conv.id },
+    });
+  }
+
+  onModuleDestroy(): void {
+    for (const timer of this.ringTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.ringTimers.clear();
   }
 
   async lookupByPhone(
@@ -408,6 +462,7 @@ export class PeerCallService {
         message: 'This call is no longer ringing.',
       });
     }
+    this.clearRingTimeout(conv.id);
     try {
       await this.redis.publish(
         RedisChannels.callDispatch,
@@ -509,6 +564,7 @@ export class PeerCallService {
     errorCode?: string,
   ): Promise<void> {
     this.callLog(conv).event('call.peer.teardown', { reason, errorCode });
+    this.clearRingTimeout(conv.id);
     await this.livekit.deleteRoom(conv.livekitRoom);
     await this.redis
       .del(RedisKeys.callContext(conv.livekitRoom), RedisKeys.callOwner(conv.id))

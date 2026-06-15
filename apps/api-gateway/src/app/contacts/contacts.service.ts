@@ -132,18 +132,24 @@ export class ContactsService {
     );
   }
 
-  // Either party may remove the contact (deletes the row regardless of who
-  // requested it).
-  async remove(userId: string, contactId: string): Promise<void> {
+  // Either party may remove the contact, identified by the OTHER user's id
+  // (which is all the contact list exposes). Deletes the pair row in whichever
+  // direction it was created.
+  async remove(userId: string, otherUserId: string): Promise<void> {
     await this.contacts
       .createQueryBuilder()
       .delete()
-      .where('id = :contactId', { contactId })
-      .andWhere(
+      .where(
         new Brackets((qb) =>
           qb
-            .where('"requesterId" = :userId', { userId })
-            .orWhere('"addresseeId" = :userId', { userId }),
+            .where(
+              '"requesterId" = :userId AND "addresseeId" = :otherUserId',
+              { userId, otherUserId },
+            )
+            .orWhere(
+              '"requesterId" = :otherUserId AND "addresseeId" = :userId',
+              { userId, otherUserId },
+            ),
         ),
       )
       .execute();

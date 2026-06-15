@@ -78,13 +78,13 @@ export class ContactsController {
     return this.contacts.list(user.id);
   }
 
-  @Delete(':id')
+  @Delete(':userId')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Remove a contact' })
+  @ApiOperation({ summary: 'Remove a contact by the other user id' })
   remove(
     @CurrentUser() user: AuthenticatedUser,
-    @Param('id') id: string,
+    @Param('userId') userId: string,
   ): Promise<void> {
-    return this.contacts.remove(user.id, id);
+    return this.contacts.remove(user.id, userId);
   }
 }

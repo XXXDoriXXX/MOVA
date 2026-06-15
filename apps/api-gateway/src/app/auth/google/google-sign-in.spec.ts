@@ -15,6 +15,8 @@ import {
   type GoogleIdentity,
 } from './google-token-verifier';
 import { FIREBASE_TOKEN_VERIFIER } from '../firebase/firebase-token-verifier';
+import { ConfigService } from '@nestjs/config';
+import { EMAIL_SENDER } from '../../email/email-sender';
 
 const ctx = { userAgent: 'jest', ipAddress: '127.0.0.1' };
 
@@ -85,6 +87,8 @@ async function buildSubject(overrides: {
         provide: FIREBASE_TOKEN_VERIFIER,
         useValue: { verifyPhone: jest.fn() },
       },
+      { provide: ConfigService, useValue: { get: jest.fn() } },
+      { provide: EMAIL_SENDER, useValue: { send: jest.fn() } },
     ],
   }).compile();
 

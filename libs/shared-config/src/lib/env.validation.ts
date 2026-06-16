@@ -124,6 +124,14 @@ export const envSchema = z.object({
   PLUS_OVERAGE_PER_SECOND_CENTS: z.coerce.number().int().positive().default(1),
   PLUS_TOPUP_BONUS_PERCENT: z.coerce.number().int().min(0).max(100).default(20),
 
+  // Payment provider for top-ups + subscription checkout. 'mock' credits
+  // instantly (no real checkout); 'wayforpay' issues a real hosted invoice.
+  // Defaults are WayForPay's PUBLIC sandbox merchant — real flow, no real money.
+  PAYMENT_PROVIDER: z.enum(['mock', 'wayforpay']).default('mock'),
+  WAYFORPAY_MERCHANT_ACCOUNT: z.string().default('test_merch_n1'),
+  WAYFORPAY_MERCHANT_SECRET: z.string().default('flk3409refn54t54t*FNJRET'),
+  WAYFORPAY_MERCHANT_DOMAIN: z.string().default('mova.app'),
+
   AGENT_SERVICE_URL: z.string().url().optional(),
   REALTIME_PUBLIC_URL: z.string().url().optional(),
 })

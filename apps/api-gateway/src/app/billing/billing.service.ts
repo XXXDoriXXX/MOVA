@@ -28,6 +28,10 @@ export interface BillingSummary {
     code: PlanCode;
     name: string;
     pricePerSecondCents: number;
+    monthlyPriceCents: number;
+    premiumVoices: boolean;
+    unlimitedPeerCalls: boolean;
+    premiumModel: boolean;
     currency: string;
     freeSecondsPerMonth: number;
     maxCallDurationSeconds: number;
@@ -39,6 +43,17 @@ export interface BillingSummary {
   freeSecondsUsed: number;
   freeSecondsRemaining: number;
   balanceCents: number;
+  // Subscription lifecycle: set on a PLUS tier that the user cancelled but
+  // still has access to until currentPeriodEnd.
+  cancelAtPeriodEnd: boolean;
+}
+
+// The wallet source a call should bill against, decided from the summary alone:
+// spend the included/free pool first, fall to the paid balance once it's empty.
+// One rule for every plan — FREE only ever has a pool, PAID only a balance,
+// PLUS has both.
+export function resolveUsageSource(summary: BillingSummary): UsageSource {
+  return summary.freeSecondsRemaining > 0 ? UsageSource.FREE : UsageSource.PAID;
 }
 
 export interface EligibilityResult {
@@ -122,24 +137,21 @@ export class BillingService {
 
     const planMax = sub.plan.maxCallDurationSeconds;
 
-    if (sub.plan.code === PlanCode.FREE) {
-      const remaining = Math.max(sub.plan.freeSecondsPerMonth - sub.freeSecondsUsed, 0);
-      if (remaining <= 0) {
-        return {
-          allowed: false,
-          maxCallDurationSeconds: 0,
-          reason: 'INSUFFICIENT_BALANCE',
-          summary,
-        };
-      }
-      return {
-        allowed: true,
-        maxCallDurationSeconds: Math.min(planMax, remaining),
-        summary,
-      };
-    }
+    // Unified across every plan: spendable seconds = included pool still left +
+    // whatever the wallet affords at this plan's per-second rate. FREE has only
+    // the pool (price 0 → 0 affordable), PAID only the wallet (pool 0), PLUS
+    // both. A call is allowed iff that total is positive.
+    const includedRemaining = Math.max(
+      sub.plan.freeSecondsPerMonth - sub.freeSecondsUsed,
+      0,
+    );
+    const affordableSeconds =
+      sub.plan.pricePerSecondCents > 0
+        ? Math.floor(sub.balanceCents / sub.plan.pricePerSecondCents)
+        : 0;
+    const spendableSeconds = includedRemaining + affordableSeconds;
 
-    if (sub.balanceCents <= 0) {
+    if (spendableSeconds <= 0) {
       return {
         allowed: false,
         maxCallDurationSeconds: 0,
@@ -147,10 +159,9 @@ export class BillingService {
         summary,
       };
     }
-    const affordableSeconds = Math.floor(sub.balanceCents / sub.plan.pricePerSecondCents);
     return {
       allowed: true,
-      maxCallDurationSeconds: Math.min(planMax, affordableSeconds),
+      maxCallDurationSeconds: Math.min(planMax, spendableSeconds),
       summary,
     };
   }
@@ -556,6 +567,10 @@ export class BillingService {
         code: sub.plan.code,
         name: sub.plan.name,
         pricePerSecondCents: sub.plan.pricePerSecondCents,
+        monthlyPriceCents: sub.plan.monthlyPriceCents,
+        premiumVoices: sub.plan.premiumVoices,
+        unlimitedPeerCalls: sub.plan.unlimitedPeerCalls,
+        premiumModel: sub.plan.premiumModel,
         currency: sub.plan.currency,
         freeSecondsPerMonth: sub.plan.freeSecondsPerMonth,
         maxCallDurationSeconds: sub.plan.maxCallDurationSeconds,
@@ -567,6 +582,7 @@ export class BillingService {
       freeSecondsUsed: sub.freeSecondsUsed,
       freeSecondsRemaining: freeRemaining,
       balanceCents: sub.balanceCents,
+      cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
     };
   }
 }

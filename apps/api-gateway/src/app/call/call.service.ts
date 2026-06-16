@@ -27,7 +27,7 @@ import {
   UserLanguage,
 } from '@mova-back/shared-database';
 
-import { BillingService } from '../billing/billing.service';
+import { BillingService, resolveUsageSource } from '../billing/billing.service';
 import { ConversationsService } from '../conversations/conversations.service';
 import { TemplatesService } from '../templates/templates.service';
 import { UsersService } from '../users/users.service';
@@ -122,10 +122,9 @@ export class CallService {
         initialLlmProvider: template?.defaultLlmProvider ?? null,
         initialTtsProvider: template?.defaultTtsProvider ?? null,
         initialVoice: template?.defaultVoice ?? null,
-        initialPlanSource:
-          eligibility.summary.plan.code === PlanCode.FREE
-            ? UsageSource.FREE
-            : UsageSource.PAID,
+        // Spend the included pool first, fall to the wallet once empty — one
+        // rule for FREE/PAID/PLUS (a PLUS call with pool left bills as FREE).
+        initialPlanSource: resolveUsageSource(eligibility.summary),
         initialPricePerSecondCents: eligibility.summary.plan.pricePerSecondCents,
       });
     } catch (err) {

@@ -1,9 +1,11 @@
 import { randomUUID } from 'crypto';
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, QueryFailedError, Repository } from 'typeorm';
 
+import type { AppEnv } from '@mova-back/shared-config';
 import {
   PaymentEvent,
   PaymentEventStatus,
@@ -22,6 +24,11 @@ import {
   SubscriptionBlockedError,
   SubscriptionNotFoundError,
 } from './billing.errors';
+import {
+  PAYMENT_PROVIDER,
+  type PaymentProvider,
+  type PaymentPurpose,
+} from './payments/payment-provider';
 
 export interface BillingSummary {
   plan: {
@@ -79,6 +86,8 @@ export class BillingService {
     @InjectRepository(Subscription) private readonly subscriptions: Repository<Subscription>,
     @InjectRepository(UsageRecord) private readonly usage: Repository<UsageRecord>,
     @InjectRepository(PaymentEvent) private readonly payments: Repository<PaymentEvent>,
+    @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
+    private readonly config: ConfigService<AppEnv, true>,
   ) {}
 
   async ensureSubscriptionForUser(userId: string): Promise<Subscription> {
@@ -525,6 +534,12 @@ export class BillingService {
   }
 
   async switchPlan(userId: string, planCode: PlanCode): Promise<BillingSummary> {
+    // PLUS is a paid recurring tier — it is only ever entered through a
+    // settled checkout (startSubscriptionCheckout → settlePayment), never a
+    // free plan switch. Allow toggling between the pay-as-you-go plans only.
+    if (planCode === PlanCode.PLUS) {
+      throw new PlanNotFoundError(planCode);
+    }
     const targetPlan = await this.plans.findOne({
       where: { code: planCode, isActive: true },
     });
@@ -547,6 +562,278 @@ export class BillingService {
     const refreshed = await this.loadSubscription(userId);
     this.logger.log(`Plan switch userId=${userId} → ${planCode}`);
     return this.toSummary(refreshed);
+  }
+
+  // ───────────────────────── Checkout + settlement ──────────────────────────
+
+  // Start a wallet top-up: persist a PENDING PaymentEvent and hand back the
+  // provider checkout URL. The balance is credited only when the provider
+  // confirms (settlePayment) — so a closed/abandoned checkout costs nothing.
+  // Idempotency-Key dedups double-taps: the same key returns the same checkout.
+  async startTopup(
+    userId: string,
+    amountCents: number,
+    idempotencyKey: string,
+  ): Promise<{ paymentEventId: string; checkoutUrl: string; reused: boolean }> {
+    if (!Number.isInteger(amountCents) || amountCents < MIN_TOPUP_CENTS) {
+      throw new Error(`Topup amount below min (${MIN_TOPUP_CENTS} cents)`);
+    }
+    if (amountCents > MAX_TOPUP_CENTS) {
+      throw new Error(`Topup amount above max (${MAX_TOPUP_CENTS} cents)`);
+    }
+    const key = this.normalizeIdempotencyKey(idempotencyKey);
+
+    if (key) {
+      const existing = await this.payments.findOne({
+        where: { userId, idempotencyKey: key },
+      });
+      if (existing) {
+        if (existing.amountCents !== amountCents) {
+          throw new IdempotencyKeyConflictError(key);
+        }
+        const url = (existing.payload as { checkoutUrl?: string }).checkoutUrl;
+        if (url) {
+          return { paymentEventId: existing.id, checkoutUrl: url, reused: true };
+        }
+      }
+    }
+
+    const orderReference = `mova_topup_${randomUUID()}`;
+    const checkout = await this.provider.createCheckout({
+      purpose: 'topup',
+      orderReference,
+      amountCents,
+      productName: 'Поповнення балансу MOVA',
+      recurring: false,
+    });
+
+    try {
+      const event = await this.payments.save({
+        userId,
+        externalId: orderReference,
+        idempotencyKey: key,
+        amountCents,
+        currency: 'UAH',
+        status: PaymentEventStatus.PENDING,
+        payload: {
+          provider: this.provider.name,
+          purpose: 'topup' satisfies PaymentPurpose,
+          checkoutUrl: checkout.checkoutUrl,
+        },
+      });
+      return {
+        paymentEventId: event.id,
+        checkoutUrl: checkout.checkoutUrl,
+        reused: false,
+      };
+    } catch (err) {
+      if (key && this.isUniqueViolation(err)) {
+        const winner = await this.payments.findOne({
+          where: { userId, idempotencyKey: key },
+        });
+        const url = (winner?.payload as { checkoutUrl?: string } | undefined)
+          ?.checkoutUrl;
+        if (winner && url) {
+          return { paymentEventId: winner.id, checkoutUrl: url, reused: true };
+        }
+      }
+      throw err;
+    }
+  }
+
+  // Start a MOVA Plus subscription checkout (recurring mandate requested).
+  async startSubscriptionCheckout(
+    userId: string,
+  ): Promise<{ checkoutUrl: string }> {
+    await this.ensureSubscriptionForUser(userId);
+    const plus = await this.getPlanByCode(PlanCode.PLUS);
+    const orderReference = `mova_sub_${randomUUID()}`;
+    const checkout = await this.provider.createCheckout({
+      purpose: 'subscription',
+      orderReference,
+      amountCents: plus.monthlyPriceCents,
+      productName: plus.name,
+      recurring: true,
+    });
+    await this.payments.save({
+      userId,
+      externalId: orderReference,
+      idempotencyKey: null,
+      amountCents: plus.monthlyPriceCents,
+      currency: 'UAH',
+      status: PaymentEventStatus.PENDING,
+      payload: {
+        provider: this.provider.name,
+        purpose: 'subscription' satisfies PaymentPurpose,
+        planId: plus.id,
+        checkoutUrl: checkout.checkoutUrl,
+      },
+    });
+    return { checkoutUrl: checkout.checkoutUrl };
+  }
+
+  // Settle a provider confirmation. The PENDING→terminal flip on the unique
+  // PaymentEvent is the single serialization point (golden rule #1): only the
+  // caller whose UPDATE affects 1 row applies the money effect, so duplicate
+  // webhooks (at-least-once delivery) are idempotent. Claim + effect run in one
+  // transaction so a crash can't leave a SUCCESS event with no effect applied.
+  async settlePayment(
+    orderReference: string,
+    outcome: {
+      approved: boolean;
+      recToken?: string | null;
+      providerTxnId?: string | null;
+    },
+  ): Promise<void> {
+    await this.subscriptions.manager.transaction(async (tx) => {
+      const claim = await tx
+        .createQueryBuilder()
+        .update(PaymentEvent)
+        .set({
+          status: outcome.approved
+            ? PaymentEventStatus.SUCCESS
+            : PaymentEventStatus.FAILED,
+          processedAt: new Date(),
+        })
+        .where(
+          '"externalId" = :ref AND "status" = :pending',
+          { ref: orderReference, pending: PaymentEventStatus.PENDING },
+        )
+        .returning('*')
+        .execute();
+      const event = (claim.raw as PaymentEvent[])[0];
+      if (!event) {
+        // Already settled (duplicate webhook) or unknown reference — no-op.
+        this.logger.log({
+          msg: 'billing.settle.noopOrDuplicate',
+          orderReference,
+          approved: outcome.approved,
+        });
+        return;
+      }
+      if (!outcome.approved) {
+        this.logger.warn({
+          msg: 'billing.settle.declined',
+          orderReference,
+          userId: event.userId,
+        });
+        return;
+      }
+
+      const payload = event.payload as {
+        purpose?: PaymentPurpose;
+        planId?: string;
+      };
+      if (payload.purpose === 'subscription' && payload.planId) {
+        const now = new Date();
+        await tx
+          .createQueryBuilder()
+          .update(Subscription)
+          .set({
+            planId: payload.planId,
+            status: SubscriptionStatus.ACTIVE,
+            currentPeriodStart: now,
+            currentPeriodEnd: nextMonthBoundary(now),
+            // Fresh included pool on activation/renewal.
+            freeSecondsUsed: 0,
+            cancelAtPeriodEnd: false,
+            provider: this.provider.name,
+            recToken: outcome.recToken ?? null,
+          })
+          .where('"userId" = :userId', { userId: event.userId })
+          .execute();
+        this.logger.log({
+          msg: 'billing.settle.subscriptionActivated',
+          orderReference,
+          userId: event.userId,
+          recToken: outcome.recToken ? 'present' : 'none',
+        });
+        return;
+      }
+
+      // Top-up: credit the wallet, plus a subscriber bonus that makes buying
+      // extra minutes cheaper while on an active PLUS plan.
+      const sub = await tx.findOne(Subscription, {
+        where: { userId: event.userId },
+        relations: { plan: true },
+      });
+      const bonusPct =
+        sub &&
+        sub.status === SubscriptionStatus.ACTIVE &&
+        sub.plan.code === PlanCode.PLUS
+          ? this.config.get('PLUS_TOPUP_BONUS_PERCENT', { infer: true })
+          : 0;
+      const credit = event.amountCents + Math.floor((event.amountCents * bonusPct) / 100);
+      await tx
+        .createQueryBuilder()
+        .update(Subscription)
+        .set({ balanceCents: () => `"balanceCents" + :credit` })
+        .where('"userId" = :userId', { userId: event.userId })
+        .setParameters({ credit })
+        .execute();
+      this.logger.log({
+        msg: 'billing.settle.topupCredited',
+        orderReference,
+        userId: event.userId,
+        amountCents: event.amountCents,
+        bonusPct,
+        creditedCents: credit,
+      });
+    });
+  }
+
+  // Settle by mock-pay page (mock provider only) — the same effect a real
+  // provider webhook would trigger.
+  async settleMock(orderReference: string): Promise<void> {
+    await this.settlePayment(orderReference, {
+      approved: true,
+      recToken: 'mock-rec-token',
+      providerTxnId: 'mock-txn',
+    });
+  }
+
+  // Verify + apply a provider webhook, returning the ACK body the provider
+  // expects. Money is only touched after the signature checks out.
+  async handleProviderWebhook(
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const verified = this.provider.verifyWebhook(payload);
+    if (!verified.signatureValid) {
+      this.logger.warn({
+        msg: 'billing.webhook.badSignature',
+        orderReference: verified.orderReference,
+      });
+      return this.provider.webhookAck(verified.orderReference, false);
+    }
+    await this.settlePayment(verified.orderReference, {
+      approved: verified.approved,
+      recToken: verified.recToken,
+      providerTxnId: verified.providerTxnId,
+    });
+    return this.provider.webhookAck(verified.orderReference, true);
+  }
+
+  // Cancel a PLUS subscription: keep access until the period ends, then the
+  // renewal cron downgrades to FREE instead of charging again.
+  async cancelSubscription(userId: string): Promise<BillingSummary> {
+    const sub = await this.loadSubscription(userId);
+    if (sub.plan.code !== PlanCode.PLUS) {
+      return this.toSummary(sub);
+    }
+    await this.subscriptions
+      .createQueryBuilder()
+      .update(Subscription)
+      .set({ cancelAtPeriodEnd: true })
+      .where('"userId" = :userId', { userId })
+      .execute();
+    this.logger.log({ msg: 'billing.subscription.cancelScheduled', userId });
+    return this.toSummary(await this.loadSubscription(userId));
+  }
+
+  private async getPlanByCode(code: PlanCode): Promise<Plan> {
+    const plan = await this.plans.findOne({ where: { code, isActive: true } });
+    if (!plan) throw new PlanNotFoundError(code);
+    return plan;
   }
 
   private async loadSubscription(userId: string): Promise<Subscription> {

@@ -82,7 +82,22 @@ describe('BillingService', () => {
     subs = makeRepo<Subscription>();
     usage = makeRepo<UsageRecord>();
     payments = makeRepo<PaymentEvent>();
-    svc = new BillingService(plans, subs, usage, payments);
+    const provider = {
+      name: 'mock',
+      createCheckout: jest.fn(),
+      verifyWebhook: jest.fn(),
+      webhookAck: jest.fn(),
+      chargeRecurring: jest.fn(),
+    };
+    const config = { get: jest.fn().mockReturnValue(0) };
+    svc = new BillingService(
+      plans,
+      subs,
+      usage,
+      payments,
+      provider as never,
+      config as never,
+    );
   });
 
   describe('nextMonthBoundary', () => {

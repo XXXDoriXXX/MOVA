@@ -382,6 +382,9 @@ export class BillingService {
   }
 
   async runMonthlyReset(now: Date = new Date()): Promise<number> {
+    // Free period roll — FREE/PAID only. PLUS must NOT roll for free here: its
+    // period only advances through a paid renewal (runSubscriptionRenewals), so
+    // exclude any subscription on a plan that carries a monthly fee.
     const result = await this.subscriptions
       .createQueryBuilder()
       .update(Subscription)
@@ -391,12 +394,137 @@ export class BillingService {
         currentPeriodEnd: nextMonthBoundary(now),
       })
       .where(
-        `"currentPeriodEnd" <= :now AND "currentPeriodStart" < date_trunc('month', :now::timestamptz)`,
+        `"currentPeriodEnd" <= :now AND "currentPeriodStart" < date_trunc('month', :now::timestamptz) ` +
+          `AND (SELECT "monthlyPriceCents" FROM "plans" WHERE "plans"."id" = "subscriptions"."planId") = 0`,
         { now },
       )
       .execute();
     this.logger.log(`Monthly reset applied to ${result.affected ?? 0} subscriptions`);
     return result.affected ?? 0;
+  }
+
+  // Renew (or wind down) MOVA Plus subscriptions whose period has ended. Each
+  // due subscription is claimed by atomically rolling its period (winner-takes,
+  // so overlapping cron ticks can't double-charge); the winner then charges the
+  // recurring mandate and downgrades to FREE if the charge fails / was cancelled
+  // / has no stored token. Returns counts for observability.
+  async runSubscriptionRenewals(
+    now: Date = new Date(),
+  ): Promise<{ renewed: number; downgraded: number }> {
+    const due = await this.subscriptions
+      .createQueryBuilder('s')
+      .innerJoinAndSelect('s.plan', 'p')
+      .where(
+        'p.monthlyPriceCents > 0 AND s.status = :active AND s."currentPeriodEnd" <= :now',
+        { active: SubscriptionStatus.ACTIVE, now },
+      )
+      .getMany();
+
+    let renewed = 0;
+    let downgraded = 0;
+    for (const sub of due) {
+      // Cancelled or un-chargeable (no stored mandate) → fall back to FREE.
+      if (sub.cancelAtPeriodEnd || !sub.recToken) {
+        await this.downgradeToFree(sub.userId, now);
+        downgraded += 1;
+        this.logger.log({
+          msg: 'billing.renewal.downgraded',
+          userId: sub.userId,
+          reason: sub.cancelAtPeriodEnd ? 'cancelled' : 'no_rec_token',
+        });
+        continue;
+      }
+
+      // Claim by rolling the period (optimistic, guarded on the old end +
+      // active + not-cancelled). Only one tick wins; it owns the charge.
+      const newEnd = nextMonthBoundary(now);
+      const claim = await this.subscriptions
+        .createQueryBuilder()
+        .update(Subscription)
+        .set({
+          currentPeriodStart: now,
+          currentPeriodEnd: newEnd,
+          freeSecondsUsed: 0,
+        })
+        .where(
+          '"userId" = :userId AND "currentPeriodEnd" = :oldEnd AND ' +
+            '"status" = :active AND "cancelAtPeriodEnd" = false',
+          {
+            userId: sub.userId,
+            oldEnd: sub.currentPeriodEnd,
+            active: SubscriptionStatus.ACTIVE,
+          },
+        )
+        .execute();
+      if (!claim.affected) continue; // another tick already took it
+
+      let approved = false;
+      try {
+        const result = await this.provider.chargeRecurring({
+          orderReference: `mova_renew_${randomUUID()}`,
+          recToken: sub.recToken,
+          amountCents: sub.plan.monthlyPriceCents,
+          productName: sub.plan.name,
+        });
+        approved = result.approved;
+        await this.payments.save({
+          userId: sub.userId,
+          externalId: `renew_${randomUUID()}`,
+          idempotencyKey: null,
+          amountCents: sub.plan.monthlyPriceCents,
+          currency: 'UAH',
+          status: approved
+            ? PaymentEventStatus.SUCCESS
+            : PaymentEventStatus.FAILED,
+          payload: {
+            provider: this.provider.name,
+            purpose: 'subscription' satisfies PaymentPurpose,
+            renewal: true,
+            providerTxnId: result.providerTxnId,
+          },
+          processedAt: new Date(),
+        });
+      } catch (err) {
+        this.logger.error({
+          msg: 'billing.renewal.chargeFailed',
+          userId: sub.userId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      if (approved) {
+        renewed += 1;
+        this.logger.log({ msg: 'billing.renewal.renewed', userId: sub.userId });
+      } else {
+        await this.downgradeToFree(sub.userId, now);
+        downgraded += 1;
+        this.logger.log({
+          msg: 'billing.renewal.downgraded',
+          userId: sub.userId,
+          reason: 'charge_declined',
+        });
+      }
+    }
+    return { renewed, downgraded };
+  }
+
+  private async downgradeToFree(userId: string, now: Date): Promise<void> {
+    const free = await this.getPlanByCode(PlanCode.FREE);
+    await this.subscriptions
+      .createQueryBuilder()
+      .update(Subscription)
+      .set({
+        planId: free.id,
+        status: SubscriptionStatus.ACTIVE,
+        currentPeriodStart: now,
+        currentPeriodEnd: nextMonthBoundary(now),
+        freeSecondsUsed: 0,
+        cancelAtPeriodEnd: false,
+        provider: null,
+        recToken: null,
+      })
+      .where('"userId" = :userId', { userId })
+      .execute();
   }
 
   async listUsage(userId: string, from?: Date, to?: Date): Promise<UsageRecord[]> {

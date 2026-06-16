@@ -9,6 +9,7 @@ import { ConversationsModule } from '../conversations/conversations.module';
 import { ActiveCallsGauge } from './active-calls-gauge.service';
 import { ConversationWatchdog } from './conversation-watchdog.service';
 import { MonthlyResetService } from './monthly-reset.service';
+import { SubscriptionRenewalService } from './subscription-renewal.service';
 
 @Module({
   imports: [
@@ -17,6 +18,11 @@ import { MonthlyResetService } from './monthly-reset.service';
     BillingModule,
     TypeOrmModule.forFeature([Conversation]),
   ],
-  providers: [ConversationWatchdog, MonthlyResetService, ActiveCallsGauge],
+  providers: [
+    ConversationWatchdog,
+    MonthlyResetService,
+    SubscriptionRenewalService,
+    ActiveCallsGauge,
+  ],
 })
 export class ScheduledModule {}

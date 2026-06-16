@@ -110,9 +110,19 @@ export const envSchema = z.object({
   PUBLIC_API_URL: z.string().url().optional(),
 
   FREE_SECONDS_PER_MONTH: z.coerce.number().int().positive().default(300),
-  PAID_PRICE_PER_SECOND_CENTS: z.coerce.number().int().positive().default(1),
+  // Base pay-as-you-go rate (PAID plan). PLUS overage is set lower so the
+  // subscription is genuinely cheaper per extra minute than buying minutes raw.
+  PAID_PRICE_PER_SECOND_CENTS: z.coerce.number().int().positive().default(2),
   MAX_CALL_DURATION_SECONDS: z.coerce.number().int().positive().default(3600),
   MAX_CONCURRENT_CALLS_PER_USER: z.coerce.number().int().positive().default(1),
+
+  // MOVA Plus subscription tier. Price in kopiykas (19900 = 199 UAH), included
+  // pool in seconds (7500 = 125 min), discounted overage rate, and a top-up
+  // bonus that makes buying extra minutes cheaper while subscribed.
+  PLUS_MONTHLY_PRICE_CENTS: z.coerce.number().int().positive().default(19_900),
+  PLUS_INCLUDED_SECONDS: z.coerce.number().int().positive().default(7_500),
+  PLUS_OVERAGE_PER_SECOND_CENTS: z.coerce.number().int().positive().default(1),
+  PLUS_TOPUP_BONUS_PERCENT: z.coerce.number().int().min(0).max(100).default(20),
 
   AGENT_SERVICE_URL: z.string().url().optional(),
   REALTIME_PUBLIC_URL: z.string().url().optional(),

@@ -61,6 +61,21 @@ export class Subscription {
   @Column({ type: 'int', default: 0 })
   balanceCents!: number;
 
+  // Payment provider that owns the recurring mandate (e.g. 'wayforpay'),
+  // null for pay-as-you-go subscriptions.
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  provider!: string | null;
+
+  // Provider-side recurring token used to charge the next period without the
+  // user re-entering card details. Null until a subscription checkout succeeds.
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  recToken!: string | null;
+
+  // When true, the plan downgrades to FREE at currentPeriodEnd instead of
+  // auto-renewing (user cancelled but keeps access until the period ends).
+  @Column({ default: false })
+  cancelAtPeriodEnd!: boolean;
+
   @CreateDateColumn()
   createdAt!: Date;
 

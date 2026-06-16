@@ -12,7 +12,7 @@ import {
   UsageSource,
 } from '@mova-back/shared-database';
 
-import { BillingService } from '../billing/billing.service';
+import { BillingService, resolveUsageSource } from '../billing/billing.service';
 import { ConversationsService } from './conversations.service';
 
 interface EndCallInput {
@@ -80,8 +80,7 @@ export class ConversationLifecycleService {
         conversation: settled,
         secondsBilled: settled.durationSeconds,
         costCents: 0,
-        source:
-          replaySummary.plan.code === PlanCode.FREE ? UsageSource.FREE : UsageSource.PAID,
+        source: resolveUsageSource(replaySummary),
         idempotentReplay: true,
       };
     }
@@ -111,8 +110,7 @@ export class ConversationLifecycleService {
       planLabel = `${conversation.initialPlanSource} (start-snapshot)`;
     } else {
       const summary = await this.billing.getSummary(billedUserId);
-      source =
-        summary.plan.code === PlanCode.FREE ? UsageSource.FREE : UsageSource.PAID;
+      source = resolveUsageSource(summary);
       pricePerSecondCents = summary.plan.pricePerSecondCents;
       planLabel = summary.plan.code;
     }

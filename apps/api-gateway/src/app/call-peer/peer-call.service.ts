@@ -36,6 +36,7 @@ import { ConversationsService } from '../conversations/conversations.service';
 import { ConversationLifecycleService } from '../conversations/conversation-lifecycle.service';
 import { TemplatesService } from '../templates/templates.service';
 import { UsersService } from '../users/users.service';
+import { resolveUsageSource } from '../billing/billing.service';
 import { ContactsService } from '../contacts/contacts.service';
 import { PushNotifierService } from '../push/push-notifier.service';
 import { PushTokenService } from '../push/push-token.service';
@@ -191,10 +192,30 @@ export class PeerCallService implements OnModuleDestroy {
       );
     }
 
-    const eligibility = await this.billing.assertEligible(caller.id);
+    const callerSummary = await this.billing.getSummary(caller.id);
+    const unlimitedPeer = callerSummary.plan.unlimitedPeerCalls;
+    // Unlimited-peer plans (PLUS) skip the balance gate — an in-app peer call
+    // never touches the wallet or the AI pool — but a non-active subscription
+    // still blocks. Everyone else must have spendable balance/included seconds.
+    const eligibility = unlimitedPeer
+      ? await this.billing.checkEligibility(caller.id)
+      : await this.billing.assertEligible(caller.id);
+    if (unlimitedPeer && eligibility.reason === 'BLOCKED') {
+      this.reject(
+        clog,
+        'CALLER_BLOCKED',
+        new ForbiddenException({
+          code: 'CALLER_BLOCKED',
+          message: 'Your subscription is not active.',
+        }),
+      );
+    }
+    const maxCallDurationSeconds = unlimitedPeer
+      ? callerSummary.plan.maxCallDurationSeconds
+      : eligibility.maxCallDurationSeconds;
     clog.event('call.peer.start.eligible', {
       plan: eligibility.summary.plan.code,
-      maxCallDurationSeconds: eligibility.maxCallDurationSeconds,
+      maxCallDurationSeconds,
     });
 
     const language = callee.language ?? UserLanguage.UK;
@@ -208,13 +229,15 @@ export class PeerCallService implements OnModuleDestroy {
       templateResolvedId: template?.id ?? null,
       language,
     });
-    const callerSource =
-      eligibility.summary.plan.code === PlanCode.FREE
-        ? UsageSource.FREE
-        : UsageSource.PAID;
-    const peerPricePerSecondCents = Math.ceil(
-      eligibility.summary.plan.pricePerSecondCents * PEER_PRICE_FRACTION,
-    );
+    // Unlimited-peer (PLUS) bills nothing: PAID source + price 0 deducts no
+    // cents AND leaves the included AI pool intact. Others pay a fraction of
+    // their rate from whichever source the pool/wallet dictates.
+    const callerSource = unlimitedPeer
+      ? UsageSource.PAID
+      : resolveUsageSource(eligibility.summary);
+    const peerPricePerSecondCents = unlimitedPeer
+      ? 0
+      : Math.ceil(eligibility.summary.plan.pricePerSecondCents * PEER_PRICE_FRACTION);
     let conversation: Conversation;
     try {
       conversation = await this.conversations.createPending({
@@ -286,7 +309,7 @@ export class PeerCallService implements OnModuleDestroy {
             }
           : {}),
       },
-      maxCallDurationSeconds: eligibility.maxCallDurationSeconds,
+      maxCallDurationSeconds,
       planCode: eligibility.summary.plan.code,
       createdAt: new Date().toISOString(),
     };

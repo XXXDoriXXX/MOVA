@@ -28,8 +28,9 @@
 name: Deploy
 
 on:
-  push:
-    branches: [master]
+  # The VPS pipeline is retired — the app deploys to Heroku via the container
+  # registry (manual `~/mova-heroku-build.sh`). Kept for reference but switched
+  # to manual-only so a push to master no longer fires a failing VPS deploy.
   workflow_dispatch:
     inputs:
       image_tag:

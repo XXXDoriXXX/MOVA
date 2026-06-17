@@ -83,8 +83,10 @@ export class WayForPayProvider implements PaymentProvider {
       productName: [name],
       productCount: [count],
       productPrice: [amount],
-      // Ask WayForPay to tokenise the card so we can charge renewals.
-      ...(input.recurring ? { recToken: 'auto' } : {}),
+      // NOTE: recurring auto-charge is wired separately — WayForPay rejects a
+      // literal recToken on CREATE_INVOICE (it expects a real 36-char token).
+      // The subscription activates on the first payment's webhook; renewal via
+      // the stored recToken / WayForPay regular payments is a follow-up.
     };
 
     const res = await fetch(WFP_API, {

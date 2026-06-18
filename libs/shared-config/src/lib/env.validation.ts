@@ -85,26 +85,31 @@ export const envSchema = z.object({
   // name and 404s here (see @livekit/agents-plugin-google beta TTS).
   GEMINI_TTS_MODEL: z.string().default('gemini-2.5-flash-preview-tts'),
 
+  // OpenAI TTS model. `gpt-4o-mini-tts` streams (low latency) and speaks
+  // Ukrainian noticeably better than the older `tts-1` default.
+  OPENAI_TTS_MODEL: z.string().default('gpt-4o-mini-tts'),
+
   GOOGLE_TTS_API_KEY: z.string().optional(),
   GOOGLE_TTS_VOICE: z.string().default('uk-UA-Wavenet-A'),
   GOOGLE_TTS_LANGUAGE_CODE: z.string().default('uk-UA'),
 
   // Premium TTS for MOVA Plus subscribers (the `premiumVoices` entitlement).
   // Provider-agnostic so the upgrade target changes with an env edit, no code
-  // change: 'gemini' → Gemini 2.5 Flash TTS (natural, multilingual, auto-detects
-  // Ukrainian; voice is a prebuilt name like Aoede/Kore/Charon), 'google' → a
-  // Google Cloud voice name (e.g. uk-UA-Chirp3-HD-Aoede), 'elevenlabs' → an
-  // ElevenLabs voiceId. The gateway writes provider+voice into the per-call
-  // agent config; the agent TtsFactory resolves the matching engine.
+  // change: 'openai' → OpenAI gpt-4o-mini-tts (STREAMS → low latency; voices
+  // nova/onyx/shimmer/echo…), 'elevenlabs' → an ElevenLabs voiceId (streams),
+  // 'gemini' → Gemini prebuilt name (Aoede/Charon — natural but NOT streaming,
+  // higher latency), 'google' → a Google Cloud voice name. The gateway writes
+  // provider+voice into the per-call agent config; the agent TtsFactory resolves
+  // the matching engine. Default is OpenAI for the lowest perceived delay.
   PREMIUM_TTS_PROVIDER: z
     .enum(['gemini', 'google', 'elevenlabs', 'openai'])
-    .default('gemini'),
+    .default('openai'),
   // Gendered premium voices for the active provider. The subscriber's
   // `preferredVoiceGender` selects between them; null/unset → female. Defaults
-  // are Gemini prebuilt voices (Aoede = warm female, Charon = calm male). Change
-  // these together with PREMIUM_TTS_PROVIDER when switching engine.
-  PREMIUM_TTS_VOICE_FEMALE: z.string().default('Aoede'),
-  PREMIUM_TTS_VOICE_MALE: z.string().default('Charon'),
+  // are OpenAI voices (nova = warm female, onyx = deep male). Change these
+  // together with PREMIUM_TTS_PROVIDER when switching engine.
+  PREMIUM_TTS_VOICE_FEMALE: z.string().default('nova'),
+  PREMIUM_TTS_VOICE_MALE: z.string().default('onyx'),
 
   SENTRY_DSN: z.string().url().optional(),
   SENTRY_ENVIRONMENT: z.string().optional(),

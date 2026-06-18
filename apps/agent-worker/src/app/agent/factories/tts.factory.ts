@@ -94,8 +94,11 @@ export class TtsFactory {
       case TtsProviderEnum.OPENAI: {
         const voiceStr = agentConfig?.tts?.voice || this.config.get<string>('TTS_VOICE', 'fable');
         const speed = agentConfig?.tts?.speed ?? (parseFloat(this.config.get<string>('TTS_SPEED', '1.0')) || 1.0);
+        // gpt-4o-mini-tts streams (low latency) and speaks Ukrainian far better
+        // than the plugin's default tts-1. Overridable via OPENAI_TTS_MODEL.
+        const model = this.config.get<string>('OPENAI_TTS_MODEL', 'gpt-4o-mini-tts');
 
-        const instance = new openai.TTS({ voice: voiceStr as OpenAITTSVoice, speed });
+        const instance = new openai.TTS({ model, voice: voiceStr as OpenAITTSVoice, speed });
         instance.setMaxListeners(0);
         return { tts: instance, provider: 'openai', voice: voiceStr };
       }

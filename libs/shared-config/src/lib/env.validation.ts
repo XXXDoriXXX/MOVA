@@ -111,6 +111,15 @@ export const envSchema = z.object({
   PREMIUM_TTS_VOICE_FEMALE: z.string().default('nova'),
   PREMIUM_TTS_VOICE_MALE: z.string().default('onyx'),
 
+  // Resilience: if the primary TTS (e.g. OpenAI) errors or stalls on the first
+  // audio frame, the agent's FallbackTts transparently re-synthesises the same
+  // line on this provider — so a call never goes silent. 'gemini' uses the
+  // already-configured GOOGLE_GENERATIVE_AI_API_KEY. Unset/equal-to-primary
+  // disables the wrapper.
+  TTS_FALLBACK_PROVIDER: z
+    .enum(['gemini', 'google', 'elevenlabs', 'openai'])
+    .default('gemini'),
+
   SENTRY_DSN: z.string().url().optional(),
   SENTRY_ENVIRONMENT: z.string().optional(),
   SENTRY_RELEASE: z.string().optional(),

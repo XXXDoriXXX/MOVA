@@ -52,10 +52,11 @@ export class LlmFactory {
       case LlmProviderEnum.OPENAI:
         return requestedModel || this.config.get<string>('LLM_MODEL', 'gpt-4.1-nano');
       case LlmProviderEnum.GEMINI: {
-        // Must be a model the LiveKit Inference Gateway actually serves —
-        // `gemini-2.5-flash-lite` is NOT on it and 500s (`upstream`), wedging the
-        // breaker. `gemini-3.1-flash-lite` is on the gateway.
-        const m = requestedModel || this.config.get<string>('LLM_MODEL', 'google/gemini-3.1-flash-lite');
+        // NOTE: google/* models are NOT enabled on this project's LiveKit
+        // Inference Gateway — every call 500s (`upstream`) and wedges the
+        // breaker. Default LLM is groq (below); enable Google in the LiveKit
+        // dashboard before making gemini the provider again.
+        const m = requestedModel || this.config.get<string>('LLM_MODEL', 'google/gemini-2.0-flash');
         return m.startsWith('google/') ? m : `google/${m}`;
       }
       case LlmProviderEnum.ANTHROPIC: {
@@ -63,7 +64,7 @@ export class LlmFactory {
         return m.startsWith('anthropic/') ? m : `anthropic/${m}`;
       }
       case LlmProviderEnum.GROQ: {
-        const m = requestedModel || this.config.get<string>('LLM_MODEL', 'groq/llama-3.1-8b-instant');
+        const m = requestedModel || this.config.get<string>('LLM_MODEL', 'groq/llama-3.3-70b-versatile');
         return m.startsWith('groq/') ? m : `groq/${m}`;
       }
       default:
@@ -74,7 +75,9 @@ export class LlmFactory {
   private requestedProviderFrom(agentConfig?: AgentConfigDto): LlmProviderEnum {
     const providerStr =
       agentConfig?.llm?.provider ||
-      this.config.get<string>('LLM_PROVIDER', 'gemini');
+      // groq is the only LLM reliably served by this project's LiveKit gateway
+      // (google/* and anthropic/* 500 there) — keep it the default.
+      this.config.get<string>('LLM_PROVIDER', 'groq');
     const provider = providerStr.toLowerCase() as LlmProviderEnum;
     if (!Object.values(LlmProviderEnum).includes(provider)) {
       return LlmProviderEnum.GEMINI;

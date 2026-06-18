@@ -362,7 +362,7 @@ export class AgentCallHandler {
       const greetingResult = await this.safeSay(
         greetingText,
         AgentCallHandler.TTS_GREETING_TIMEOUT_MS,
-        { allowInterruptions: true },
+        { allowInterruptions: false },
       );
       if (!greetingResult.ok) {
         throw new Error(
@@ -433,28 +433,16 @@ export class AgentCallHandler {
       return;
     }
     // The user is taking over this turn (manual text or a chosen suggestion).
-    // Cancel any in-flight AI candidate and its pending auto-accept timer, or it
-    // will ALSO be spoken right after — putting a sentence the deaf user never
-    // chose into the interlocutor's ear (double-speak).
+    // Cancel any *pending* AI candidate + its auto-accept timer, or it would
+    // ALSO be queued — putting a sentence the deaf user never chose into the
+    // interlocutor's ear (double-speak). We deliberately do NOT interrupt the
+    // speech that is already playing: every message is voiced to the end, and
+    // this one queues behind it (non-interruptible say() calls serialise).
     this.clearCandidate();
-    try {
-      this.session.interrupt();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (message.includes('does not allow interruptions')) {
-        this.logger.debug(
-          `[Agent Control] Skipped interrupt — current speech is non-interruptible; queueing new utterance.`,
-        );
-      } else {
-        reportError(this.logger, '[Agent Control] interrupt() threw', err, {
-          conversationId: this.conversationId,
-        });
-      }
-    }
     const result = await this.safeSay(
       text,
       AgentCallHandler.TTS_SAY_TIMEOUT_MS,
-      { allowInterruptions: true, addToChatCtx: true },
+      { allowInterruptions: false, addToChatCtx: true },
     );
     if (result.ok) {
       this.recordRecent('user_typed', text);
@@ -964,7 +952,7 @@ export class AgentCallHandler {
     if (accepted) {
       this.onAiFinal(text);
       void this.safeSay(text, AgentCallHandler.TTS_SAY_TIMEOUT_MS, {
-        allowInterruptions: true,
+        allowInterruptions: false,
         addToChatCtx: true,
       }).then((result) => {
         if (!result.ok) {
@@ -1023,7 +1011,7 @@ export class AgentCallHandler {
     const result = await this.safeSay(
       line,
       AgentCallHandler.TTS_SAY_TIMEOUT_MS,
-      { allowInterruptions: true },
+      { allowInterruptions: false },
     );
     if (result.ok) {
       this.idleProbeCount += 1;
@@ -1062,7 +1050,7 @@ export class AgentCallHandler {
     const result = await this.safeSay(
       line,
       AgentCallHandler.TTS_SAY_TIMEOUT_MS,
-      { allowInterruptions: true },
+      { allowInterruptions: false },
     );
     if (result.ok) {
       this.recordRecent('ai', line);

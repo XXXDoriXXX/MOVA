@@ -124,7 +124,7 @@ export const envSchema = z.object({
   // treats the turn as complete — and only THEN generates one reply. Must be
   // longer than natural mid-sentence pauses, or a monologue gets chopped into
   // several turns and the agent keeps regenerating. Tune per call style.
-  TURN_DEBOUNCE_MS: z.coerce.number().int().positive().default(2500),
+  TURN_DEBOUNCE_MS: z.coerce.number().int().positive().default(1500),
 
   // Resilience: if the primary TTS (e.g. OpenAI) errors or stalls on the first
   // audio frame, the agent's FallbackTts transparently re-synthesises the same

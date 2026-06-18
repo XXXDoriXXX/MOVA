@@ -84,10 +84,19 @@ export const envSchema = z.object({
 
   GOOGLE_TTS_API_KEY: z.string().optional(),
   GOOGLE_TTS_VOICE: z.string().default('uk-UA-Wavenet-A'),
-  // Premium Google voice used for MOVA Plus subscribers (Chirp 3 HD — natural,
-  // ~10x cheaper than ElevenLabs). Confirmed available for uk-UA.
-  GOOGLE_TTS_VOICE_PREMIUM: z.string().default('uk-UA-Chirp3-HD-Aoede'),
   GOOGLE_TTS_LANGUAGE_CODE: z.string().default('uk-UA'),
+
+  // Premium TTS for MOVA Plus subscribers (the `premiumVoices` entitlement).
+  // Provider-agnostic so the upgrade target changes with an env edit, no code
+  // change: 'gemini' → Gemini 2.5 Flash TTS (natural, multilingual, auto-detects
+  // Ukrainian; voice is a prebuilt name like Aoede/Kore/Charon), 'google' → a
+  // Google Cloud voice name (e.g. uk-UA-Chirp3-HD-Aoede), 'elevenlabs' → an
+  // ElevenLabs voiceId. The gateway writes provider+voice into the per-call
+  // agent config; the agent TtsFactory resolves the matching engine.
+  PREMIUM_TTS_PROVIDER: z
+    .enum(['gemini', 'google', 'elevenlabs', 'openai'])
+    .default('gemini'),
+  PREMIUM_TTS_VOICE: z.string().default('Aoede'),
 
   SENTRY_DSN: z.string().url().optional(),
   SENTRY_ENVIRONMENT: z.string().optional(),

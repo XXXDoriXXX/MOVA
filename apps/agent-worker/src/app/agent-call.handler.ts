@@ -126,7 +126,7 @@ export class AgentCallHandler {
 
   private turnText = '';
   private turnDebounceTimer: NodeJS.Timeout | null = null;
-  private static readonly TURN_DEBOUNCE_MS = 1_500;
+  private readonly turnDebounceMs: number;
 
   constructor(
     private readonly roomName: string,
@@ -147,6 +147,7 @@ export class AgentCallHandler {
       userId: userContext.userId ?? null,
       callType: userContext.callType ?? 'sip',
     });
+    this.turnDebounceMs = this.config.get<number>('TURN_DEBOUNCE_MS', 2_500);
   }
 
   get conversationId(): string | null {
@@ -1092,14 +1093,18 @@ export class AgentCallHandler {
 
     const firstFinalOfTurn = this.turnText === '';
     if (firstFinalOfTurn) {
+      // The interlocutor (re)started talking — drop any reply we were about to
+      // voice so we don't answer a half-finished thought. We do NOT show the
+      // "thinking" indicator yet: that's emitted only once the turn is complete
+      // and we actually start generating (in generateAndPresentReply), so it no
+      // longer flickers while the person is still speaking.
       this.clearCandidate();
-      this.emitTyped({ type: 'ai.thinking', data: {} });
     }
     this.turnText = cumulative;
     if (this.turnDebounceTimer) clearTimeout(this.turnDebounceTimer);
     this.turnDebounceTimer = setTimeout(
       () => this.commitTurn(),
-      AgentCallHandler.TURN_DEBOUNCE_MS,
+      this.turnDebounceMs,
     );
   }
 

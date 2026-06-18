@@ -120,6 +120,12 @@ export const envSchema = z.object({
   PREMIUM_TTS_VOICE_FEMALE: z.string().default('coral'),
   PREMIUM_TTS_VOICE_MALE: z.string().default('ash'),
 
+  // Silence (ms) after the interlocutor's last finalised word before the agent
+  // treats the turn as complete — and only THEN generates one reply. Must be
+  // longer than natural mid-sentence pauses, or a monologue gets chopped into
+  // several turns and the agent keeps regenerating. Tune per call style.
+  TURN_DEBOUNCE_MS: z.coerce.number().int().positive().default(2500),
+
   // Resilience: if the primary TTS (e.g. OpenAI) errors or stalls on the first
   // audio frame, the agent's FallbackTts transparently re-synthesises the same
   // line on this provider — so a call never goes silent. 'gemini' uses the

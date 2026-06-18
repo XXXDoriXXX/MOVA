@@ -114,9 +114,22 @@ export class AgentFactory {
 
   getInitialGreeting(context: AgentContext): string {
     const name = context.userName?.trim();
-    return name
-      ? `Доброго дня. Це ${name}. Я використовую асистента, бо не чую.`
-      : 'Доброго дня. Я використовую асистента, бо не чую.';
+    // Strip trailing punctuation so we don't double up when we add our own.
+    const reason = context.callReason?.trim().replace(/[.!?]+$/u, '');
+
+    const parts = ['Доброго дня!'];
+    // Reason FIRST — that's what the other side actually needs to hear up front
+    // (e.g. "забрати доставку"), before any disclosure.
+    if (reason) {
+      parts.push(`Телефоную ось чому: ${reason}.`);
+    }
+    // THEN the deaf + MOVA-assistant disclosure (with the name when we have it).
+    parts.push(
+      name
+        ? `Це ${name}, я спілкуюся через голосового асистента МОВА, бо не чую.`
+        : 'Я спілкуюся через голосового асистента МОВА, бо не чую.',
+    );
+    return parts.join(' ');
   }
 
   buildSystemPrompt(ctx: AgentContext): string {

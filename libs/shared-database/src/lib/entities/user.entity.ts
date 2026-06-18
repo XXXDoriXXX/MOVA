@@ -74,6 +74,14 @@ export class User {
   @Column({ type: 'varchar', length: 100, nullable: true })
   preferredVoice!: string | null;
 
+  /**
+   * Provider-agnostic AI-voice preference ('female' | 'male'). The gateway maps
+   * it to a concrete premium voice for the active provider at call time, so the
+   * choice survives plan/provider changes. Null → backend default (female).
+   */
+  @Column({ type: 'varchar', length: 10, nullable: true })
+  preferredVoiceGender!: string | null;
+
   @Column({ type: 'varchar', length: 50, nullable: true })
   preferredLlmProvider!: string | null;
 

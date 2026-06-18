@@ -17,6 +17,9 @@ interface SearchRow {
   durationSeconds: number;
   templateId: string | null;
   templateName: string | null;
+  callType: string;
+  targetPhone: string | null;
+  callerName: string | null;
   matches: Array<{
     messageId: string;
     role: 'interlocutor' | 'ai' | 'user_typed';
@@ -24,6 +27,12 @@ interface SearchRow {
     createdAt: string;
   }> | null;
   rank: string;
+}
+
+// Escape LIKE wildcards in user input so a literal "%"/"_" doesn't act as a
+// wildcard; the result is wrapped in %…% for a substring (ILIKE) match.
+function toLikePattern(raw: string): string {
+  return `%${raw.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
 }
 
 @Injectable()
@@ -47,6 +56,9 @@ export class PostgresConversationSearchRepository
           c."durationSeconds"     AS "durationSeconds",
           c."templateId"          AS "templateId",
           t."name"                AS "templateName",
+          c."callType"            AS "callType",
+          c."targetPhone"         AS "targetPhone",
+          caller."name"           AS "callerName",
           (
             SELECT json_agg(match ORDER BY (match->>'createdAt'))
             FROM (
@@ -68,22 +80,38 @@ export class PostgresConversationSearchRepository
               LIMIT 4
             ) ranked
           )                       AS "matches",
-          (
-            SELECT MAX(ts_rank_cd(m."searchVector", q.query))
-            FROM "messages" m
-            CROSS JOIN q
-            WHERE m."conversationId" = c."id"
-              AND m."searchVector" @@ q.query
+          GREATEST(
+            COALESCE((
+              SELECT MAX(ts_rank_cd(m."searchVector", q.query))
+              FROM "messages" m
+              CROSS JOIN q
+              WHERE m."conversationId" = c."id"
+                AND m."searchVector" @@ q.query
+            ), 0),
+            -- A title hit (callee name / number / scenario) is a strong intent
+            -- signal, so rank it above message-snippet relevance.
+            CASE
+              WHEN c."targetPhone" ILIKE $8
+                OR caller."name"  ILIKE $8
+                OR t."name"       ILIKE $8
+              THEN 1 ELSE 0
+            END
           )                       AS "rank"
         FROM "conversations" c
         LEFT JOIN "templates" t ON t."id" = c."templateId"
+        LEFT JOIN "users" caller ON caller."id" = c."callerUserId"
         CROSS JOIN q
         WHERE c."userId" = $2
           AND c."deletedAt" IS NULL
-          AND EXISTS (
-            SELECT 1 FROM "messages" m
-            WHERE m."conversationId" = c."id"
-              AND m."searchVector" @@ q.query
+          AND (
+            EXISTS (
+              SELECT 1 FROM "messages" m
+              WHERE m."conversationId" = c."id"
+                AND m."searchVector" @@ q.query
+            )
+            OR c."targetPhone" ILIKE $8
+            OR caller."name"  ILIKE $8
+            OR t."name"       ILIKE $8
           )
           AND ($3::timestamptz IS NULL OR c."startedAt" >= $3::timestamptz)
           AND ($4::timestamptz IS NULL OR c."startedAt" <= $4::timestamptz)
@@ -99,6 +127,7 @@ export class PostgresConversationSearchRepository
         criteria.templateId ?? null,
         probeLimit,
         criteria.offset,
+        toLikePattern(criteria.query),
       ],
     );
 
@@ -113,6 +142,9 @@ export class PostgresConversationSearchRepository
       durationSeconds: row.durationSeconds,
       templateId: row.templateId,
       templateName: row.templateName,
+      callType: row.callType,
+      targetPhone: row.targetPhone,
+      callerName: row.callerName,
       rank: Number(row.rank ?? 0),
       matches: (row.matches ?? []).map((m) => ({
         messageId: m.messageId,

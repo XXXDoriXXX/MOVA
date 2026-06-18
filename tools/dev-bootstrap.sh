@@ -31,9 +31,20 @@ if [ -f "$HASH_MARKER" ]; then
   stored_hash=$(cat "$HASH_MARKER")
 fi
 
+# Sentinel check: the anonymous volume on /app/node_modules persists across
+# `docker compose up` and can come up EMPTY (first run) or, worse, PARTIAL —
+# e.g. seeded from an older image that predates a dep, leaving a tree that
+# has some packages but not the tools we're about to invoke. A single-package
+# proxy (`typeorm`) gives a false "installed" positive in that case and we
+# skip the install, then `npx nx …` can't find nx and silently downloads a
+# mismatched version off the registry (the "Could not find Nx modules at
+# /app" failure). So probe EVERY tool the dev entrypoints actually run:
+#   · nx      → all four services call `npx nx serve|build`
+#   · typeorm → migrations runs the typeorm CLI
+# Missing any one ⇒ the tree is incomplete ⇒ reinstall.
 needs_install=0
-if [ ! -d /app/node_modules/typeorm ]; then
-  echo "ℹ️  node_modules missing in volume — first-time install."
+if [ ! -d /app/node_modules/nx ] || [ ! -d /app/node_modules/typeorm ]; then
+  echo "ℹ️  node_modules missing or incomplete in volume — (re)installing."
   needs_install=1
 elif [ -n "$current_hash" ] && [ "$current_hash" != "$stored_hash" ]; then
   echo "ℹ️  package-lock.json changed — re-installing dependencies."
@@ -45,7 +56,16 @@ if [ "$needs_install" = "1" ]; then
   # `legacy-peer-deps=true` is set in .npmrc at the repo root, so the
   # flag is implicit — kept here as an explicit belt-and-braces in
   # case anyone strips the .npmrc during a Docker layer rebuild.
-  npm ci --legacy-peer-deps
+  #
+  # `--include=dev` is NON-NEGOTIABLE here: the dev entrypoints run
+  # `npx nx serve|build` and the migrations CLI, all of which live in
+  # devDependencies (nx, @nx/*, webpack, …). If the container inherits
+  # NODE_ENV=production from a prod-shaped .env, a plain `npm ci` SILENTLY
+  # omits devDeps — typeorm (a prod dep) lands but nx doesn't, and the
+  # next `npx nx` downloads a mismatched version off the registry and
+  # dies with "Could not find Nx modules at /app". Forcing dev deps makes
+  # the install correct regardless of NODE_ENV.
+  npm ci --legacy-peer-deps --include=dev
   if [ -n "$current_hash" ]; then
     echo "$current_hash" > "$HASH_MARKER"
   fi

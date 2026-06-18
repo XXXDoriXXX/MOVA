@@ -67,6 +67,7 @@ export interface PublicUser {
   role: User['role'];
   language: User['language'];
   preferredVoice: string | null;
+  preferredVoiceGender: string | null;
   preferredLlmProvider: string | null;
   preferredLlmModel: string | null;
   preferredTtsProvider: string | null;
@@ -336,6 +337,7 @@ export class AuthService {
       role: user.role,
       language: user.language,
       preferredVoice: user.preferredVoice,
+      preferredVoiceGender: user.preferredVoiceGender,
       preferredLlmProvider: user.preferredLlmProvider,
       preferredLlmModel: user.preferredLlmModel,
       preferredTtsProvider: user.preferredTtsProvider,

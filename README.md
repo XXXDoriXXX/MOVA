@@ -237,9 +237,11 @@ make migrate           # run them
 ```
 
 ### Port already in use
-`3000`, `3002`, `5432`, `6379`, `8001` must be free on the host. Stop
-anything that's bound to them, or change the host-side port in
-`docker-compose.yml` (`"3000:3000"` → `"3001:3000"` to expose on 3001).
+`3000`, `3002`, `5433`, `6379`, `8001` must be free on the host (plus
+`5174`/`9999` in dev). Stop anything that's bound to them, or change the
+host-side port in `docker-compose.yml` (`"3000:3000"` → `"3001:3000"` to
+expose on 3001). `npm run docker:doctor` flags every conflict before you
+start.
 
 ### Can't connect to LiveKit / dial fails
 Without valid `LIVEKIT_*` and a real `SIP_TRUNK_ID`, `POST /v1/calls/start`

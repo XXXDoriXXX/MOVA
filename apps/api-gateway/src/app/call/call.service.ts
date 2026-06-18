@@ -151,14 +151,17 @@ export class CallService {
       llm?: { provider?: string; model?: string };
     } & Record<string, unknown>;
     // MOVA Plus entitlement: a premium natural voice by default (provider +
-    // voice are env-driven — Gemini 2.5 Flash TTS out of the box). An explicit
-    // per-call override still wins; otherwise the subscriber upgrades silently.
+    // voice are env-driven — Gemini 2.5 Flash TTS out of the box). The
+    // subscriber's gender preference picks the concrete voice (null → female).
+    // An explicit per-call override still wins; otherwise it upgrades silently.
     const premiumVoices = eligibility.summary.plan.premiumVoices;
     const premiumProvider = premiumVoices
       ? this.config.get('PREMIUM_TTS_PROVIDER', { infer: true })
       : undefined;
     const premiumVoice = premiumVoices
-      ? this.config.get('PREMIUM_TTS_VOICE', { infer: true })
+      ? user?.preferredVoiceGender === 'male'
+        ? this.config.get('PREMIUM_TTS_VOICE_MALE', { infer: true })
+        : this.config.get('PREMIUM_TTS_VOICE_FEMALE', { infer: true })
       : undefined;
     const mergedTts = {
       provider:

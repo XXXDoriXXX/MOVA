@@ -99,7 +99,12 @@ export const envSchema = z.object({
   PREMIUM_TTS_PROVIDER: z
     .enum(['gemini', 'google', 'elevenlabs', 'openai'])
     .default('gemini'),
-  PREMIUM_TTS_VOICE: z.string().default('Aoede'),
+  // Gendered premium voices for the active provider. The subscriber's
+  // `preferredVoiceGender` selects between them; null/unset → female. Defaults
+  // are Gemini prebuilt voices (Aoede = warm female, Charon = calm male). Change
+  // these together with PREMIUM_TTS_PROVIDER when switching engine.
+  PREMIUM_TTS_VOICE_FEMALE: z.string().default('Aoede'),
+  PREMIUM_TTS_VOICE_MALE: z.string().default('Charon'),
 
   SENTRY_DSN: z.string().url().optional(),
   SENTRY_ENVIRONMENT: z.string().optional(),

@@ -80,7 +80,10 @@ export const envSchema = z.object({
   SETTINGS_ENCRYPTION_KEY: z.string().min(16).optional(),
 
   GEMINI_TTS_VOICE: z.string().default('Kore'),
-  GEMINI_TTS_MODEL: z.string().default('gemini-2.5-flash-tts'),
+  // Gemini Developer API (generativelanguage v1beta, generateContent) TTS model.
+  // Must be the `-preview-tts` id — `gemini-2.5-flash-tts` is the Vertex/Cloud
+  // name and 404s here (see @livekit/agents-plugin-google beta TTS).
+  GEMINI_TTS_MODEL: z.string().default('gemini-2.5-flash-preview-tts'),
 
   GOOGLE_TTS_API_KEY: z.string().optional(),
   GOOGLE_TTS_VOICE: z.string().default('uk-UA-Wavenet-A'),

@@ -6,10 +6,12 @@
 #   - Source code is bind-mounted so edits restart the process automatically.
 #   - dist + .nx folders are kept INSIDE the container (anonymous volumes)
 #     to prevent Windows ↔ Linux path-separator cross-OS cache poisoning.
-#   - Runtime safety-net: each service checks `node_modules/typeorm` (proxy
-#     for "deps installed") and falls back to `npm ci --legacy-peer-deps`
-#     if the anonymous volume came up empty (known Docker-Desktop-on-Windows
-#     behaviour with anon volumes overlaying image-built paths).
+#   - Runtime safety-net: each service checks that `node_modules/nx` AND
+#     `node_modules/typeorm` (the tools the dev entrypoints invoke) are
+#     present and falls back to `npm ci --legacy-peer-deps` if the anonymous
+#     volume came up empty OR partial (known Docker-Desktop-on-Windows
+#     behaviour with anon volumes overlaying image-built paths; a partial
+#     tree is what causes "Could not find Nx modules at /app").
 #   - Each container wipes its own `.nx/workspace-data` BEFORE `nx serve`.
 #     Nx 22 stores a per-task "in-progress" lock there; if the previous
 #     container died un-gracefully (Ctrl-C, docker restart, host sleep)
@@ -51,6 +53,15 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
+    environment:
+      # The base service inherits NODE_ENV from .env via env_file, which is
+      # `production` in a prod-shaped .env. In dev this container runs nx +
+      # the typeorm CLI out of the full devDependency tree, so force
+      # `development` here — exactly like the three app services below.
+      # Without it, the in-container `npm ci` omits devDeps and nx is
+      # missing ("Could not find Nx modules at /app"). dev-bootstrap.sh
+      # also passes --include=dev as a second line of defence.
+      NODE_ENV: development
 
   # ──────────────────────────────────────────────────────────────────────────
   # api-gateway — nx serve with hot reload

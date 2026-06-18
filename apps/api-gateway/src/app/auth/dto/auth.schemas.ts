@@ -83,6 +83,7 @@ export const UpdateProfileSchema = z
     name: NameSchema.optional(),
     language: z.nativeEnum(UserLanguage).optional(),
     preferredVoice: z.string().trim().min(1).max(100).optional(),
+    preferredVoiceGender: z.enum(['female', 'male']).optional(),
     preferredLlmProvider: z.string().trim().min(1).max(50).optional(),
     preferredLlmModel: z.string().trim().min(1).max(100).optional(),
     preferredTtsProvider: z.string().trim().min(1).max(50).optional(),

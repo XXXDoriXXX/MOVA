@@ -16,6 +16,7 @@ interface UpdateProfileInput {
   name?: string;
   language?: UserLanguage;
   preferredVoice?: string;
+  preferredVoiceGender?: 'female' | 'male';
   preferredLlmProvider?: string;
   preferredLlmModel?: string;
   preferredTtsProvider?: string;

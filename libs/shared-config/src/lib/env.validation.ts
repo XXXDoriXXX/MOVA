@@ -84,6 +84,9 @@ export const envSchema = z.object({
 
   GOOGLE_TTS_API_KEY: z.string().optional(),
   GOOGLE_TTS_VOICE: z.string().default('uk-UA-Wavenet-A'),
+  // Premium Google voice used for MOVA Plus subscribers (Chirp 3 HD — natural,
+  // ~10x cheaper than ElevenLabs). Confirmed available for uk-UA.
+  GOOGLE_TTS_VOICE_PREMIUM: z.string().default('uk-UA-Chirp3-HD-Aoede'),
   GOOGLE_TTS_LANGUAGE_CODE: z.string().default('uk-UA'),
 
   SENTRY_DSN: z.string().url().optional(),

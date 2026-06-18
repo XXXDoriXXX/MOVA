@@ -88,10 +88,21 @@ export const envSchema = z.object({
   // OpenAI TTS model. `gpt-4o-mini-tts` streams (low latency) and speaks
   // Ukrainian noticeably better than the older `tts-1` default.
   OPENAI_TTS_MODEL: z.string().default('gpt-4o-mini-tts'),
-  // Optional steering prompt for gpt-4o-mini-tts. Empty by default → the model
-  // uses its plain, neutral conversational delivery (an over-eager prompt makes
-  // it "act"/over-emote, which sounds off). Set only if you want a specific tone.
-  OPENAI_TTS_INSTRUCTIONS: z.string().default(''),
+  // Steering prompt for gpt-4o-mini-tts. The OpenAI voices are anglocentric and
+  // otherwise read Ukrainian text with English phonetics (Cyrillic-with-an-
+  // English-accent). This prompt names the language + accent explicitly so the
+  // model applies Ukrainian pronunciation. Deliberately language/pace-focused
+  // and NOT emotional — an over-eager tone prompt makes it "act"/over-emote and
+  // spell words out, which sounds worse than plain delivery.
+  OPENAI_TTS_INSTRUCTIONS: z
+    .string()
+    .default(
+      'The text is written in Ukrainian — read it as a native Ukrainian ' +
+        'speaker, with authentic Ukrainian pronunciation and accent. Keep a ' +
+        'calm, even, natural conversational pace and normal intonation. Do not ' +
+        'over-emphasize, do not exaggerate emotion, and never spell words out ' +
+        'letter by letter.',
+    ),
 
   GOOGLE_TTS_API_KEY: z.string().optional(),
   GOOGLE_TTS_VOICE: z.string().default('uk-UA-Wavenet-A'),
@@ -219,9 +230,6 @@ export const envSchema = z.object({
         message:
           'JWT_SECRET_PREVIOUS must differ from JWT_SECRET — setting them equal disables rotation.',
       });
-    }
-
-    if (!env.SENTRY_DSN) {
     }
   });
 

@@ -39,6 +39,14 @@ export const ServerEvent = {
     }),
   }),
 
+  // The interlocutor's turn is complete — client seals the bubble.
+  transcriptTurnEnd: envelope.extend({
+    type: z.literal('transcript.turn_end'),
+    data: z.object({
+      messageId: z.string().min(1).optional(),
+    }),
+  }),
+
   aiThinking: envelope.extend({
     type: z.literal('ai.thinking'),
     data: z.object({}).strict(),
@@ -166,6 +174,7 @@ export const ServerEventSchema = z.discriminatedUnion('type', [
   ServerEvent.callAnswered,
   ServerEvent.transcriptPartial,
   ServerEvent.transcriptFinal,
+  ServerEvent.transcriptTurnEnd,
   ServerEvent.aiThinking,
   ServerEvent.aiTextPartial,
   ServerEvent.aiTextFinal,

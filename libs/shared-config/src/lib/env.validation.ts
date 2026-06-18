@@ -88,14 +88,10 @@ export const envSchema = z.object({
   // OpenAI TTS model. `gpt-4o-mini-tts` streams (low latency) and speaks
   // Ukrainian noticeably better than the older `tts-1` default.
   OPENAI_TTS_MODEL: z.string().default('gpt-4o-mini-tts'),
-  // Steering prompt for gpt-4o-mini-tts — shapes pace/tone so the agent sounds
-  // like a real person on a phone call (brisk, warm), not a flat reader.
-  OPENAI_TTS_INSTRUCTIONS: z
-    .string()
-    .default(
-      'Говори українською природно й тепло, як жива людина в телефонній розмові. ' +
-        'Темп жвавий і впевнений, без пауз і без «роботного» читання. Звучи дружньо й невимушено.',
-    ),
+  // Optional steering prompt for gpt-4o-mini-tts. Empty by default → the model
+  // uses its plain, neutral conversational delivery (an over-eager prompt makes
+  // it "act"/over-emote, which sounds off). Set only if you want a specific tone.
+  OPENAI_TTS_INSTRUCTIONS: z.string().default(''),
 
   GOOGLE_TTS_API_KEY: z.string().optional(),
   GOOGLE_TTS_VOICE: z.string().default('uk-UA-Wavenet-A'),

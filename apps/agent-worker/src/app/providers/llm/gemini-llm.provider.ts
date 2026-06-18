@@ -11,7 +11,7 @@ import { AiSdkLlmAdapter } from './ai-sdk-llm.adapter';
 @Injectable()
 export class GeminiLlmProvider extends AiSdkLlmAdapter {
   readonly id = LlmProviderEnum.GEMINI;
-  readonly defaultModel = 'gemini-2.5-flash-lite';
+  readonly defaultModel = 'gemini-3.1-flash-lite';
 
   private readonly client: GoogleGenerativeAIProvider;
 

@@ -52,7 +52,10 @@ export class LlmFactory {
       case LlmProviderEnum.OPENAI:
         return requestedModel || this.config.get<string>('LLM_MODEL', 'gpt-4.1-nano');
       case LlmProviderEnum.GEMINI: {
-        const m = requestedModel || this.config.get<string>('LLM_MODEL', 'google/gemini-2.5-flash-lite');
+        // Must be a model the LiveKit Inference Gateway actually serves —
+        // `gemini-2.5-flash-lite` is NOT on it and 500s (`upstream`), wedging the
+        // breaker. `gemini-3.1-flash-lite` is on the gateway.
+        const m = requestedModel || this.config.get<string>('LLM_MODEL', 'google/gemini-3.1-flash-lite');
         return m.startsWith('google/') ? m : `google/${m}`;
       }
       case LlmProviderEnum.ANTHROPIC: {

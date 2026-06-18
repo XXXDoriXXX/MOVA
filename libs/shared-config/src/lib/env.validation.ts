@@ -114,11 +114,10 @@ export const envSchema = z.object({
     .default('openai'),
   // Gendered premium voices for the active provider. The subscriber's
   // `preferredVoiceGender` selects between them; null/unset → female. Defaults
-  // are OpenAI's newer expressive voices (coral = warm female, ash = natural
-  // male) — more lifelike than the older nova/onyx. Change these together with
-  // PREMIUM_TTS_PROVIDER when switching engine.
+  // are OpenAI voices: coral = warm female, onyx = deep natural male. Change
+  // these together with PREMIUM_TTS_PROVIDER when switching engine.
   PREMIUM_TTS_VOICE_FEMALE: z.string().default('coral'),
-  PREMIUM_TTS_VOICE_MALE: z.string().default('ash'),
+  PREMIUM_TTS_VOICE_MALE: z.string().default('onyx'),
 
   // Silence (ms) after the interlocutor's last finalised word before the agent
   // treats the turn as complete — and only THEN generates one reply. Must be

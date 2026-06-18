@@ -23,7 +23,7 @@ export class CallController {
 
   @Post('start')
   @HttpCode(HttpStatus.OK)
-  @Throttle({ call: { limit: 10, ttl: 60 * 60 * 1000 } })
+  @Throttle({ default: { limit: 10, ttl: 60 * 60 * 1000 } })
   @UseInterceptors(IdempotencyInterceptor)
   @ApiOperation({ summary: 'Start a SIP outbound call' })
   @ApiHeader({

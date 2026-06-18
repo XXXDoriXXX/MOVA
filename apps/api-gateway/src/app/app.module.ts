@@ -71,21 +71,17 @@ import { UsersModule } from './users/users.module';
     ThrottlerModule.forRootAsync({
       inject: [ConfigService, REDIS_CLIENT],
       useFactory: (config: ConfigService<AppEnv, true>, redis: Redis) => ({
+        // Only ONE global throttler. @nestjs/throttler applies EVERY named
+        // throttler in this array to EVERY route, so adding 'auth' (5/15min) and
+        // 'call' (10/h) here silently capped *all* reads (e.g. opening a past
+        // conversation) at those tiny limits → 429 storms + infinite loaders.
+        // The strict auth/call caps are instead applied per-route by overriding
+        // 'default' via @Throttle on just those handlers.
         throttlers: [
           {
             name: 'default',
             ttl: config.get('RATE_LIMIT_TTL', { infer: true }) * 1000,
             limit: config.get('RATE_LIMIT_DEFAULT', { infer: true }),
-          },
-          {
-            name: 'auth',
-            ttl: 15 * 60 * 1000,
-            limit: 5,
-          },
-          {
-            name: 'call',
-            ttl: 60 * 60 * 1000,
-            limit: 10,
           },
         ],
         storage: new ThrottlerStorageRedisService(redis),

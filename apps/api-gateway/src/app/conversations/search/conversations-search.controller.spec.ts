@@ -13,6 +13,9 @@ const sampleHit: SearchHit = {
   durationSeconds: 300,
   templateId: '00000000-0000-4000-8000-000000000010',
   templateName: 'Booking',
+  callType: 'peer_inbound',
+  targetPhone: null,
+  callerName: 'Олена',
   rank: 0.42,
   matches: [
     {
@@ -69,6 +72,9 @@ describe('ConversationsSearchController', () => {
     const dto = result.items[0];
     expect(dto.conversationId).toBe(sampleHit.conversationId);
     expect(dto.templateName).toBe('Booking');
+    expect(dto.callType).toBe('peer_inbound');
+    expect(dto.callerName).toBe('Олена');
+    expect(dto.targetPhone).toBeNull();
     expect(dto.startedAt).toBe('2026-05-01T10:00:00.000Z');
     expect(dto.endedAt).toBe('2026-05-01T10:05:00.000Z');
     expect(dto.matches[0].snippet).toBe('Добрий <mark>день</mark>, доктор');

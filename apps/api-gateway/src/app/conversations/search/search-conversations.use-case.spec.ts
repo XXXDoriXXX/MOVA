@@ -16,6 +16,9 @@ const sampleHit: SearchHit = {
   durationSeconds: 300,
   templateId: null,
   templateName: null,
+  callType: 'sip_outbound',
+  targetPhone: '+380501234567',
+  callerName: null,
   rank: 0.5,
   matches: [
     {

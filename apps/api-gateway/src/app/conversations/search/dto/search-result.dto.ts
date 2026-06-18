@@ -28,6 +28,9 @@ export class SearchHitDto {
   @ApiProperty() durationSeconds!: number;
   @ApiProperty({ nullable: true }) templateId!: string | null;
   @ApiProperty({ nullable: true }) templateName!: string | null;
+  @ApiProperty({ description: 'sip_outbound | peer_inbound' }) callType!: string;
+  @ApiProperty({ nullable: true }) targetPhone!: string | null;
+  @ApiProperty({ nullable: true }) callerName!: string | null;
   @ApiProperty({ type: [SearchMatchDto] }) matches!: SearchMatchDto[];
 
   static from(hit: SearchHit): SearchHitDto {
@@ -39,6 +42,9 @@ export class SearchHitDto {
     dto.durationSeconds = hit.durationSeconds;
     dto.templateId = hit.templateId;
     dto.templateName = hit.templateName;
+    dto.callType = hit.callType;
+    dto.targetPhone = hit.targetPhone;
+    dto.callerName = hit.callerName;
     dto.matches = hit.matches.map(SearchMatchDto.from);
     return dto;
   }

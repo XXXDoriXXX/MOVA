@@ -25,6 +25,11 @@ export interface SearchHit {
   readonly durationSeconds: number;
   readonly templateId: string | null;
   readonly templateName: string | null;
+  // Conversation title fields, so the client can render the callee/number a hit
+  // belongs to (not just the scenario name).
+  readonly callType: string;
+  readonly targetPhone: string | null;
+  readonly callerName: string | null;
   readonly matches: ReadonlyArray<SearchMatch>;
   readonly rank: number;
 }

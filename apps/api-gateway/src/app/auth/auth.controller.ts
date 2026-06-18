@@ -44,7 +44,7 @@ export class AuthController {
   @Public()
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
-  @Throttle({ auth: { limit: 5, ttl: 15 * 60 * 1000 } })
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
   @ApiOperation({ summary: 'Register; emails a verification link (no session)' })
   register(@Body() dto: RegisterDto): Promise<unknown> {
     return this.authService.register(dto);
@@ -53,7 +53,7 @@ export class AuthController {
   @Public()
   @Post('email/resend')
   @HttpCode(HttpStatus.ACCEPTED)
-  @Throttle({ auth: { limit: 5, ttl: 15 * 60 * 1000 } })
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
   @ApiOperation({ summary: 'Resend the email verification link' })
   async resendVerification(@Body() dto: ResendVerificationDto): Promise<void> {
     await this.authService.resendVerification(dto.email);
@@ -62,7 +62,7 @@ export class AuthController {
   @Public()
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  @Throttle({ auth: { limit: 5, ttl: 15 * 60 * 1000 } })
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
   @ApiOperation({ summary: 'Authenticate with email + password' })
   login(
     @Body() dto: LoginDto,
@@ -78,7 +78,7 @@ export class AuthController {
   @Public()
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  @Throttle({ auth: { limit: 30, ttl: 15 * 60 * 1000 } })
+  @Throttle({ default: { limit: 30, ttl: 15 * 60 * 1000 } })
   @ApiOperation({ summary: 'Rotate refresh token + issue new access token' })
   refresh(
     @Body() dto: RefreshDto,
@@ -94,7 +94,7 @@ export class AuthController {
   @Public()
   @Post('google')
   @HttpCode(HttpStatus.OK)
-  @Throttle({ auth: { limit: 30, ttl: 15 * 60 * 1000 } })
+  @Throttle({ default: { limit: 30, ttl: 15 * 60 * 1000 } })
   @ApiOperation({ summary: 'Sign in or sign up via a Google ID token' })
   google(
     @Body() dto: GoogleSignInDto,
@@ -139,7 +139,7 @@ export class AuthController {
 
   @Post('email/send-verification')
   @HttpCode(HttpStatus.ACCEPTED)
-  @Throttle({ auth: { limit: 5, ttl: 15 * 60 * 1000 } })
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Email a verification link to the current user' })
   async sendEmailVerification(

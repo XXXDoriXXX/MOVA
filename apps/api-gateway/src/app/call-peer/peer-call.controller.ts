@@ -25,7 +25,7 @@ export class PeerCallController {
 
   @Post('start')
   @HttpCode(HttpStatus.OK)
-  @Throttle({ call: { limit: 20, ttl: 60 * 60 * 1000 } })
+  @Throttle({ default: { limit: 20, ttl: 60 * 60 * 1000 } })
   @UseInterceptors(IdempotencyInterceptor)
   @ApiOperation({ summary: 'Start an incoming app-to-app (peer) call' })
   @ApiResponse({ status: 409, description: 'Callee offline/busy/unavailable' })

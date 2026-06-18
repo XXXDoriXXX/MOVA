@@ -150,14 +150,23 @@ export class CallService {
       tts?: { provider?: string; voice?: string };
       llm?: { provider?: string; model?: string };
     } & Record<string, unknown>;
+    // MOVA Plus entitlement: a premium Google Chirp 3 HD voice by default
+    // (natural, far cheaper than ElevenLabs). An explicit per-call override
+    // still wins; otherwise the subscriber's calls upgrade automatically.
+    const premiumVoices = eligibility.summary.plan.premiumVoices;
+    const premiumVoice = premiumVoices
+      ? this.config.get('GOOGLE_TTS_VOICE_PREMIUM', { infer: true })
+      : undefined;
     const mergedTts = {
       provider:
         dtoCfg.tts?.provider ??
+        (premiumVoices ? 'google' : undefined) ??
         user?.preferredTtsProvider ??
         template?.defaultTtsProvider ??
         undefined,
       voice:
         dtoCfg.tts?.voice ??
+        premiumVoice ??
         user?.preferredVoice ??
         template?.defaultVoice ??
         undefined,

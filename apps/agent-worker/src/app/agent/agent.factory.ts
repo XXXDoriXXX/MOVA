@@ -67,7 +67,7 @@ export class AgentFactory {
     sttResolved.stt.on('error', this.createErrorHandler('STT'));
     ttsResolved.tts.on('error', this.createErrorHandler('TTS'));
 
-    const minEndpointingDelay = context.config?.tts?.minEndpointingDelay ?? 500;
+    const minEndpointingDelay = context.config?.tts?.minEndpointingDelay ?? 300;
     const maxEndpointingDelay = context.config?.tts?.maxEndpointingDelay ?? 1500;
 
     const session = new voice.AgentSession({
@@ -75,7 +75,13 @@ export class AgentFactory {
       tts: ttsResolved.tts,
       vad,
       voiceOptions: {
-        allowInterruptions: true,
+        // The agent voices the deaf user's side; the interlocutor talking must
+        // NOT cut it off, and every queued message is spoken in full, in order.
+        allowInterruptions: false,
+        // Start drafting the reply/suggestion while endpointing settles, so the
+        // first audio comes sooner. Combined with the lower endpointing delay
+        // above, this is the main lever against the "big delay" before speech.
+        preemptiveGeneration: true,
         minEndpointingDelay,
         maxEndpointingDelay,
       },

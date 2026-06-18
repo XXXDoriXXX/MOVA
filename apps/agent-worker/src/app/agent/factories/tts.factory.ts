@@ -108,6 +108,9 @@ export class TtsFactory {
           ...(instructions ? { instructions } : {}),
         });
         instance.setMaxListeners(0);
+        this.logger.log(
+          `🔊 [Factory: TTS] resolved provider=openai model=${model} voice=${voiceStr} speed=${speed}`,
+        );
         return { tts: instance, provider: 'openai', voice: voiceStr };
       }
       case TtsProviderEnum.GEMINI: {

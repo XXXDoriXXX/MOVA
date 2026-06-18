@@ -23,6 +23,16 @@ export const TranscriptPartialEvent = baseEvent.extend({
   }),
 });
 
+// Authoritative "the interlocutor finished their turn" marker — emitted when the
+// agent commits the turn (endpoint reached). Lets the client seal the transcript
+// bubble deterministically instead of guessing from a silence timer.
+export const TranscriptTurnEndEvent = baseEvent.extend({
+  type: z.literal('transcript.turn_end'),
+  data: z.object({
+    messageId: z.string().uuid().optional(),
+  }),
+});
+
 export const AiTextFinalEvent = baseEvent.extend({
   type: z.literal('ai.text.final'),
   data: z.object({
@@ -146,6 +156,7 @@ export const CallConfigChangedEvent = baseEvent.extend({
 export const InternalCallEventSchema = z.discriminatedUnion('type', [
   TranscriptFinalEvent,
   TranscriptPartialEvent,
+  TranscriptTurnEndEvent,
   AiTextFinalEvent,
   AiThinkingEvent,
   AiTextCandidateEvent,
@@ -165,6 +176,7 @@ export type InternalCallEventType = InternalCallEvent['type'];
 
 export type TranscriptFinal = z.infer<typeof TranscriptFinalEvent>;
 export type TranscriptPartial = z.infer<typeof TranscriptPartialEvent>;
+export type TranscriptTurnEnd = z.infer<typeof TranscriptTurnEndEvent>;
 export type AiTextFinal = z.infer<typeof AiTextFinalEvent>;
 export type AiThinking = z.infer<typeof AiThinkingEvent>;
 export type AiTextCandidate = z.infer<typeof AiTextCandidateEvent>;

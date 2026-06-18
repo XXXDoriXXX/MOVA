@@ -74,6 +74,19 @@ describe('mapInternalToServer', () => {
     }
   });
 
+  it('maps transcript.turn_end and carries the messageId through', () => {
+    const result = mapInternalToServer({
+      type: 'transcript.turn_end',
+      conversationId: CONV_ID,
+      occurredAt: '2026-05-13T10:00:00.000Z',
+      data: { messageId: '11111111-1111-4111-8111-111111111111' },
+    });
+    expect(result?.type).toBe('transcript.turn_end');
+    if (result?.type === 'transcript.turn_end') {
+      expect(result.data.messageId).toBe('11111111-1111-4111-8111-111111111111');
+    }
+  });
+
   it('maps ai.text.final and carries provider source', () => {
     const result = mapInternalToServer({
       type: 'ai.text.final',

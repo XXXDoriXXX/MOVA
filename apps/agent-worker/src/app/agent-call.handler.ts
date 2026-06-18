@@ -1129,6 +1129,10 @@ export class AgentCallHandler {
         sttProvider: this.userContext.config?.stt?.provider ?? 'deepgram',
       },
     });
+    // Authoritative end-of-turn: the debounce elapsed, so the interlocutor has
+    // really stopped. Lets the client seal the bubble at the true endpoint
+    // instead of guessing with its own silence timer.
+    this.emitTyped({ type: 'transcript.turn_end', data: { messageId } });
     this.publishLegacyFinal('user', text);
 
     if (this.conversationId && this.userContext.template) {

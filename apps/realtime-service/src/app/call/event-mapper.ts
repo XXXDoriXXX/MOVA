@@ -48,6 +48,14 @@ export function mapInternalToServer(event: InternalCallEvent): ServerEvent | nul
         },
       };
 
+    case 'transcript.turn_end':
+      return {
+        type: 'transcript.turn_end',
+        id,
+        timestamp,
+        data: { messageId: event.data.messageId },
+      };
+
     case 'ai.text.final':
       return {
         type: 'ai.text.final',

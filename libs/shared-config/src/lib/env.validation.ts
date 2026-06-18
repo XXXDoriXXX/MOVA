@@ -88,6 +88,14 @@ export const envSchema = z.object({
   // OpenAI TTS model. `gpt-4o-mini-tts` streams (low latency) and speaks
   // Ukrainian noticeably better than the older `tts-1` default.
   OPENAI_TTS_MODEL: z.string().default('gpt-4o-mini-tts'),
+  // Steering prompt for gpt-4o-mini-tts — shapes pace/tone so the agent sounds
+  // like a real person on a phone call (brisk, warm), not a flat reader.
+  OPENAI_TTS_INSTRUCTIONS: z
+    .string()
+    .default(
+      'Говори українською природно й тепло, як жива людина в телефонній розмові. ' +
+        'Темп жвавий і впевнений, без пауз і без «роботного» читання. Звучи дружньо й невимушено.',
+    ),
 
   GOOGLE_TTS_API_KEY: z.string().optional(),
   GOOGLE_TTS_VOICE: z.string().default('uk-UA-Wavenet-A'),
@@ -106,10 +114,11 @@ export const envSchema = z.object({
     .default('openai'),
   // Gendered premium voices for the active provider. The subscriber's
   // `preferredVoiceGender` selects between them; null/unset → female. Defaults
-  // are OpenAI voices (nova = warm female, onyx = deep male). Change these
-  // together with PREMIUM_TTS_PROVIDER when switching engine.
-  PREMIUM_TTS_VOICE_FEMALE: z.string().default('nova'),
-  PREMIUM_TTS_VOICE_MALE: z.string().default('onyx'),
+  // are OpenAI's newer expressive voices (coral = warm female, ash = natural
+  // male) — more lifelike than the older nova/onyx. Change these together with
+  // PREMIUM_TTS_PROVIDER when switching engine.
+  PREMIUM_TTS_VOICE_FEMALE: z.string().default('coral'),
+  PREMIUM_TTS_VOICE_MALE: z.string().default('ash'),
 
   // Resilience: if the primary TTS (e.g. OpenAI) errors or stalls on the first
   // audio frame, the agent's FallbackTts transparently re-synthesises the same

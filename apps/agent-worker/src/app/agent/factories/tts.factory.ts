@@ -97,8 +97,16 @@ export class TtsFactory {
         // gpt-4o-mini-tts streams (low latency) and speaks Ukrainian far better
         // than the plugin's default tts-1. Overridable via OPENAI_TTS_MODEL.
         const model = this.config.get<string>('OPENAI_TTS_MODEL', 'gpt-4o-mini-tts');
+        // gpt-4o-mini-tts is steerable: `instructions` shape the tone/pace so the
+        // voice sounds like a real person on a call rather than a flat reader.
+        const instructions = this.config.get<string>('OPENAI_TTS_INSTRUCTIONS') || undefined;
 
-        const instance = new openai.TTS({ model, voice: voiceStr as OpenAITTSVoice, speed });
+        const instance = new openai.TTS({
+          model,
+          voice: voiceStr as OpenAITTSVoice,
+          speed,
+          ...(instructions ? { instructions } : {}),
+        });
         instance.setMaxListeners(0);
         return { tts: instance, provider: 'openai', voice: voiceStr };
       }

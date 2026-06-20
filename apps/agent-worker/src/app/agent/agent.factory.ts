@@ -24,6 +24,8 @@ export interface AgentContext {
   userName: string;
   userRole: string;
   callReason: string;
+  // Whether to voice the opening greeting. Defaults to announce when undefined.
+  announceGreeting?: boolean;
   config?: AgentConfigDto;
   maxCallDurationSeconds?: number;
   planCode?: 'free' | 'paid';

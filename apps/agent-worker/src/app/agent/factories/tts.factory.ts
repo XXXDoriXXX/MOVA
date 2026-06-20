@@ -81,7 +81,9 @@ export class TtsFactory {
 
         const voiceId = agentConfig?.tts?.voice || this.config.get<string>('ELEVENLABS_VOICE_ID', 'EXAVITQu4vr4xnSDxMaL');
         const apiKey = this.config.get<string>('ELEVENLABS_API_KEY') || this.config.get<string>('ELEVEN_API_KEY');
-        const model = this.config.get<string>('ELEVENLABS_MODEL', 'eleven_flash_v2_5');
+        // Per-call model wins (realistic=flash vs ultra=multilingual tiers); env
+        // is the fallback. flash = lower latency/cost, multilingual = richer.
+        const model = agentConfig?.tts?.model || this.config.get<string>('ELEVENLABS_MODEL', 'eleven_flash_v2_5');
         // Override the voice's (often over-acted) preset with a calm, neutral
         // delivery. High stability + zero style = "normal conversation", not a
         // performance. Tunable via env without redeploy.

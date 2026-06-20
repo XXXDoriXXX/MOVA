@@ -111,16 +111,22 @@ export class CallService {
       ? await this.templates.findOneForUser(userId, dto.templateId)
       : await this.templates.resolveDefaultForUser(userId, language);
 
-    // Voice tier for this call. The premium ultra-realistic (ElevenLabs) voice is
-    // opt-in per call and subscriber-only; everyone else gets the cheap standard
-    // voice. Decided up front so the conversation snapshots the right billing
-    // weight at insert: a realistic call costs us more to produce, so it consumes
-    // the pool / wallet faster (REALISTIC_VOICE_BILLING_MULTIPLIER seconds each).
-    const useRealistic =
-      dto.realisticVoice === true && eligibility.summary.plan.premiumVoices;
-    const billingSecondsMultiplier = useRealistic
-      ? this.config.get('REALISTIC_VOICE_BILLING_MULTIPLIER', { infer: true })
-      : 1;
+    // Voice-quality tier for this call. eco = cheap standard voice (everyone);
+    // real/ultra = premium ElevenLabs (subscriber-only — a non-subscriber request
+    // silently falls back to eco). Decided up front so the conversation snapshots
+    // the right billing weight at insert: a premium voice costs us more, so it
+    // consumes the pool / wallet faster (eco 1, realistic 1.5, ultra 2).
+    const premiumVoices = eligibility.summary.plan.premiumVoices;
+    const requestedTier: 'eco' | 'real' | 'ultra' =
+      dto.voiceTier ?? (dto.realisticVoice ? 'ultra' : 'eco');
+    const tier =
+      requestedTier !== 'eco' && !premiumVoices ? 'eco' : requestedTier;
+    const billingSecondsMultiplier =
+      tier === 'ultra'
+        ? this.config.get('VOICE_TIER_ULTRA_MULTIPLIER', { infer: true })
+        : tier === 'real'
+          ? this.config.get('VOICE_TIER_REALISTIC_MULTIPLIER', { infer: true })
+          : 1;
 
     const roomName = `call-${uuidv4()}`;
     let conversation: Conversation;
@@ -159,25 +165,31 @@ export class CallService {
       DEFAULT_STYLE_ID;
 
     const dtoCfg = (dto.config ?? {}) as {
-      tts?: { provider?: string; voice?: string };
+      tts?: { provider?: string; voice?: string; model?: string };
       llm?: { provider?: string; model?: string };
     } & Record<string, unknown>;
-    // Voice tier. Standard (cheap native Google Chirp3-HD) is the default for
-    // every call; a subscriber who toggled `realisticVoice` gets the premium
-    // ElevenLabs voice instead (see `useRealistic` above). The subscriber's
-    // gender preference picks the concrete voice on either tier (null → female).
-    // An explicit per-call `config.tts` override still wins over both.
+    // Voice tier (resolved above). eco → cheap native Google Chirp3-HD; real/ultra
+    // → premium ElevenLabs, differing only by model (flash vs multilingual). The
+    // subscriber's gender preference picks the concrete voice on either tier
+    // (null → female). An explicit per-call `config.tts` override still wins.
     const isMaleVoice = user?.preferredVoiceGender === 'male';
-    const tierProvider = useRealistic
+    const premium = tier !== 'eco';
+    const tierProvider = premium
       ? this.config.get('PREMIUM_TTS_PROVIDER', { infer: true })
       : this.config.get('STANDARD_TTS_PROVIDER', { infer: true });
-    const tierVoice = useRealistic
+    const tierVoice = premium
       ? isMaleVoice
         ? this.config.get('PREMIUM_TTS_VOICE_MALE', { infer: true })
         : this.config.get('PREMIUM_TTS_VOICE_FEMALE', { infer: true })
       : isMaleVoice
         ? this.config.get('STANDARD_TTS_VOICE_MALE', { infer: true })
         : this.config.get('STANDARD_TTS_VOICE_FEMALE', { infer: true });
+    const tierModel =
+      tier === 'ultra'
+        ? this.config.get('ELEVENLABS_MODEL_ULTRA', { infer: true })
+        : tier === 'real'
+          ? this.config.get('ELEVENLABS_MODEL_REALISTIC', { infer: true })
+          : undefined;
     const mergedTts = {
       provider:
         dtoCfg.tts?.provider ??
@@ -191,6 +203,7 @@ export class CallService {
         user?.preferredVoice ??
         template?.defaultVoice ??
         undefined,
+      model: dtoCfg.tts?.model ?? tierModel ?? undefined,
     };
     const mergedLlm = {
       provider:

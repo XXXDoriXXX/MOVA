@@ -82,15 +82,25 @@ export class TtsFactory {
         const voiceId = agentConfig?.tts?.voice || this.config.get<string>('ELEVENLABS_VOICE_ID', 'EXAVITQu4vr4xnSDxMaL');
         const apiKey = this.config.get<string>('ELEVENLABS_API_KEY') || this.config.get<string>('ELEVEN_API_KEY');
         const model = this.config.get<string>('ELEVENLABS_MODEL', 'eleven_flash_v2_5');
+        // Override the voice's (often over-acted) preset with a calm, neutral
+        // delivery. High stability + zero style = "normal conversation", not a
+        // performance. Tunable via env without redeploy.
+        const voiceSettings = {
+          stability: this.config.get<number>('ELEVENLABS_STABILITY', 0.7),
+          similarity_boost: this.config.get<number>('ELEVENLABS_SIMILARITY', 0.8),
+          style: this.config.get<number>('ELEVENLABS_STYLE', 0),
+          speed: this.config.get<number>('ELEVENLABS_SPEED', 1.0),
+        };
 
         const instance = new elevenlabs.TTS({
           apiKey: apiKey,
           model,
           voiceId: voiceId,
+          voiceSettings,
         });
 
         this.logger.log(
-          `🔊 [Factory: TTS] resolved provider=elevenlabs model=${model} voice=${voiceId}`,
+          `🔊 [Factory: TTS] resolved provider=elevenlabs model=${model} voice=${voiceId} stability=${voiceSettings.stability} style=${voiceSettings.style} speed=${voiceSettings.speed}`,
         );
         (instance as unknown as { setMaxListeners(n: number): void }).setMaxListeners(0);
         return { tts: instance, provider: 'elevenlabs', voice: voiceId };

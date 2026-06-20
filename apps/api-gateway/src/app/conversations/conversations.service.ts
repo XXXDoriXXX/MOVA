@@ -128,6 +128,26 @@ export class ConversationsService {
       .execute();
   }
 
+  // Aggregate real LLM token spend onto the conversation. Additive single
+  // UPDATE (atomic) so concurrent llm.usage events accumulate correctly; this is
+  // an analytics counter, not money, so at-least-once dupes only nudge the total.
+  async addLlmUsage(
+    conversationId: string,
+    promptTokens: number,
+    completionTokens: number,
+  ): Promise<void> {
+    const p = Math.max(0, Math.floor(promptTokens));
+    const c = Math.max(0, Math.floor(completionTokens));
+    if (p === 0 && c === 0) return;
+    await this.conversations.query(
+      `UPDATE conversations
+         SET "llmInputTokens" = "llmInputTokens" + $1,
+             "llmOutputTokens" = "llmOutputTokens" + $2
+       WHERE id = $3`,
+      [p, c, conversationId],
+    );
+  }
+
   async markAnswered(conversationId: string, answeredAt: Date = new Date()): Promise<void> {
     await this.conversations
       .createQueryBuilder()

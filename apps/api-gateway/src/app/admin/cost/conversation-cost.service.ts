@@ -73,7 +73,7 @@ export class ConversationCostService {
       select: ['role', 'content', 'ttsProvider', 'llmProvider'],
     });
 
-    const usage = this.buildUsage(conversation.durationSeconds, messages);
+    const usage = this.buildUsage(conversation, messages);
     const rateMap = await this.loadRates();
     const breakdown = computeConversationCost(usage, rateMap);
 
@@ -86,7 +86,10 @@ export class ConversationCostService {
   }
 
   private buildUsage(
-    durationSeconds: number,
+    conversation: Pick<
+      Conversation,
+      'durationSeconds' | 'llmInputTokens' | 'llmOutputTokens'
+    >,
     messages: Pick<Message, 'role' | 'content' | 'ttsProvider' | 'llmProvider'>[],
   ): UsageInput {
     const ttsChars = new Map<string, number>();
@@ -113,7 +116,50 @@ export class ConversationCostService {
       provider,
       chars,
     }));
-    const llm = [...llmOutChars.entries()].map(([provider, chars]) => {
+
+    return {
+      telephonySeconds: Math.max(0, conversation.durationSeconds),
+      tts,
+      llm: this.buildLlmUsage(conversation, llmOutChars),
+      stt: {
+        provider: 'deepgram',
+        seconds: sttChars / SPEECH_CHARS_PER_SECOND,
+        estimated: true,
+      },
+    };
+  }
+
+  /**
+   * Prefer REAL measured tokens (agent llm.usage → conversation columns); they
+   * are a single total across providers, attributed to the dominant LLM provider
+   * for rate lookup. Fall back to estimating per provider from message text on
+   * pre-feature conversations (token columns still 0).
+   */
+  private buildLlmUsage(
+    conversation: Pick<Conversation, 'llmInputTokens' | 'llmOutputTokens'>,
+    llmOutChars: Map<string, number>,
+  ): UsageInput['llm'] {
+    const measured =
+      conversation.llmInputTokens > 0 || conversation.llmOutputTokens > 0;
+    if (measured) {
+      let dominant = 'groq';
+      let max = -1;
+      for (const [provider, chars] of llmOutChars) {
+        if (chars > max) {
+          max = chars;
+          dominant = provider;
+        }
+      }
+      return [
+        {
+          provider: dominant,
+          inputTokens: conversation.llmInputTokens,
+          outputTokens: conversation.llmOutputTokens,
+          estimated: false,
+        },
+      ];
+    }
+    return [...llmOutChars.entries()].map(([provider, chars]) => {
       const outputTokens = Math.round(chars / CHARS_PER_OUTPUT_TOKEN);
       return {
         provider,
@@ -122,17 +168,6 @@ export class ConversationCostService {
         estimated: true,
       };
     });
-
-    return {
-      telephonySeconds: Math.max(0, durationSeconds),
-      tts,
-      llm,
-      stt: {
-        provider: 'deepgram',
-        seconds: sttChars / SPEECH_CHARS_PER_SECOND,
-        estimated: true,
-      },
-    };
   }
 
   private async loadRates(): Promise<RateMap> {

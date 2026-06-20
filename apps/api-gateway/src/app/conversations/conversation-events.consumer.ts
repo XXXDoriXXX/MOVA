@@ -125,6 +125,12 @@ export class ConversationEventsConsumer implements OnModuleInit, OnModuleDestroy
         );
       case 'call.ended':
         return this.onCallEnded(event);
+      case 'llm.usage':
+        return this.conversations.addLlmUsage(
+          event.conversationId,
+          event.data.promptTokens,
+          event.data.completionTokens,
+        );
       default:
         return undefined;
     }

@@ -10,11 +10,19 @@ export interface LlmMessage {
   content: string;
 }
 
+export interface LlmUsage {
+  promptTokens: number;
+  completionTokens: number;
+}
+
 export interface LlmGenerateOptions {
   messages: LlmMessage[];
   maxTokens?: number;
   temperature?: number;
   signal?: AbortSignal;
+  // Fired once with the token counts when the call completes (after the full
+  // stream for stream()). Best-effort — skipped if the provider omits usage.
+  onUsage?: (usage: LlmUsage) => void;
 }
 
 export interface ILlmProvider extends IProvider {

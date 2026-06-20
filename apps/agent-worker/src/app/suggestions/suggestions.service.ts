@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { z } from 'zod';
 
-import { LlmProviderEnum } from '@mova-back/shared-agent';
+import { LlmProviderEnum, type LlmUsage } from '@mova-back/shared-agent';
 
 import { CallEventPublisher } from '../events/call-event.publisher';
 import { ProviderRegistry } from '../providers/provider-registry.service';
@@ -43,6 +43,28 @@ export class SuggestionsService {
     private readonly styleResolver: StyleResolverService,
   ) {}
 
+  // Fire-and-forget: one llm.usage event per completed LLM call so the
+  // api-gateway aggregates real token spend onto the conversation (admin cost
+  // view). Internal-only event — the WS mapper drops it. Never blocks the reply.
+  private emitLlmUsage(
+    conversationId: string,
+    provider: string,
+    model: string,
+    usage: LlmUsage,
+  ): void {
+    void this.publisher.publish({
+      type: 'llm.usage',
+      conversationId,
+      occurredAt: new Date().toISOString(),
+      data: {
+        provider,
+        model,
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+      },
+    });
+  }
+
   async generateAndEmit(request: SuggestionsRequest): Promise<void> {
     try {
       const items = await this.generate(request);
@@ -77,6 +99,8 @@ export class SuggestionsService {
             maxTokens: REPLY_MAX_TOKENS,
             temperature: 0.6,
             signal: controller.signal,
+            onUsage: (u) =>
+              this.emitLlmUsage(request.conversationId, provider.id, model, u),
           }),
         { conversationId: request.conversationId },
       );
@@ -116,6 +140,8 @@ export class SuggestionsService {
             maxTokens: REPLY_MAX_TOKENS,
             temperature: 0.6,
             signal: controller.signal,
+            onUsage: (u) =>
+              this.emitLlmUsage(request.conversationId, provider.id, model, u),
           })) {
             acc += chunk;
             const cleaned = cleanReply(acc);
@@ -207,6 +233,13 @@ export class SuggestionsService {
             maxTokens: MAX_OUTPUT_TOKENS,
             temperature: 0.5,
             signal: controller.signal,
+            onUsage: (u) =>
+              this.emitLlmUsage(
+                request.conversationId,
+                provider.id,
+                provider.defaultModel,
+                u,
+              ),
           }),
         { conversationId: request.conversationId },
       );

@@ -32,12 +32,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           jwt.verify(token, currentSecret, { ignoreExpiration: false });
           return done(null, currentSecret);
         } catch {
+          // Not signed by the current secret — fall through to the previous one
+          // (secret rotation: tokens issued before a rotation still validate).
         }
         if (previousSecret) {
           try {
             jwt.verify(token, previousSecret, { ignoreExpiration: false });
             return done(null, previousSecret);
           } catch {
+            // Invalid under both secrets — fall through to the default resolver.
           }
         }
         return done(null, currentSecret);

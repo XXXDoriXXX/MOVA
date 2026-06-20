@@ -26,6 +26,7 @@ interface CreateConversationInput {
   initialVoice?: string | null;
   initialPlanSource?: string | null;
   initialPricePerSecondCents?: number | null;
+  billingSecondsMultiplier?: number;
 }
 
 interface EndConversationInput {
@@ -91,6 +92,7 @@ export class ConversationsService {
       initialVoice: input.initialVoice ?? null,
       initialPlanSource: input.initialPlanSource ?? null,
       initialPricePerSecondCents: input.initialPricePerSecondCents ?? null,
+      billingSecondsMultiplier: input.billingSecondsMultiplier ?? 1,
       startedAt: new Date(),
     });
     try {

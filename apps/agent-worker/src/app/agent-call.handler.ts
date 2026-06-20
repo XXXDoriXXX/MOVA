@@ -359,22 +359,27 @@ export class AgentCallHandler {
       this.session.start({ room: this.room, agent });
 
       phase = 'greeting';
-      const greetingText = this.agentFactory.getInitialGreeting(this.userContext);
-      const greetingResult = await this.safeSay(
-        greetingText,
-        AgentCallHandler.TTS_GREETING_TIMEOUT_MS,
-        { allowInterruptions: false },
-      );
-      if (!greetingResult.ok) {
-        throw new Error(
-          `Greeting TTS ${greetingResult.reason}: ` +
-            (greetingResult.error?.message ?? 'no error detail'),
+      // Skip the spoken greeting when the user opted out (e.g. calling family
+      // who already know they use an assistant). The session still goes active
+      // and just waits for the conversation to begin.
+      if (this.userContext.announceGreeting !== false) {
+        const greetingText = this.agentFactory.getInitialGreeting(this.userContext);
+        const greetingResult = await this.safeSay(
+          greetingText,
+          AgentCallHandler.TTS_GREETING_TIMEOUT_MS,
+          { allowInterruptions: false },
         );
+        if (!greetingResult.ok) {
+          throw new Error(
+            `Greeting TTS ${greetingResult.reason}: ` +
+              (greetingResult.error?.message ?? 'no error detail'),
+          );
+        }
+        this.emitTyped({
+          type: 'ai.text.final',
+          data: { text: greetingText, llmProvider: 'greeting', llmModel: 'static' },
+        });
       }
-      this.emitTyped({
-        type: 'ai.text.final',
-        data: { text: greetingText, llmProvider: 'greeting', llmModel: 'static' },
-      });
       this.state = 'active';
       this.armIdleProbe();
       this.armSttStall();

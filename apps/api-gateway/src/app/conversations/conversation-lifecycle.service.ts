@@ -13,6 +13,7 @@ import {
 } from '@mova-back/shared-database';
 
 import { BillingService, resolveUsageSource } from '../billing/billing.service';
+import { computeBilledSeconds } from './billing-math';
 import { ConversationsService } from './conversations.service';
 
 interface EndCallInput {
@@ -78,7 +79,10 @@ export class ConversationLifecycleService {
       const replaySummary = await this.billing.getSummary(settled.userId);
       return {
         conversation: settled,
-        secondsBilled: settled.durationSeconds,
+        secondsBilled: computeBilledSeconds(
+          settled.durationSeconds,
+          settled.billingSecondsMultiplier,
+        ),
         costCents: 0,
         source: resolveUsageSource(replaySummary),
         idempotentReplay: true,
@@ -94,7 +98,12 @@ export class ConversationLifecycleService {
 
     const billedUserId = conversation.callerUserId ?? conversation.userId;
 
-    const secondsBilled = Math.max(0, conversation.durationSeconds);
+    // Realistic-voice calls weight billed seconds (snapshot on the conversation)
+    // so the premium voice eats the pool / wallet faster than a standard call.
+    const secondsBilled = computeBilledSeconds(
+      conversation.durationSeconds,
+      conversation.billingSecondsMultiplier,
+    );
     let source: UsageSource;
     let pricePerSecondCents: number;
     let planLabel: string;

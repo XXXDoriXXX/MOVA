@@ -117,8 +117,21 @@ export const envSchema = z.object({
     ),
 
   GOOGLE_TTS_API_KEY: z.string().optional(),
-  GOOGLE_TTS_VOICE: z.string().default('uk-UA-Wavenet-A'),
+  GOOGLE_TTS_VOICE: z.string().default('uk-UA-Chirp3-HD-Aoede'),
   GOOGLE_TTS_LANGUAGE_CODE: z.string().default('uk-UA'),
+
+  // Standard (cheap) TTS — the default for EVERY call. Native Ukrainian Google
+  // Chirp3-HD: low cost, no per-char surcharge, good quality. Gender-aware so the
+  // user's voice preference still applies on the free/standard tier. The gateway
+  // passes these into the per-call agent config unless "realistic" is toggled on.
+  STANDARD_TTS_PROVIDER: z.string().default('google'),
+  STANDARD_TTS_VOICE_FEMALE: z.string().default('uk-UA-Chirp3-HD-Aoede'),
+  STANDARD_TTS_VOICE_MALE: z.string().default('uk-UA-Chirp3-HD-Charon'),
+
+  // A "realistic" (premium ElevenLabs) call costs us more to produce, so it
+  // weights billed seconds: 1 realistic second consumes N pool/wallet seconds.
+  // Snapshotted onto the conversation at start; the lifecycle multiplies by it.
+  REALISTIC_VOICE_BILLING_MULTIPLIER: z.coerce.number().int().min(1).default(2),
 
   // Premium TTS for MOVA Plus subscribers (the `premiumVoices` entitlement).
   // Provider-agnostic so the upgrade target changes with an env edit, no code

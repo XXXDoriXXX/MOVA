@@ -20,6 +20,7 @@ import { User } from './entities/user.entity';
 import { PushToken } from './entities/push-token.entity';
 import { ClientErrorReport } from './entities/client-error-report.entity';
 import { Contact } from './entities/contact.entity';
+import { CostRate } from './entities/cost-rate.entity';
 
 const ENTITIES = [
   User,
@@ -40,6 +41,7 @@ const ENTITIES = [
   PushToken,
   ClientErrorReport,
   Contact,
+  CostRate,
 ];
 
 /**

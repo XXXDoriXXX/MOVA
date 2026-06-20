@@ -5,6 +5,7 @@ import {
   AppSetting,
   AuditLog,
   Conversation,
+  CostRate,
   Message,
   ProviderIncident,
   Subscription,
@@ -18,6 +19,9 @@ import { AdminAccessGuard } from './admin-access.guard';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { AuditLogService } from './audit-log.service';
+import { AdminCostController } from './cost/admin-cost.controller';
+import { ConversationCostService } from './cost/conversation-cost.service';
+import { CostRateSeed } from './cost/cost-rate-seed.service';
 import { ProviderProbeService } from './settings/provider-probe.service';
 import { SettingsService } from './settings/settings.service';
 
@@ -31,18 +35,21 @@ import { SettingsService } from './settings/settings.service';
       ProviderIncident,
       AuditLog,
       AppSetting,
+      CostRate,
     ]),
     AuthModule,
     ConversationsModule,
     TelemetryModule,
   ],
-  controllers: [AdminController],
+  controllers: [AdminController, AdminCostController],
   providers: [
     AdminService,
     AuditLogService,
     AdminAccessGuard,
     SettingsService,
     ProviderProbeService,
+    ConversationCostService,
+    CostRateSeed,
   ],
   exports: [AuditLogService, SettingsService],
 })

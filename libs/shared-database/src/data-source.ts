@@ -8,6 +8,7 @@ import { AuditLog } from './lib/entities/audit-log.entity';
 import { PushToken } from './lib/entities/push-token.entity';
 import { ClientErrorReport } from './lib/entities/client-error-report.entity';
 import { Contact } from './lib/entities/contact.entity';
+import { CostRate } from './lib/entities/cost-rate.entity';
 import { ConversationStyle } from './lib/entities/conversation-style.entity';
 import { UserStyleProfile } from './lib/entities/user-style-profile.entity';
 import { Conversation } from './lib/entities/conversation.entity';
@@ -52,6 +53,7 @@ export const AppDataSource = new DataSource({
     PushToken,
     ClientErrorReport,
     Contact,
+    CostRate,
   ],
   migrations: [path.join(__dirname, 'lib/migrations/*.{ts,js}')],
   migrationsTableName: 'migrations',

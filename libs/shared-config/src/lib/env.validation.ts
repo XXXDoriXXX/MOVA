@@ -72,6 +72,14 @@ export const envSchema = z.object({
   // multilingual_v2) and the lowest-latency model — best for live calls.
   // Switch to 'eleven_multilingual_v2' for max quality at double the cost.
   ELEVENLABS_MODEL: z.string().default('eleven_flash_v2_5'),
+  // Voice delivery. Without these, the library voice's own preset is used —
+  // often theatrical/over-acted. Higher STABILITY = calmer, flatter, more
+  // neutral ("normal conversation"); lower = dramatic. STYLE exaggerates
+  // expressiveness (0 = none). Defaults tuned for a plain phone-call tone.
+  ELEVENLABS_STABILITY: z.coerce.number().min(0).max(1).default(0.7),
+  ELEVENLABS_SIMILARITY: z.coerce.number().min(0).max(1).default(0.8),
+  ELEVENLABS_STYLE: z.coerce.number().min(0).max(1).default(0),
+  ELEVENLABS_SPEED: z.coerce.number().min(0.5).max(1.5).default(1.0),
   ANTHROPIC_API_KEY: z.string().optional(),
   GROQ_API_KEY: z.string().optional(),
   GOOGLE_GENERATIVE_AI_API_KEY: z.string().optional(),

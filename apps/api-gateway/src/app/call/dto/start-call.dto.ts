@@ -28,6 +28,10 @@ export const StartCallSchema = z.object({
   userName: z.string().trim().min(1).max(120).optional(),
   userRole: z.string().trim().min(1).max(120).optional(),
   callReason: z.string().trim().min(1).max(500).optional(),
+  // Whether the agent voices its opening greeting (the deaf+assistant
+  // disclosure). Off for people who already know the caller — e.g. family.
+  // Absent = announce (preserves existing behaviour).
+  announceGreeting: z.boolean().optional(),
   config: z.record(z.string(), z.unknown()).optional(),
 });
 

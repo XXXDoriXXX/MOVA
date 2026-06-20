@@ -217,6 +217,7 @@ export class CallService {
       userName: dto.userName ?? user?.name ?? null,
       userRole: dto.userRole ?? null,
       callReason: dto.callReason ?? null,
+      announceGreeting: dto.announceGreeting ?? true,
       config: mergedConfig,
       maxCallDurationSeconds: eligibility.maxCallDurationSeconds,
       planCode: eligibility.summary.plan.code,

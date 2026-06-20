@@ -131,9 +131,11 @@ export class Conversation {
   @Column({ type: 'int', nullable: true })
   initialPricePerSecondCents!: number | null;
 
-  // Weights billed seconds: a "realistic" (ElevenLabs) call consumes the pool /
-  // wallet faster because that voice costs us more to produce. 1 = standard.
-  @Column({ type: 'int', default: 1 })
+  // Weights billed seconds by voice tier: a premium voice consumes the pool /
+  // wallet faster because it costs us more (eco 1, realistic 1.5, ultra 2).
+  // Fractional → double precision; values are exact in float and the lifecycle
+  // rounds the product to whole billed seconds.
+  @Column({ type: 'double precision', default: 1 })
   billingSecondsMultiplier!: number;
 
   // Real LLM token spend, aggregated from the agent's llm.usage events (all

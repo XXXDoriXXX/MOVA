@@ -81,14 +81,18 @@ export class TtsFactory {
 
         const voiceId = agentConfig?.tts?.voice || this.config.get<string>('ELEVENLABS_VOICE_ID', 'EXAVITQu4vr4xnSDxMaL');
         const apiKey = this.config.get<string>('ELEVENLABS_API_KEY') || this.config.get<string>('ELEVEN_API_KEY');
+        const model = this.config.get<string>('ELEVENLABS_MODEL', 'eleven_flash_v2_5');
 
         const instance = new elevenlabs.TTS({
           apiKey: apiKey,
-          model: 'eleven_multilingual_v2',
+          model,
           voiceId: voiceId,
         });
 
-        (instance as any).setMaxListeners(0);
+        this.logger.log(
+          `🔊 [Factory: TTS] resolved provider=elevenlabs model=${model} voice=${voiceId}`,
+        );
+        (instance as unknown as { setMaxListeners(n: number): void }).setMaxListeners(0);
         return { tts: instance, provider: 'elevenlabs', voice: voiceId };
       }
       case TtsProviderEnum.OPENAI: {

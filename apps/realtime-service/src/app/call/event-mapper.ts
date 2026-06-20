@@ -172,6 +172,10 @@ export function mapInternalToServer(event: InternalCallEvent): ServerEvent | nul
     case 'user.spoke':
       return null;
 
+    // Internal-only: token usage for the admin cost view, never shown to users.
+    case 'llm.usage':
+      return null;
+
     case 'call.config.changed':
       return {
         type: 'call.config.changed',

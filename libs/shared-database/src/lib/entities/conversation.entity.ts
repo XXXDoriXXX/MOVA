@@ -136,6 +136,15 @@ export class Conversation {
   @Column({ type: 'int', default: 1 })
   billingSecondsMultiplier!: number;
 
+  // Real LLM token spend, aggregated from the agent's llm.usage events (all
+  // providers summed). 0 = not measured (pre-feature calls) → the cost view
+  // falls back to estimating from message text. Admin-only; never user-facing.
+  @Column({ type: 'int', default: 0 })
+  llmInputTokens!: number;
+
+  @Column({ type: 'int', default: 0 })
+  llmOutputTokens!: number;
+
   @CreateDateColumn()
   createdAt!: Date;
 

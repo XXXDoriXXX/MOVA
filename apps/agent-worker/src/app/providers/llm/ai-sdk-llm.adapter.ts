@@ -37,6 +37,8 @@ export abstract class AiSdkLlmAdapter implements ILlmProvider {
       for await (const chunk of result.textStream) {
         yield chunk;
       }
+      // usage resolves only after the stream drains — report on clean completion.
+      this.reportUsage(options, await result.usage);
     } catch (err) {
       throw this.toProviderError(err);
     }
@@ -55,10 +57,27 @@ export abstract class AiSdkLlmAdapter implements ILlmProvider {
         abortSignal: options.signal,
         providerOptions: this.providerOptions(),
       });
+      this.reportUsage(options, result.usage);
       return result.text;
     } catch (err) {
       throw this.toProviderError(err);
     }
+  }
+
+  // Normalise the ai-SDK usage object (v6 inputTokens/outputTokens, older
+  // promptTokens/completionTokens) and hand it to the caller's onUsage hook.
+  private reportUsage(options: LlmGenerateOptions, usage: unknown): void {
+    if (!options.onUsage || !usage) return;
+    const u = usage as {
+      inputTokens?: number;
+      outputTokens?: number;
+      promptTokens?: number;
+      completionTokens?: number;
+    };
+    const promptTokens = u.inputTokens ?? u.promptTokens ?? 0;
+    const completionTokens = u.outputTokens ?? u.completionTokens ?? 0;
+    if (promptTokens <= 0 && completionTokens <= 0) return;
+    options.onUsage({ promptTokens, completionTokens });
   }
 
   async healthCheck(): Promise<boolean> {

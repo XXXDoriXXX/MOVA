@@ -153,6 +153,19 @@ export const CallConfigChangedEvent = baseEvent.extend({
   }),
 });
 
+// Internal-only (never mapped to the public WS protocol — the EventMapper drops
+// it via its default). Carries per-LLM-call token usage so the api-gateway can
+// aggregate the real token spend onto the conversation for the admin cost view.
+export const LlmUsageEvent = baseEvent.extend({
+  type: z.literal('llm.usage'),
+  data: z.object({
+    provider: z.string().min(1),
+    model: z.string().min(1),
+    promptTokens: z.number().int().nonnegative(),
+    completionTokens: z.number().int().nonnegative(),
+  }),
+});
+
 export const InternalCallEventSchema = z.discriminatedUnion('type', [
   TranscriptFinalEvent,
   TranscriptPartialEvent,
@@ -169,6 +182,7 @@ export const InternalCallEventSchema = z.discriminatedUnion('type', [
   CallTickEvent,
   ProviderFailureEvent,
   CallConfigChangedEvent,
+  LlmUsageEvent,
 ]);
 
 export type InternalCallEvent = z.infer<typeof InternalCallEventSchema>;
@@ -184,6 +198,7 @@ export type AiTtsEnd = z.infer<typeof AiTtsEndEvent>;
 export type UserSpoke = z.infer<typeof UserSpokeEvent>;
 export type SuggestionsGenerated = z.infer<typeof SuggestionsGeneratedEvent>;
 export type CallConnected = z.infer<typeof CallConnectedEvent>;
+export type LlmUsage = z.infer<typeof LlmUsageEvent>;
 export type CallAnswered = z.infer<typeof CallAnsweredEvent>;
 export type CallEnded = z.infer<typeof CallEndedEvent>;
 export type CallTick = z.infer<typeof CallTickEvent>;

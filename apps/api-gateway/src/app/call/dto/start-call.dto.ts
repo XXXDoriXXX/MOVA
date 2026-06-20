@@ -32,9 +32,11 @@ export const StartCallSchema = z.object({
   // disclosure). Off for people who already know the caller — e.g. family.
   // Absent = announce (preserves existing behaviour).
   announceGreeting: z.boolean().optional(),
-  // Opt in to the premium, ultra-realistic (ElevenLabs) voice for this call.
-  // Subscriber-only and off by default — everyone otherwise gets the cheap
-  // standard voice. A realistic call is billed at a higher seconds multiplier.
+  // Voice-quality tier for this call. 'eco' = cheap standard (default, everyone);
+  // 'real'/'ultra' = premium ElevenLabs (subscriber-only, billed at a higher
+  // seconds multiplier). Absent → derived from realisticVoice / eco.
+  voiceTier: z.enum(['eco', 'real', 'ultra']).optional(),
+  // Deprecated boolean kept for older clients: true → ultra.
   realisticVoice: z.boolean().optional(),
   config: z.record(z.string(), z.unknown()).optional(),
 });

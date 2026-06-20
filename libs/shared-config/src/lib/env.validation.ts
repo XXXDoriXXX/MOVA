@@ -128,10 +128,16 @@ export const envSchema = z.object({
   STANDARD_TTS_VOICE_FEMALE: z.string().default('uk-UA-Chirp3-HD-Aoede'),
   STANDARD_TTS_VOICE_MALE: z.string().default('uk-UA-Chirp3-HD-Charon'),
 
-  // A "realistic" (premium ElevenLabs) call costs us more to produce, so it
-  // weights billed seconds: 1 realistic second consumes N pool/wallet seconds.
-  // Snapshotted onto the conversation at start; the lifecycle multiplies by it.
-  REALISTIC_VOICE_BILLING_MULTIPLIER: z.coerce.number().int().min(1).default(2),
+  // Voice-quality tiers. 'eco' = the cheap standard voice (no surcharge);
+  // 'realistic' = ElevenLabs flash (lower latency/cost); 'ultra' = ElevenLabs
+  // multilingual (richest). Premium tiers weight billed seconds (consume the
+  // pool/wallet faster) — snapshotted onto the conversation at start.
+  VOICE_TIER_REALISTIC_MULTIPLIER: z.coerce.number().min(1).default(1.5),
+  VOICE_TIER_ULTRA_MULTIPLIER: z.coerce.number().min(1).default(2),
+  // Per-call ElevenLabs model for each premium tier (the gateway passes it into
+  // the agent's TTS config; falls back to ELEVENLABS_MODEL otherwise).
+  ELEVENLABS_MODEL_REALISTIC: z.string().default('eleven_flash_v2_5'),
+  ELEVENLABS_MODEL_ULTRA: z.string().default('eleven_multilingual_v2'),
 
   // Premium TTS for MOVA Plus subscribers (the `premiumVoices` entitlement).
   // Provider-agnostic so the upgrade target changes with an env edit, no code

@@ -17,9 +17,10 @@ export function computeBilledSeconds(
   const duration = Number.isFinite(durationSeconds)
     ? Math.max(0, Math.floor(durationSeconds))
     : 0;
+  // Voice-tier weight may be fractional (eco 1, realistic 1.5, ultra 2). Keep it
+  // as-is and round the PRODUCT to whole billed seconds — flooring the weight
+  // would silently drop the 1.5× tier down to 1×.
   const weight =
-    typeof multiplier === 'number' && multiplier > 0
-      ? Math.floor(multiplier)
-      : 1;
-  return duration * weight;
+    typeof multiplier === 'number' && multiplier > 0 ? multiplier : 1;
+  return Math.round(duration * weight);
 }

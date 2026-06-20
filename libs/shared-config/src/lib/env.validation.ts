@@ -68,6 +68,10 @@ export const envSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   DEEPGRAM_API_KEY: z.string().min(1),
   ELEVENLABS_API_KEY: z.string().optional(),
+  // ElevenLabs model. flash_v2_5 is 0.5 credits/char (half the cost of
+  // multilingual_v2) and the lowest-latency model — best for live calls.
+  // Switch to 'eleven_multilingual_v2' for max quality at double the cost.
+  ELEVENLABS_MODEL: z.string().default('eleven_flash_v2_5'),
   ANTHROPIC_API_KEY: z.string().optional(),
   GROQ_API_KEY: z.string().optional(),
   GOOGLE_GENERATIVE_AI_API_KEY: z.string().optional(),

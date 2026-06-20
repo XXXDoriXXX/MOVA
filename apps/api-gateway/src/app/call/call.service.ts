@@ -111,6 +111,17 @@ export class CallService {
       ? await this.templates.findOneForUser(userId, dto.templateId)
       : await this.templates.resolveDefaultForUser(userId, language);
 
+    // Voice tier for this call. The premium ultra-realistic (ElevenLabs) voice is
+    // opt-in per call and subscriber-only; everyone else gets the cheap standard
+    // voice. Decided up front so the conversation snapshots the right billing
+    // weight at insert: a realistic call costs us more to produce, so it consumes
+    // the pool / wallet faster (REALISTIC_VOICE_BILLING_MULTIPLIER seconds each).
+    const useRealistic =
+      dto.realisticVoice === true && eligibility.summary.plan.premiumVoices;
+    const billingSecondsMultiplier = useRealistic
+      ? this.config.get('REALISTIC_VOICE_BILLING_MULTIPLIER', { infer: true })
+      : 1;
+
     const roomName = `call-${uuidv4()}`;
     let conversation: Conversation;
     try {
@@ -126,6 +137,7 @@ export class CallService {
         // rule for FREE/PAID/PLUS (a PLUS call with pool left bills as FREE).
         initialPlanSource: resolveUsageSource(eligibility.summary),
         initialPricePerSecondCents: eligibility.summary.plan.pricePerSecondCents,
+        billingSecondsMultiplier,
       });
     } catch (err) {
       if (err instanceof ConflictException) {
@@ -150,29 +162,32 @@ export class CallService {
       tts?: { provider?: string; voice?: string };
       llm?: { provider?: string; model?: string };
     } & Record<string, unknown>;
-    // MOVA Plus entitlement: a premium natural voice by default (provider +
-    // voice are env-driven — Gemini 2.5 Flash TTS out of the box). The
-    // subscriber's gender preference picks the concrete voice (null → female).
-    // An explicit per-call override still wins; otherwise it upgrades silently.
-    const premiumVoices = eligibility.summary.plan.premiumVoices;
-    const premiumProvider = premiumVoices
+    // Voice tier. Standard (cheap native Google Chirp3-HD) is the default for
+    // every call; a subscriber who toggled `realisticVoice` gets the premium
+    // ElevenLabs voice instead (see `useRealistic` above). The subscriber's
+    // gender preference picks the concrete voice on either tier (null → female).
+    // An explicit per-call `config.tts` override still wins over both.
+    const isMaleVoice = user?.preferredVoiceGender === 'male';
+    const tierProvider = useRealistic
       ? this.config.get('PREMIUM_TTS_PROVIDER', { infer: true })
-      : undefined;
-    const premiumVoice = premiumVoices
-      ? user?.preferredVoiceGender === 'male'
+      : this.config.get('STANDARD_TTS_PROVIDER', { infer: true });
+    const tierVoice = useRealistic
+      ? isMaleVoice
         ? this.config.get('PREMIUM_TTS_VOICE_MALE', { infer: true })
         : this.config.get('PREMIUM_TTS_VOICE_FEMALE', { infer: true })
-      : undefined;
+      : isMaleVoice
+        ? this.config.get('STANDARD_TTS_VOICE_MALE', { infer: true })
+        : this.config.get('STANDARD_TTS_VOICE_FEMALE', { infer: true });
     const mergedTts = {
       provider:
         dtoCfg.tts?.provider ??
-        premiumProvider ??
+        tierProvider ??
         user?.preferredTtsProvider ??
         template?.defaultTtsProvider ??
         undefined,
       voice:
         dtoCfg.tts?.voice ??
-        premiumVoice ??
+        tierVoice ??
         user?.preferredVoice ??
         template?.defaultVoice ??
         undefined,

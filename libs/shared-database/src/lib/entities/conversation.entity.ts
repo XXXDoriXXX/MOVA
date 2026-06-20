@@ -131,6 +131,11 @@ export class Conversation {
   @Column({ type: 'int', nullable: true })
   initialPricePerSecondCents!: number | null;
 
+  // Weights billed seconds: a "realistic" (ElevenLabs) call consumes the pool /
+  // wallet faster because that voice costs us more to produce. 1 = standard.
+  @Column({ type: 'int', default: 1 })
+  billingSecondsMultiplier!: number;
+
   @CreateDateColumn()
   createdAt!: Date;
 

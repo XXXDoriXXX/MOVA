@@ -28,7 +28,7 @@ case "$command" in
     [[ "$tag" =~ ^[a-f0-9]{40}$ ]] || { echo 'Provide the full 40-character commit SHA' >&2; exit 1; }
     export IMAGE_TAG="$tag"
     "${compose[@]}" config --quiet
-    "${compose[@]}" pull
+    if [ "$command" = deploy ]; then "${compose[@]}" pull; fi
     "${compose[@]}" up -d --wait --wait-timeout 120 postgres redis
     # A failure leaves the existing application containers untouched.
     if [ "$command" = deploy ]; then

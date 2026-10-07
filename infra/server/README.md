@@ -30,8 +30,8 @@ tools/server.sh rollback
 ```
 
 Rollback restores previous application images and does not reverse database changes.
-Only backward-compatible migrations can safely use this command. Images must remain in GHCR;
-private images require an authenticated Docker session for manual rollback.
+Only backward-compatible migrations can safely use this command. Rollback uses the locally retained images, so it does not require a registry login.
+Do not remove previous Mova images before a successful replacement is verified.
 Failed migrations leave the current application containers untouched. Failed startup leaves
 release markers unchanged; use rollback if a previous healthy version exists.
 No global Docker cleanup, other project restarts or volume deletion is part of deployment.

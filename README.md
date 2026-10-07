@@ -1,316 +1,169 @@
-# Mova Backend
+# MOVA Backend
 
-Backend for **Mova** — a phone-call assistant for deaf-mute users.
-The AI speaks on the user's behalf and transcribes the other side for them.
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
+![NestJS](https://img.shields.io/badge/NestJS-E0234E?logo=nestjs&logoColor=white)
+![Nx](https://img.shields.io/badge/Nx-143055?logo=nx&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-DC382D?logo=redis&logoColor=white)
+![LiveKit](https://img.shields.io/badge/LiveKit-000000?logo=livekit&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-Three Node.js services + Postgres + Redis, orchestrated by Docker Compose.
+Backend for **MOVA**, a phone-call assistant for deaf and mute users. An AI voice speaks on the user's behalf during a real phone call and transcribes the other person back into text.
 
----
+## Related repositories
 
-## 🚀 Quick start
+| Repo | Role |
+|------|------|
+| **[MOVA](https://github.com/XXXDoriXXX/MOVA)** (this repo) | REST API, realtime gateway, voice agent, admin panel |
+| **[Mova-mobile](https://github.com/XXXDoriXXX/Mova-mobile)** | React Native (Expo) client that talks to this backend |
 
-**Prereqs**: Docker Desktop 4.x+ (Windows: with WSL2 backend), Git.
+The mobile app calls the REST API on port 3000 and the Socket.IO gateway on port 3002. The realtime protocol is defined in `libs/shared-realtime` and mirrored in the mobile repo (`src/realtime/protocol.ts`), so a change to an event or field must be made in both repos.
 
-```bash
-git clone git@github.com:XXXDoriXXX/MOVA.git
-cd MOVA
+## Features
 
-# 1. Create your .env from the template
-cp .env.example .env
+- Outbound phone calls over SIP through LiveKit, with an AI agent speaking for the user
+- Live speech-to-text of the other party and streamed AI replies over WebSocket
+- Reply suggestions generated in parallel with the main reply
+- Conversation styles, call templates, and per-user style adaptation
+- Call history with search
+- Billing: free monthly seconds, per-second paid usage, idempotent top-ups
+- App-to-app calls and push notifications
+- Admin web panel (conversations, users, incidents, settings)
+- Pluggable providers with fallback: LLM (Gemini, OpenAI, Anthropic, Groq), TTS (Google Cloud, ElevenLabs, OpenAI, Gemini), STT (Deepgram)
+- Prompt-injection check via Lakera Guard (optional)
+- Observability: Prometheus, Grafana, Loki, Tempo, Alertmanager configs in `infra/`
 
-# 2. Open .env, fill in REQUIRED keys (marked [REQUIRED] in comments):
-#    - LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET
-#    - OPENAI_API_KEY
-#    - DEEPGRAM_API_KEY
-#
-#    Everything else has sensible defaults.
+## Architecture
 
-# 3. Boot the whole stack
-#
-# Linux / macOS / Git Bash:
-make up
-# Windows PowerShell / cmd:
-npm run docker:up
-# Or in any shell, the long form:
-docker compose up -d --build
-```
-
-That's it. First boot takes 1–3 minutes (npm install + nx build inside containers).
-
-When `make ps` shows all services as `healthy`, browse to:
-
-| URL | What |
-|-----|------|
-| http://localhost:3000/api | REST API + Swagger UI |
-| http://localhost:3000/health/live | Liveness check (no DB/Redis touch) |
-| http://localhost:3000/health/ready | Readiness check (verifies Postgres + Redis) |
-| ws://localhost:3002/calls | Realtime WebSocket gateway |
-| http://localhost:8001 | RedisInsight UI |
-
----
-
-## 🧱 What's running
+Three Node.js services plus Postgres and Redis, run with Docker Compose.
 
 | Service | Port | Role |
 |---------|------|------|
-| **postgres** | 5433 (host) → 5432 (container) | Schema authority — all persistent data |
-| **redis** | 6379 / 8001 | pub/sub + streams + caches; 8001 is RedisInsight UI |
-| **migrations** | — | One-shot — applies TypeORM migrations, then exits |
-| **api-gateway** | 3000 | REST API + admin + persistence consumer |
-| **realtime-service** | 3002 | Socket.IO WebSocket gateway for live calls |
-| **agent-worker** | — | LiveKit agent: SIP + STT/LLM/TTS pipeline |
+| `postgres` | 5433 (host) | Persistent data; the only writer is `api-gateway` |
+| `redis` | 6379, 8001 | Pub/sub, streams, cache; 8001 is the RedisInsight UI |
+| `migrations` | none | One-shot TypeORM migrations, then exits |
+| `api-gateway` | 3000 | REST API, Swagger, admin API, persistence consumer |
+| `realtime-service` | 3002 | Socket.IO gateway (`/calls`, `/signal` namespaces) |
+| `agent-worker` | none | LiveKit agent: SIP plus STT, LLM and TTS pipeline |
+| `admin` (dev only) | 5174 | Admin web UI |
+| `dozzle` (dev only) | 9999 | Live container logs |
 
-Startup order is enforced via healthchecks + `depends_on`:
+Startup order: `postgres` and `redis`, then `migrations`, then `api-gateway`, `realtime-service` and `agent-worker`.
 
-```
-postgres + redis → migrations → api-gateway + realtime + agent-worker
-```
+Code layout: `apps/` (services and admin UI), `libs/` (shared auth, config, database, realtime, redis, agent code), `infra/` (observability and VPS setup), `docs/`.
 
----
+## Tech stack
 
-## ⚙️ Configuration
+TypeScript, NestJS 11, Nx monorepo, TypeORM, PostgreSQL 16, Redis (BullMQ, Socket.IO), LiveKit Agents, Vercel AI SDK, Zod, React + Vite (admin), Docker Compose, GitHub Actions.
 
-All env vars live in `.env`. The full template is `.env.example` with
-inline comments. Schema source of truth:
-[`libs/shared-config/src/lib/env.validation.ts`](./libs/shared-config/src/lib/env.validation.ts).
+## Quick start
 
-**Required for full functionality:**
-- `LIVEKIT_*` — placing real phone calls
-- `OPENAI_API_KEY` — LLM + fallback TTS
-- `DEEPGRAM_API_KEY` — STT
-
-**Optional (degrade gracefully when absent):**
-- `ELEVENLABS_API_KEY` — premium TTS voices
-- `ANTHROPIC_API_KEY` — LLM fallback
-- `GROQ_API_KEY` — smart suggestions
-- `LAKERA_API_KEY` — prompt-injection safety
-- `SENTRY_DSN` — error tracking
-
-> If a required var is missing, the service refuses to start with a clear
-> Zod error showing exactly which var is wrong.
-
----
-
-## 🛠 Common operations
-
-Three equivalent ways depending on your shell. Pick one.
-
-### Linux / macOS / Git Bash on Windows
-```bash
-make up | down | logs | ps | migrate | nuke | help
-```
-
-### Windows PowerShell / cmd (or anywhere npm is available)
-```powershell
-npm run docker:up           # start the stack
-npm run docker:down         # stop
-npm run docker:logs         # tail all
-npm run docker:logs:api     # tail one service
-npm run docker:ps           # status
-npm run docker:migrate      # run pending migrations
-npm run docker:migrate:show # what's executed / pending
-npm run docker:sh:pg        # psql session
-npm run docker:sh:redis     # redis-cli
-npm run docker:nuke         # ⚠️ wipe volumes (full reset)
-npm run docker:rebuild      # no-cache image rebuild
-```
-
-### Raw docker compose (works everywhere, just verbose)
-```bash
-docker compose up -d --build
-docker compose logs -f
-docker compose ps
-docker compose down
-docker compose down -v       # nuke
-```
-
-`make help` (Linux/macOS) lists every Make target; `npm run` (any
-platform) auto-prints the script list.
-
----
-
-## 🔄 Development workflow
-
-`docker-compose.override.yml` switches the three Node services to `nx serve`
-mode with hot reload. Source code is bind-mounted; edits trigger an
-automatic restart.
-
-**What's safe to edit live:**
-- TypeScript code in `apps/*/src` and `libs/*/src`
-- Migrations (run `make migrate` after adding one)
-- `.env` (but you need to restart the affected service: `make restart svc=api-gateway`)
-
-**What requires a rebuild:**
-- `package.json` / `package-lock.json` → `make rebuild`
-- `Dockerfile` → `make rebuild`
-
-**What requires `make nuke`:**
-- Cross-OS Nx cache poisoning ("Waiting for ... in another nx process")
-- Postgres schema corruption (volume wipe then re-migrate)
-
----
-
-## ⏱ Build performance
-
-The Dockerfile uses BuildKit cache mounts (`/root/.npm` for npm tarballs,
-`.nx/cache` for incremental Nx output) and a `.dockerignore` that strips
-the build context to just the source tree. Practical effect:
-
-| Scenario | First run | Subsequent builds |
-|---|---|---|
-| Cold clone, no Docker cache | 5–15 min | — |
-| Code change in `apps/*/src` | — | 20–60 s |
-| `package.json` / lock change | — | 2–5 min |
-| `make rebuild` (force, no cache) | 5–15 min | 5–15 min |
-
-If you see the build sit on `RUN npm ci` for 20+ minutes, BuildKit isn't
-being used. Docker Compose v2 enables it by default, but if you're on an
-older stack:
+Requirements: Docker with Compose v2 and Git. Node 20.19+ and npm 10+ are only needed for host-side commands.
 
 ```bash
-# Linux/macOS
-export DOCKER_BUILDKIT=1
-export COMPOSE_DOCKER_CLI_BUILD=1
-make up
+git clone https://github.com/XXXDoriXXX/MOVA.git
+cd MOVA
+cp .env.example .env
 ```
 
-```powershell
-# Windows PowerShell
-$env:DOCKER_BUILDKIT=1; $env:COMPOSE_DOCKER_CLI_BUILD=1
-npm run docker:up
-```
-
-Want a clean, scrollable build log instead of the overlapping TTY view?
+Edit `.env` and set the keys marked as required below. Then start the stack:
 
 ```bash
-BUILDKIT_PROGRESS=plain npm run docker:up
+make up                  # Linux, macOS, Git Bash
+npm run docker:up        # Windows PowerShell or cmd
+docker compose up -d --build   # any shell
 ```
 
----
+The first build can take several minutes. When `make ps` shows every service as healthy:
 
-## 🩺 Troubleshooting
+| URL | What |
+|-----|------|
+| http://localhost:3000/v1/docs | Swagger UI |
+| http://localhost:3000/health/live | Liveness |
+| http://localhost:3000/health/ready | Readiness (Postgres and Redis) |
+| ws://localhost:3002/calls | Realtime WebSocket |
+| http://localhost:8001 | RedisInsight |
+| http://localhost:5174 | Admin panel (needs `ADMIN_PASSWORD`) |
 
-### "Waiting for ... in another nx process"
-Cross-platform Nx cache got poisoned. Fix:
-```bash
-# Linux/macOS:  make nuke && make up
-# Windows:      npm run docker:nuke; npm run docker:up
-```
+`docker-compose.override.yml` is merged automatically and runs the services with `nx serve` and hot reload. Use `make up-prod` (or `docker compose -f docker-compose.yml up -d --build`) for the production-shaped stack.
 
-### "Cannot find module 'typeorm' / @nestjs/typeorm" on first run
-Known Docker-Desktop-on-Windows behaviour: anonymous volumes for
-`/app/node_modules` come up empty on first mount instead of inheriting
-from the image. The `docker-compose.override.yml` has a runtime
-safety-net that detects this and runs `npm ci --legacy-peer-deps`
-inside the container — but on a stale stack you may need a clean reset:
+## Environment variables
 
-```powershell
-# Windows
-npm run docker:nuke
-npm run docker:up
-```
+The full template with comments is [`.env.example`](./.env.example). The validation schema is [`libs/shared-config/src/lib/env.validation.ts`](./libs/shared-config/src/lib/env.validation.ts); a service refuses to start if a required value is missing or invalid.
 
-```bash
-# Linux / macOS
-make nuke && make up
-```
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `DATABASE_URL`, `DATABASE_SSL` | yes | Postgres connection (default points to the Compose database) |
+| `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` | yes | Redis connection; the password must match `docker-compose.yml` |
+| `JWT_SECRET` | yes | 32+ characters; must be a strong value in production |
+| `JWT_ACCESS_TTL`, `JWT_REFRESH_TTL` | no | Token lifetimes (default 15m and 30d) |
+| `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | for real calls | LiveKit project |
+| `SIP_TRUNK_ID` | for real calls | LiveKit SIP trunk used for outbound dials |
+| `DEEPGRAM_API_KEY` | for real calls | Speech-to-text |
+| `LLM_PROVIDER`, `LLM_MODEL` | no | LLM choice (default `gemini` via LiveKit Inference) |
+| `TTS_PROVIDER` | no | `google`, `elevenlabs`, `openai` or `gemini` |
+| `OPENAI_API_KEY` | if OpenAI is used | LLM and TTS |
+| `GOOGLE_TTS_API_KEY`, `GOOGLE_TTS_VOICE`, `GOOGLE_TTS_LANGUAGE_CODE` | if Google TTS is used | Google Cloud Text-to-Speech |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | no | Gemini |
+| `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | no | Premium TTS voices |
+| `ANTHROPIC_API_KEY` | no | LLM fallback |
+| `GROQ_API_KEY` | no | Fast reply suggestions |
+| `LAKERA_API_KEY`, `LAKERA_FAIL_OPEN` | no | Prompt-injection guard |
+| `ADMIN_PASSWORD` | no | Enables the admin panel; empty keeps it locked |
+| `SETTINGS_ENCRYPTION_KEY` | no | Encrypts admin-managed settings; never rotate after data is stored |
+| `SENTRY_DSN` | no | Error tracking |
+| `HIBP_ENABLED` | no | Password breach check on registration |
+| `FREE_SECONDS_PER_MONTH`, `PAID_PRICE_PER_SECOND_CENTS`, `MAX_CALL_DURATION_SECONDS`, `MAX_CONCURRENT_CALLS_PER_USER` | no | Billing and call limits |
 
-First boot after `nuke` takes 3–5 minutes (npm install runs once inside
-the volume); subsequent boots are fast.
+Without valid LiveKit values and a SIP trunk, `POST /v1/calls/start` fails at the SIP dial. REST and WebSocket can still be used.
 
-### Service stuck on "starting" / unhealthy
-Check what failed:
-```bash
-make logs           # all
-make logs-api       # specific
-```
+## Common commands
 
-Most common causes:
-- Missing env var → Zod prints the field name
-- Postgres not ready → wait, usually self-resolves; if not, `make restart svc=postgres`
-- Redis password mismatch — `REDIS_PASSWORD` in `.env` must match `REDIS_ARGS` in `docker-compose.yml`
+| Task | Make | npm |
+|------|------|-----|
+| Start / stop | `make up`, `make down` | `npm run docker:up`, `docker:down` |
+| Status and logs | `make ps`, `make logs` | `docker:ps`, `docker:logs` |
+| Migrations | `make migrate`, `make migrate-show` | `docker:migrate`, `docker:migrate:show` |
+| Full reset (wipes volumes) | `make nuke` | `docker:nuke` |
+| Rebuild without cache | `make rebuild` | `docker:rebuild` |
+| Lint and test | `make lint`, `make test` | |
 
-### Migrations don't run
-```bash
-make migrate-show      # what's executed + pending
-make migrate           # run them
-```
+`make help` lists every target. `npm run docker:doctor` checks for port conflicts.
 
-### Port already in use
-`3000`, `3002`, `5433`, `6379`, `8001` must be free on the host (plus
-`5174`/`9999` in dev). Stop anything that's bound to them, or change the
-host-side port in `docker-compose.yml` (`"3000:3000"` → `"3001:3000"` to
-expose on 3001). `npm run docker:doctor` flags every conflict before you
-start.
-
-### Can't connect to LiveKit / dial fails
-Without valid `LIVEKIT_*` and a real `SIP_TRUNK_ID`, `POST /v1/calls/start`
-fails at SIP dial. You can still exercise REST + WS — just don't expect
-the call to ring.
-
----
-
-## 🧪 Smoke test
-
-After the stack is up, run a happy-path through REST:
+## Smoke test
 
 ```bash
-# 1. Register
 curl -X POST http://localhost:3000/v1/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email":"smoke@example.com","password":"SuperPass123!","name":"Smoke","language":"uk"}'
-# → 201 { accessToken, refreshToken, user }
 
-# 2. Save the accessToken
-TOKEN="..."
-
-# 3. Inspect billing (you'll be on FREE plan with 300 free seconds)
+TOKEN="<accessToken from the response>"
 curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/v1/billing/me
-
-# 4. List templates (system defaults are seeded automatically on startup)
 curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/v1/templates
-
-# 5. (Real call) Start a call — requires LIVEKIT_* + SIP_TRUNK_ID set
-curl -X POST http://localhost:3000/v1/calls/start \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"targetPhone":"+380501234567"}'
 ```
 
-Or use **Swagger UI** at http://localhost:3000/api — click "Authorize",
-paste the access token, and tinker.
+## Troubleshooting
 
----
+- **"Waiting for ... in another nx process"**: the Nx cache is corrupted. Run `make nuke && make up`.
+- **"Cannot find module 'typeorm'" on first run (Docker Desktop on Windows)**: empty `node_modules` volume. Run `npm run docker:nuke` then `npm run docker:up`.
+- **Service unhealthy**: run `make logs`. Common causes are a missing env var (the error names it) and a `REDIS_PASSWORD` that does not match `docker-compose.yml`.
+- **Port in use**: free 3000, 3002, 5433, 6379, 8001 (and 5174, 9999 in dev), or change the host side of the mapping in `docker-compose.yml`.
+- **Slow `npm ci` during build**: make sure BuildKit is on (`DOCKER_BUILDKIT=1`).
 
-## 🏗 Production deployment
+## Deployment and operations
 
-The production-shaped stack ignores the dev override:
+- `docker-compose.prod.yml`, `docker-compose.bluegreen.yml` and `infra/vps/` contain VPS deployment, blue-green switching, nginx and backup scripts.
+- Secrets for deployment are encrypted with sops (see `secrets/README.md`).
+- CI and deploy workflows are in `.github/workflows/`.
+- [`RUNBOOK.md`](./RUNBOOK.md) covers incident response, deploys and rollback; [`infra/README.md`](./infra/README.md) covers the observability stack.
 
-```bash
-docker compose -f docker-compose.yml up -d --build
-```
+## Documentation
 
-This:
-- Builds the final multi-stage Dockerfile (small image, no dev deps)
-- Runs Node directly (no `nx serve`)
-- Uses production env vars (`NODE_ENV=production`)
+- [`docs/PROJECT.md`](./docs/PROJECT.md): product, architecture and data model (in Ukrainian)
+- [`docs/observability-calls.md`](./docs/observability-calls.md): call observability
+- [`CONTRIBUTING.md`](./CONTRIBUTING.md) and [`CLAUDE.md`](./CLAUDE.md): contribution rules and engineering standards
 
-For a real deployment, replace `docker-compose.yml` with Kubernetes manifests
-+ managed Postgres + managed Redis + ingress. See [`docs/02-architecture.md`](./docs/02-architecture.md)
-for the service contract.
+## License
 
----
-
-## 📚 Further reading
-
-- [`docs/`](./docs/README.md) — full backend reference for frontend + design
-- [`docs/02-architecture.md`](./docs/02-architecture.md) — how services talk to each other
-- [`docs/05-rest-api.md`](./docs/05-rest-api.md) — every REST endpoint with examples
-- [`docs/06-websocket-protocol.md`](./docs/06-websocket-protocol.md) — WS events + commands
-
----
-
-## 🤝 Contributing
-
-Git flow: feature branches → PR → merge to `master`. Pre-merge gates:
-`make lint && make test` must pass.
+MIT, as declared in `package.json`.

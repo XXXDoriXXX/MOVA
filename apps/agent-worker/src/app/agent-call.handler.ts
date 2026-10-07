@@ -1225,7 +1225,7 @@ export class AgentCallHandler {
         };
       }
     })();
-    sayPromise.catch(() => {
+    sayPromise.catch(() => { /* The raced promise already converts speech errors into SaySafeResult. */
     });
     const result = await Promise.race([sayPromise, timeoutPromise]);
     if (timer) clearTimeout(timer);

@@ -2,6 +2,7 @@ import './instrument';
 
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
@@ -12,11 +13,14 @@ import type { AppEnv } from '@mova-back/shared-config';
 import { AppModule } from './app/app.module';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true,
   });
 
   app.useLogger(app.get(Logger));
+
+  // The production API is private and reached through exactly one nginx proxy.
+  app.set('trust proxy', 1);
 
   app.enableShutdownHooks();
 

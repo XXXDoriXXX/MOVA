@@ -44,3 +44,11 @@ Thumbs.db
 .env
 .claude/
 *.pcap
+
+.env.production
+.release.env
+.previous-release.env
+.deploy.lock
+.release.env.tmp
+.trigger.lock
+source.git/

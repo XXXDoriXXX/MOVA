@@ -37,7 +37,7 @@ export class GoogleCloudTts extends tts.TTS {
       pitch: opts.pitch ?? 0,
       speakingRate: opts.speakingRate ?? 1,
     };
-    void this.validateVoice().catch(() => {
+    void this.validateVoice().catch(() => { /* A voice probe must not prevent constructing the speech provider. */
     });
   }
 

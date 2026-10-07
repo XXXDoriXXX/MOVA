@@ -1,5 +1,7 @@
 # Mova Operations Runbook
 
+Current personal-server deployment: [setup and maintenance](infra/server/README.md). Older VPS/Heroku instructions below do not apply to this installation.
+
 Single-page reference for production incident response, deploys,
 rollback, and recurring ops. Read once; keep open during incidents.
 

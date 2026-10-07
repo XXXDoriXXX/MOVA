@@ -11,6 +11,6 @@ export class ConversationEndReasonNoAnswer1780000100000
     );
   }
 
-  async down(_q: QueryRunner): Promise<void> {
+  async down(_q: QueryRunner): Promise<void> { /* Postgres cannot remove enum values without rebuilding the type. */
   }
 }

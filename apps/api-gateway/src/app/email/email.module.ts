@@ -1,4 +1,4 @@
-import { Global, Injectable, Logger, Module } from '@nestjs/common';
+import { Global, Injectable, Logger, Module, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import type { AppEnv } from '@mova-back/shared-config';
@@ -11,7 +11,11 @@ import { EMAIL_SENDER, type EmailMessage, type EmailSender } from './email-sende
 @Injectable()
 class LogEmailSender implements EmailSender {
   private readonly logger = new Logger('EmailSender');
+  constructor(private readonly production = false) {}
   async send(message: EmailMessage): Promise<void> {
+    if (this.production) {
+      throw new ServiceUnavailableException('Email delivery is not configured');
+    }
     this.logger.log({
       msg: 'email.logOnly',
       to: message.to,
@@ -50,8 +54,8 @@ class ResendEmailSender implements EmailSender {
       this.logger.warn({
         msg: 'email.resend.httpError',
         status: res.status,
-        body: await res.text().catch(() => ''),
       });
+      throw new ServiceUnavailableException('Email delivery failed');
     }
   }
 }
@@ -71,7 +75,7 @@ class ResendEmailSender implements EmailSender {
           'Mova <onboarding@resend.dev>';
         return apiKey
           ? new ResendEmailSender(apiKey, from)
-          : new LogEmailSender();
+          : new LogEmailSender(config.get('NODE_ENV', { infer: true }) === 'production');
       },
     },
   ],

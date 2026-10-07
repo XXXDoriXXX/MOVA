@@ -4,7 +4,7 @@
 #
 # Layout (BuildKit auto-skips stages not requested by `--target`):
 #
-#   os-base       → minimal Debian-slim node:20, no app code
+#   os-base       → minimal Debian-slim node:22, no app code
 #   deps-prod     → production-only node_modules (used by `runner`)
 #   base          → full node_modules incl. devDeps (used by `dev` and `builder`)
 #   builder       → `nx build <APP_NAME>` → /app/dist/apps/<APP_NAME>
@@ -21,10 +21,10 @@
 # ============================================================================
 
 # ─── Stage 1: OS base ────────────────────────────────────────────────────────
-# Pure node:20-slim + ca-certificates. The `ca-certificates` package is
+# Pure node:22-slim + ca-certificates. The `ca-certificates` package is
 # required by the `@livekit/rtc-node` native binary: its statically linked
 # Rust HTTP client uses `rustls-native-certs` and reads the system CA bundle
-# from /etc/ssl/certs/ca-certificates.crt. `node:20-bookworm-slim` does NOT
+# from /etc/ssl/certs/ca-certificates.crt. `node:22-bookworm-slim` does NOT
 # ship that file. Without it, any HTTPS request from the Rust side fails
 # instantly and call setup aborts with
 #   engine: signal failure: failed to retrieve region info:
@@ -34,7 +34,7 @@
 # to LiveKit Cloud. Production previously got this for free as a transitive
 # dependency of `curl` in the runner stage; the dev `base` stage didn't,
 # which is why dev was broken on Windows while prod-shaped runs worked.
-FROM node:20-bookworm-slim AS os-base
+FROM node:22-bookworm-slim AS os-base
 WORKDIR /app
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
@@ -53,6 +53,7 @@ ENV NPM_CONFIG_PREFER_OFFLINE=true \
 # final `runner` image; not used during the TS compile.
 FROM os-base AS deps-prod
 COPY package.json package-lock.json ./
+COPY apps/admin/package.json ./apps/admin/package.json
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm ci --omit=dev --legacy-peer-deps
 
@@ -63,6 +64,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 # Jest, etc — everything `nx serve` / `nx build` needs.
 FROM os-base AS base
 COPY package.json package-lock.json ./
+COPY apps/admin/package.json ./apps/admin/package.json
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm ci --legacy-peer-deps
 
@@ -75,7 +77,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 # to seconds.
 FROM base AS builder
 ARG APP_NAME
-ENV NX_DAEMON=false
+ENV NX_DAEMON=false NX_NO_CLOUD=true
 COPY . .
 RUN --mount=type=cache,target=/app/.nx/cache,sharing=locked \
     npx nx build ${APP_NAME} --configuration=production
@@ -102,3 +104,25 @@ COPY --from=builder   /app/dist/apps/${APP_NAME} ./dist
 
 USER node
 CMD ["node", "dist/main.js"]
+
+# Compile migrations once, instead of requiring Nx in a runtime container.
+FROM base AS database-builder
+ENV NX_DAEMON=false NX_NO_CLOUD=true
+COPY . .
+RUN npx nx build shared-database
+
+FROM os-base AS migrations
+ENV NODE_ENV=production
+COPY --from=deps-prod /app/node_modules ./node_modules
+COPY --from=database-builder /app/dist/libs/shared-database ./dist/libs/shared-database
+USER node
+CMD ["node", "node_modules/typeorm/cli.js", "migration:run", "-d", "dist/libs/shared-database/src/data-source.js"]
+
+FROM base AS admin-builder
+ENV NX_DAEMON=false NX_NO_CLOUD=true
+COPY . .
+RUN npm run build --workspace=apps/admin
+
+FROM nginx:1.28-alpine AS web
+COPY infra/server/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=admin-builder /app/dist/apps/admin /usr/share/nginx/html

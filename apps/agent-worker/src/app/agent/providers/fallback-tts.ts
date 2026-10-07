@@ -214,7 +214,7 @@ class FallbackChunkedStream extends tts.ChunkedStream {
           );
           try {
             providerStream.close();
-          } catch {
+          } catch { /* The failed stream may already be closed; continue the fallback. */
           }
           return false;
         }
@@ -228,7 +228,7 @@ class FallbackChunkedStream extends tts.ChunkedStream {
       );
       try {
         providerStream.close();
-      } catch {
+      } catch { /* The failed stream may already be closed; continue the fallback. */
       }
       return false;
     } finally {

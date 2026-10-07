@@ -115,7 +115,7 @@ export class AgentRunnerService
     try {
       await this.subscriber.punsubscribe('call-controls:*');
       await this.subscriber.unsubscribe('call-dispatch', 'call-controls');
-    } catch {
+    } catch { /* Best-effort cleanup: continue shutdown even if Redis is unavailable. */
     }
 
     const drainStart = Date.now();
@@ -145,7 +145,7 @@ export class AgentRunnerService
 
     try {
       await this.subscriber.quit();
-    } catch {
+    } catch { /* Best-effort cleanup: continue shutdown even if Redis is unavailable. */
     }
     this.logger.log('👋 [Shutdown] complete');
   }
@@ -353,7 +353,7 @@ export class AgentRunnerService
       this.activeSessions.delete(roomName);
       void this.redis
         .del(this.ownerKeyByRoom(roomName))
-        .catch(() => {
+        .catch(() => { /* Best-effort cleanup: continue shutdown even if Redis is unavailable. */
         });
     }
   }

@@ -1,5 +1,7 @@
 # MOVA Backend
 
+Current personal-server deployment: [setup and maintenance](infra/server/README.md). Older VPS/Heroku instructions below do not apply to this installation.
+
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
 ![NestJS](https://img.shields.io/badge/NestJS-E0234E?logo=nestjs&logoColor=white)
 ![Nx](https://img.shields.io/badge/Nx-143055?logo=nx&logoColor=white)

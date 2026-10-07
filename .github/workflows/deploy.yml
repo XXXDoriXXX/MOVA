@@ -1,278 +1,85 @@
-# Deploy Mova to the production VPS on every push to master.
-#
-# Flow:
-#   1. CI workflow runs first (build/lint/test). If it fails, no deploy.
-#   2. Build the three service images (api-gateway, realtime-service,
-#      agent-worker) and push them to GHCR tagged with the commit sha.
-#   3. SSH into the VPS, pull the new image tags, run `docker compose
-#      up -d`. Compose's healthchecks gate the rollout.
-#   4. Poll /v1/health/live for a couple minutes; fail the workflow
-#      if it doesn't come back green so the operator gets an email.
-#
-# Why not blue-green here:
-#   - For a single-VPS deploy with healthchecks + restart policies
-#     the in-place `docker compose up -d` swap-and-restart cycle is
-#     a few seconds of unavailability per service. That's acceptable
-#     for the diploma target; blue-green is a Phase 5.3 follow-up.
-#
-# Required repo secrets (Settings → Secrets and variables → Actions):
-#   SSH_HOST       — VPS IP / hostname
-#   SSH_USER       — usually `mova`
-#   SSH_PRIVATE_KEY — deploy key paired with the user's authorized_keys
-#   SSH_PORT       — optional, defaults to 22
-#
-# GHCR auth uses GITHUB_TOKEN automatically (granted via `packages:
-# write` permission below). The VPS pulls images authenticated as
-# the same GitHub user account that owns the deploy key.
-
 name: Deploy
-
 on:
-  # The VPS pipeline is retired — the app deploys to Heroku via the container
-  # registry (manual `~/mova-heroku-build.sh`). Kept for reference but switched
-  # to manual-only so a push to master no longer fires a failing VPS deploy.
+  push:
+    branches: [master]
   workflow_dispatch:
-    inputs:
-      image_tag:
-        description: 'Image tag to deploy (defaults to current sha)'
-        required: false
 
 concurrency:
-  group: deploy-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false  # never cancel an in-flight prod deploy
-
+  group: mova-production
+  cancel-in-progress: false
 permissions:
   contents: read
   packages: write
 
 jobs:
-  # ── 1. Wait for CI ─────────────────────────────────────────────
-  # Reuse the existing CI workflow as a gate. Skip if the user
-  # manually triggered via workflow_dispatch (assume they know
-  # what they're doing).
-  wait-ci:
-    if: github.event_name != 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Wait for CI workflow
-        uses: lewagon/wait-on-check-action@v1.4.0
-        with:
-          ref: ${{ github.ref }}
-          check-name: 'verify'
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          wait-interval: 20
-          allowed-conclusions: success
+  checks:
+    uses: ./.github/workflows/ci.yml
 
-  # ── 2. Build + push three images ───────────────────────────────
-  build-push:
-    needs: [wait-ci]
-    if: always() && (needs.wait-ci.result == 'success' || github.event_name == 'workflow_dispatch')
+  images:
+    needs: checks
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
-        app: [api-gateway, realtime-service, agent-worker]
+        include:
+          - {app: api-gateway, target: runner}
+          - {app: realtime-service, target: runner}
+          - {app: agent-worker, target: runner}
+          - {app: migrations, target: migrations}
+          - {app: web, target: web}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Lowercase the repo owner — GHCR rejects uppercase in
-      # `ghcr.io/Owner/...` paths.
-      - name: Compute image tag
-        id: tag
-        run: |
-          OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          TAG_SHA=${{ github.event.inputs.image_tag || github.sha }}
-          echo "image=ghcr.io/${OWNER_LOWER}/mova-${{ matrix.app }}:${TAG_SHA}" >> $GITHUB_OUTPUT
-          echo "image_latest=ghcr.io/${OWNER_LOWER}/mova-${{ matrix.app }}:latest" >> $GITHUB_OUTPUT
-
-      - name: Build & push
-        uses: docker/build-push-action@v6
+      - name: Lowercase registry owner
+        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/mova" >> "$GITHUB_ENV"
+      - uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile
-          target: runner
-          build-args: |
-            APP_NAME=${{ matrix.app }}
+          target: ${{ matrix.target }}
+          build-args: APP_NAME=${{ matrix.app }}
+          platforms: linux/amd64
           push: true
-          tags: |
-            ${{ steps.tag.outputs.image }}
-            ${{ steps.tag.outputs.image_latest }}
-          cache-from: type=gha,scope=${{ matrix.app }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+          tags: ${{ env.IMAGE_PREFIX }}-${{ matrix.app }}:${{ github.sha }}
+          cache-from: type=gha,scope=server-${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=server-${{ matrix.app }}
 
-  # ── 3. SSH deploy ──────────────────────────────────────────────
   deploy:
-    needs: [build-push]
+    if: github.repository == 'XXXDoriXXX/MOVA' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/deploy/server')
+    needs: images
     runs-on: ubuntu-latest
     environment: production
+    timeout-minutes: 15
     steps:
-      - name: Compute tag
-        id: tag
+      - name: Install tunnel client
         run: |
-          OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          IMAGE_TAG=${{ github.event.inputs.image_tag || github.sha }}
-          echo "owner=$OWNER_LOWER" >> $GITHUB_OUTPUT
-          echo "tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-      # ── Optional: decrypt prod.env via sops + scp to VPS ─────
-      # Opt-in via SOPS_AGE_KEY secret. When unset (typical for
-      # diploma / single-operator), the operator places /opt/mova/.env
-      # by hand and this step is a no-op.
-      - name: Detect sops config
+          curl --fail --silent --show-error --location https://github.com/cloudflare/cloudflared/releases/download/2026.10.0/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+          chmod +x /usr/local/bin/cloudflared
+      - name: Deploy verified images
         env:
-          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+          IMAGE_TAG: ${{ github.sha }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SSH_PRIVATE_KEY: ${{ secrets.MOVA_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.MOVA_SSH_KNOWN_HOSTS }}
+          TUNNEL_SERVICE_TOKEN_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          TUNNEL_SERVICE_TOKEN_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: |
-          if [ -n "$SOPS_AGE_KEY" ] && [ -f secrets/prod.env.enc ]; then
-            echo "SOPS_READY=true" >> "$GITHUB_ENV"
-          fi
-
-      - name: Install sops
-        if: ${{ env.SOPS_READY == 'true' }}
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/mova"
+          chmod 600 "$HOME/.ssh/mova"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          printf '%s\n' "$GHCR_TOKEN" | ssh -i "$HOME/.ssh/mova" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=25 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            -o ProxyCommand='cloudflared access ssh --hostname %h' \
+            dori@sshdori.dehimik.org "deploy $IMAGE_TAG"
+      - name: Verify public routes
         run: |
-          curl -fsSL -o sops https://github.com/getsops/sops/releases/latest/download/sops-linux-amd64
-          chmod +x sops
-          sudo mv sops /usr/local/bin/sops
-          sops --version
-
-      - name: Decrypt prod env + push to VPS
-        if: ${{ env.SOPS_READY == 'true' }}
-        env:
-          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
-        run: |
-          # Place the deploy bot's age private key where sops looks
-          # by default.
-          mkdir -p "$HOME/.config/sops/age"
-          printf '%s\n' "$SOPS_AGE_KEY" > "$HOME/.config/sops/age/keys.txt"
-          chmod 600 "$HOME/.config/sops/age/keys.txt"
-          # Decrypt to a tmp file, scp over, then shred locally.
-          sops --decrypt secrets/prod.env.enc > /tmp/prod.env
-          chmod 600 /tmp/prod.env
-          # The SSH key for scp comes from the same secret as the
-          # main deploy step; reuse via stdin-into-ssh-agent.
-          eval "$(ssh-agent -s)"
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" | ssh-add -
-          scp -o StrictHostKeyChecking=no -P "${{ secrets.SSH_PORT || 22 }}" \
-            /tmp/prod.env \
-            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/mova/.env"
-          shred -u /tmp/prod.env "$HOME/.config/sops/age/keys.txt"
-          ssh-agent -k
-
-      - name: SSH deploy
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT || 22 }}
-          # ENVS pass IMAGE_TAG + GHCR_OWNER through so the remote
-          # docker-compose can pin the exact image revision instead
-          # of always pulling `latest` (latest-tag races are how
-          # half-deployed builds get into prod).
-          envs: IMAGE_TAG,GHCR_OWNER
-          script_stop: true
-          script: |
-            set -euo pipefail
-            cd /opt/mova
-            # Save the previous tag so a rollback workflow can refer
-            # to it without git-archaeology.
-            if [ -f .last-good-deploy ]; then
-              cp .last-good-deploy .previous-deploy
-            fi
-            # Pull the new images first — if any of the three is
-            # missing/corrupt, fail the deploy BEFORE swapping prod.
-            export IMAGE_TAG=${{ steps.tag.outputs.tag }}
-            export GHCR_OWNER=${{ steps.tag.outputs.owner }}
-            git fetch --tags origin
-            git reset --hard ${{ github.sha }}
-            # Compose flags: explicit -f forces both files in this
-            # exact order. `.override.yml` (dev bind-mounts) is
-            # auto-loaded ONLY in the implicit two-file lookup; once
-            # we pass -f we get just base + prod = what we want.
-            COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml"
-            docker compose $COMPOSE_FILES pull --quiet api-gateway realtime-service agent-worker
-            # docker compose up -d gives each service its restart=on-failure
-            # policy. Healthcheck-blocked depends_on in compose.yml means
-            # the new api-gateway won't start until postgres + redis +
-            # migrations are healthy.
-            docker compose $COMPOSE_FILES up -d --remove-orphans
-            echo "${{ steps.tag.outputs.tag }}" > .last-good-deploy
-
-      # Liveness wait — fail the workflow loudly if the new build
-      # doesn't come back green within ~2 minutes. The VPS would
-      # auto-restart the failed pod, but a deploy that ships and
-      # silently breaks is worse than one that fails the CI run.
-      - name: Wait for /v1/health/live
-        run: |
-          set -e
-          for i in {1..40}; do
-            if curl -fsS -m 3 "https://${{ secrets.SSH_HOST }}/v1/health/live" >/dev/null; then
-              echo "✅ api-gateway healthy after ${i} attempt(s)"
-              exit 0
-            fi
-            sleep 3
-          done
-          echo "❌ api-gateway never became healthy" >&2
-          exit 1
-
-      # ── Sentry release tracking ──────────────────────────────
-      # Tag the new deploy in Sentry so:
-      #   1. Issues are grouped by release — easy to spot regressions
-      #      ("this exception only started after the May 24 deploy").
-      #   2. Stack-trace frames map to source via uploaded sourcemaps
-      #      instead of showing minified line numbers.
-      #
-      # Gated on SENTRY_AUTH_TOKEN being set as a repo secret. Without
-      # it, the step short-circuits cleanly — Sentry release tracking
-      # is a nice-to-have, not a deploy gate.
-      #
-      # GitHub Actions doesn't allow referencing `secrets.*` directly
-      # in `if:` expressions; we flip an env flag in a tiny step so
-      # downstream `if: env.SENTRY_AUTH_TOKEN_SET` works.
-      - name: Detect Sentry config
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-        run: |
-          if [ -n "$SENTRY_AUTH_TOKEN" ]; then
-            echo "SENTRY_AUTH_TOKEN_SET=true" >> "$GITHUB_ENV"
-          fi
-
-      - name: Checkout (for sourcemap upload)
-        if: ${{ env.SENTRY_AUTH_TOKEN_SET == 'true' }}
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # commits since last release for sentry-cli
-
-      - name: Tag Sentry release
-        if: ${{ env.SENTRY_AUTH_TOKEN_SET == 'true' }}
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
-          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
-          RELEASE: mova@${{ steps.tag.outputs.tag }}
-        run: |
-          curl -sL https://sentry.io/get-cli/ | bash
-          sentry-cli releases new "$RELEASE"
-          sentry-cli releases set-commits "$RELEASE" --auto || true
-          # Sourcemap upload is per-app — Nx builds dump to
-          # dist/apps/<app>/. We upload all three with the same
-          # release tag so any service's stack-trace finds its map.
-          for APP in api-gateway realtime-service agent-worker; do
-            if [ -d "dist/apps/$APP" ]; then
-              sentry-cli sourcemaps upload \
-                --release "$RELEASE" \
-                --url-prefix "~/dist/apps/$APP" \
-                "dist/apps/$APP" || true
-            fi
-          done
-          sentry-cli releases finalize "$RELEASE"
-          sentry-cli releases deploys "$RELEASE" new -e production
+          curl --fail --silent --show-error --retry 5 --retry-delay 10 --max-time 15 https://mova.dehimik.org/health/ready
+          curl --fail --silent --show-error --max-time 15 'https://mova.dehimik.org/socket.io/?EIO=4&transport=polling'

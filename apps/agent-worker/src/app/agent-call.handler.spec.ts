@@ -18,6 +18,7 @@ import type { CallEventPublisher } from './events/call-event.publisher';
 import type { SuggestionsService } from './suggestions/suggestions.service';
 
 const fakeRoomEmitters: EventEmitter[] = [];
+const activeHandlers: AgentCallHandler[] = [];
 const fakeRoomDisconnect = jest.fn();
 let participantsMap = new Map<
   string,
@@ -36,7 +37,7 @@ jest.mock('@livekit/rtc-node', () => {
       super();
       fakeRoomEmitters.push(this);
     }
-    async connect(): Promise<void> {
+    async connect(): Promise<void> { /* Test double: no network connection is created. */
     }
     disconnect(): void {
       fakeRoomDisconnect();
@@ -79,7 +80,7 @@ jest.mock('@livekit/agents', () => {
 const fakeDeleteRoom = jest.fn().mockResolvedValue(undefined);
 jest.mock('livekit-server-sdk', () => {
   class FakeAccessToken {
-    addGrant(): void { }
+    addGrant(): void { /* Test double: no network connection is created. */ }
     async toJwt(): Promise<string> {
       return 'fake-jwt';
     }
@@ -203,6 +204,7 @@ function makeHarness(opts: {
     { resolve: jest.fn().mockResolvedValue(null) } as never,
     onDisconnectCb,
   );
+  activeHandlers.push(handler);
   return { handler, publisher, onDisconnectCb, session: sessionEmitter, redis };
 }
 
@@ -223,6 +225,11 @@ function lastCallEnded(publisher: { publish: jest.Mock }):
 }
 
 describe('AgentCallHandler — lifecycle guards', () => {
+  afterEach(async () => {
+    for (const handler of activeHandlers.splice(0)) await handler.stop();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+
   it('publishes a single call.ended on concurrent stop() + RoomEvent.Disconnected', async () => {
     const { handler, publisher, onDisconnectCb } = makeHarness();
     await handler.start();

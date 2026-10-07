@@ -59,7 +59,7 @@ export class ReplayService {
         const enriched: InternalCallEvent = { ...internal, streamId };
         const mapped = mapInternalToServer(enriched);
         if (mapped) out.push(mapped);
-      } catch {
+      } catch { /* Skip malformed stored events without stopping the replay. */
       }
     }
     return out;

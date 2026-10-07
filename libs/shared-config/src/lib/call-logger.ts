@@ -30,7 +30,7 @@ function breadcrumb(
   if (!Sentry.isInitialized()) return;
   try {
     Sentry.addBreadcrumb({ category: 'call', type: 'default', level, message: evt, data });
-  } catch {
+  } catch { /* Telemetry failure must not interrupt an active call. */
   }
 }
 

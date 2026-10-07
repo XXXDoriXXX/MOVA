@@ -1,224 +1,64 @@
 name: CI
-
 on:
   push:
-    branches:
-      - master
-      - 'feat/**'
+    branches-ignore: [master]
   pull_request:
+  workflow_dispatch:
+  workflow_call:
 
-# Cancel in-flight runs on the same ref when a newer push comes in.
-# A rapid sequence of commits used to produce a queue of three or
-# four failing CI runs (each spamming an email and a GitHub
-# notification); now only the latest one survives.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 permissions:
-  actions: read
   contents: read
 
+env:
+  NX_DAEMON: 'false'
+  NX_NO_CLOUD: 'true'
+
 jobs:
-  # ─────────────────────────────────────────────────────────────
-  # Skip the whole pipeline for changes that don't touch code —
-  # README rewrites, .env.example tweaks, design files, etc.
-  # Skipped jobs still report green so branch-protection rules
-  # that require "CI / Lint" stay happy.
-  # ─────────────────────────────────────────────────────────────
-  changes:
-    name: Detect changed paths
+  verify:
+    name: Verify
     runs-on: ubuntu-latest
-    timeout-minutes: 2
-    outputs:
-      code: ${{ steps.filter.outputs.code }}
-      docker: ${{ steps.filter.outputs.docker }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            code:
-              - 'apps/**'
-              - 'libs/**'
-              - 'tools/**'
-              - 'package.json'
-              - 'package-lock.json'
-              - 'tsconfig*.json'
-              - 'jest.preset.js'
-              - 'nx.json'
-              - '.github/workflows/**'
-            docker:
-              - 'Dockerfile'
-              - 'docker-compose*.yml'
-              - 'apps/**'
-              - 'libs/**'
-              - 'package.json'
-              - 'package-lock.json'
-
-  # ─────────────────────────────────────────────────────────────
-  # Lint / test / build — split into three jobs so a fast lint
-  # failure doesn't make us wait for the 6-minute build before
-  # we see what's actually broken. Each job re-uses the cached
-  # node_modules from a single install step to avoid `npm ci`
-  # times-three (3x90s of cold install per run).
-  # ─────────────────────────────────────────────────────────────
-  install:
-    name: Install
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          filter: tree:0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-      - name: Install dependencies
-        run: npm ci --legacy-peer-deps
-
-  lint:
-    name: Lint
-    needs: install
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-      - run: npm ci --legacy-peer-deps
-      - name: Nx affected lint
-        # Only lint projects whose inputs actually changed. Falls back
-        # to full lint on push to master (where we don't have a SHA to
-        # diff against beyond HEAD~1).
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            npx nx affected -t lint --base=origin/${{ github.base_ref }} --head=HEAD
-          else
-            npx nx run-many -t lint
-          fi
-
-  test:
-    name: Test
-    needs: install
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16-alpine
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: mova_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 3s --health-retries 20
       redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+        image: redis:7.4-alpine
+        ports: ['6379:6379']
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
     env:
       NODE_ENV: test
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mova_test
-      JWT_SECRET: ci-test-jwt-secret-not-for-production
+      DATABASE_SSL: 'false'
+      JWT_SECRET: ci-only-jwt-secret-at-least-32-characters
       REDIS_HOST: localhost
-      REDIS_PORT: 6379
+      REDIS_PORT: '6379'
       REDIS_PASSWORD: ''
       LIVEKIT_URL: https://ci-placeholder.livekit.cloud
       LIVEKIT_API_KEY: ci-placeholder-key
       LIVEKIT_API_SECRET: ci-placeholder-secret
-      OPENAI_API_KEY: ci-placeholder-openai
       DEEPGRAM_API_KEY: ci-placeholder-deepgram
-      # SETTINGS_ENCRYPTION_KEY must be ≥16 chars even in tests
       SETTINGS_ENCRYPTION_KEY: ci-placeholder-settings-encryption-key
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-      - run: npm ci --legacy-peer-deps
-      - name: Nx affected test
+        with: {node-version-file: .nvmrc, cache: npm}
+      - run: npm ci
+      - run: npx nx run-many -t lint --parallel=2
+      - run: npx nx run-many -t test --parallel=2 --runInBand
+      - run: npx nx run admin:typecheck
+      - run: npx nx run-many -t build --projects=api-gateway,realtime-service,agent-worker,shared-database,admin --parallel=2
+      - name: Apply migrations to a fresh database, then repeat
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            npx nx affected -t test --passWithNoTests --base=origin/${{ github.base_ref }} --head=HEAD
-          else
-            npx nx run-many -t test --passWithNoTests
-          fi
-
-  build:
-    name: Build
-    needs: install
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-      - run: npm ci --legacy-peer-deps
-      - name: Nx affected build
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            npx nx affected -t build --base=origin/${{ github.base_ref }} --head=HEAD
-          else
-            npx nx run-many -t build
-          fi
-
-  # ─────────────────────────────────────────────────────────────
-  # Docker image build verification — kept matrixed so the three
-  # services build in parallel, with BuildKit cache mounts so a
-  # cold rebuild takes ~3 min instead of ~9. Skipped when the
-  # docker-relevant files didn't change (saves ~10 min of CI).
-  # ─────────────────────────────────────────────────────────────
-  docker-build:
-    name: Docker / ${{ matrix.app }}
-    needs: changes
-    if: needs.changes.outputs.docker == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      matrix:
-        app: [api-gateway, agent-worker, realtime-service]
-      fail-fast: false
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      - uses: docker/setup-buildx-action@v3
-      - name: Build (${{ matrix.app }})
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          push: false
-          tags: mova-back/${{ matrix.app }}:ci-${{ github.sha }}
-          build-args: |
-            APP_NAME=${{ matrix.app }}
-          cache-from: type=gha,scope=${{ matrix.app }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+          node node_modules/typeorm/cli.js migration:run -d dist/libs/shared-database/src/data-source.js
+          node node_modules/typeorm/cli.js migration:run -d dist/libs/shared-database/src/data-source.js
+      - name: Check deployment script
+        run: bash -n tools/server.sh tools/deploy-trigger.sh

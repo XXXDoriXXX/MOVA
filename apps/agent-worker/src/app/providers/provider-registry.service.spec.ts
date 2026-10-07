@@ -89,7 +89,7 @@ describe('ProviderRegistry', () => {
       for (let i = 0; i < 4; i++) {
         try {
           await registry.runLlm(LlmProviderEnum.OPENAI, async () => 'x');
-        } catch {
+        } catch { /* Expected provider failure used to exercise the circuit breaker. */
         }
       }
       const { provider, viaFallback } = registry.selectLlm(LlmProviderEnum.OPENAI);
@@ -165,7 +165,7 @@ describe('ProviderRegistry', () => {
         await registry.runLlm(LlmProviderEnum.OPENAI, async () => 'x', {
           conversationId: 'conv-1',
         });
-      } catch {
+      } catch { /* Expected provider failure used to exercise the circuit breaker. */
       }
 
       expect(incidents.save).toHaveBeenCalledWith(
@@ -189,7 +189,7 @@ describe('ProviderRegistry', () => {
       for (let i = 0; i < 3; i++) {
         try {
           await registry.runLlm(LlmProviderEnum.OPENAI, async () => 'x');
-        } catch {
+        } catch { /* Expected provider failure used to exercise the circuit breaker. */
         }
       }
       expect(incidents.save).toHaveBeenCalledTimes(1);

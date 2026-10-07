@@ -319,7 +319,7 @@ export class SuggestionsService {
           while (cleaned.length < 3) cleaned.push(cleaned[cleaned.length - 1]!);
           return cleaned.slice(0, 3);
         }
-      } catch {
+      } catch { /* Try the next JSON candidate before falling back. */
       }
     }
     this.logger.warn(

@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, QueryFailedError, Repository } from 'typeorm';
@@ -414,6 +414,7 @@ export class BillingService {
     const due = await this.subscriptions
       .createQueryBuilder('s')
       .innerJoinAndSelect('s.plan', 'p')
+      .innerJoin('s.user', 'u', 'u."deletedAt" IS NULL')
       .where(
         'p.monthlyPriceCents > 0 AND s.status = :active AND s."currentPeriodEnd" <= :now',
         { active: SubscriptionStatus.ACTIVE, now },
@@ -448,7 +449,8 @@ export class BillingService {
         })
         .where(
           '"userId" = :userId AND "currentPeriodEnd" = :oldEnd AND ' +
-            '"status" = :active AND "cancelAtPeriodEnd" = false',
+            '"status" = :active AND "cancelAtPeriodEnd" = false AND ' +
+            'EXISTS (SELECT 1 FROM "users" WHERE "id" = :userId AND "deletedAt" IS NULL)',
           {
             userId: sub.userId,
             oldEnd: sub.currentPeriodEnd,
@@ -913,6 +915,9 @@ export class BillingService {
   // Settle by mock-pay page (mock provider only) — the same effect a real
   // provider webhook would trigger.
   async settleMock(orderReference: string): Promise<void> {
+    if (this.provider.name !== 'mock') {
+      throw new NotFoundException();
+    }
     await this.settlePayment(orderReference, {
       approved: true,
       recToken: 'mock-rec-token',

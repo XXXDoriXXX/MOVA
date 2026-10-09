@@ -48,6 +48,8 @@ import {
   type AuditPage,
 } from './audit-log.service';
 import { AdminAccessGuard } from './admin-access.guard';
+import { AuthService, type PublicUser } from '../auth/auth.service';
+import { RegisterDto } from '../auth/dto/auth.schemas';
 import { TelemetryService } from '../telemetry/telemetry.service';
 import { findKnownSetting } from './settings/known-settings';
 import { ProviderProbeService } from './settings/provider-probe.service';
@@ -70,7 +72,15 @@ export class AdminController {
     private readonly settings: SettingsService,
     private readonly probe: ProviderProbeService,
     private readonly telemetry: TelemetryService,
+    private readonly auth: AuthService,
   ) {}
+
+  @Post('beta-users')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Create an approved beta tester (beta access must be enabled)' })
+  createBetaTester(@Body() dto: RegisterDto): Promise<PublicUser> {
+    return this.auth.createBetaTester(dto);
+  }
 
   @Get('client-errors')
   @ApiOperation({ summary: 'List recent client error reports (investigation)' })

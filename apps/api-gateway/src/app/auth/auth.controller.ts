@@ -179,7 +179,7 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @Throttle({ default: { limit: 3, ttl: 60_000 } })
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Soft-delete the account (anonymized after 30 days)' })
+  @ApiOperation({ summary: 'Soft-delete the account and revoke sessions' })
   async deleteMe(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: DeleteAccountDto,

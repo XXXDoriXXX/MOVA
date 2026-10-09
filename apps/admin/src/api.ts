@@ -145,6 +145,22 @@ export interface UsersPage {
   nextCursor: string | null;
 }
 
+export interface BetaTesterInput {
+  email: string;
+  name: string;
+  username: string;
+  password: string;
+}
+
+export function createBetaTester(input: BetaTesterInput): Promise<
+  Omit<AdminUser, 'isBlocked'> & { username: string; emailVerified: boolean }
+> {
+  return request('/admin/beta-users', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
 export function listUsers(params: {
   cursor?: string;
   limit?: number;

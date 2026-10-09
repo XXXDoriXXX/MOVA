@@ -49,6 +49,8 @@ export const envSchema = z.object({
   JWT_ACCESS_TTL: z.string().default('15m'),
   JWT_REFRESH_TTL: z.string().default('30d'),
 
+  BETA_ACCESS_ENABLED: envBool(false),
+
   ADMIN_PASSWORD: z.string().min(8).optional(),
   ADMIN_PASSWORD_HASH: z
     .string()

@@ -7,7 +7,7 @@ import './styles.css';
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={/^\/admin(?:\/|$)/.test(window.location.pathname) ? '/admin' : '/'}>
       <App />
     </BrowserRouter>
   </React.StrictMode>,

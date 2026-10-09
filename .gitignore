@@ -52,3 +52,6 @@ Thumbs.db
 .release.env.tmp
 .trigger.lock
 source.git/
+.beta.env
+.release.beta.env
+.previous-release.beta.env

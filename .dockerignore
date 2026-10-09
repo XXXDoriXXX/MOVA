@@ -59,6 +59,9 @@ logs
 # container env, not from a baked .env.
 .env
 .env.*
+.beta.env
+.release.beta.env
+.previous-release.beta.env
 !.env.example
 
 # Editor / linter / formatter configs that aren't needed at runtime

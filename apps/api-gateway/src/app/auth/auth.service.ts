@@ -6,6 +6,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -132,6 +133,25 @@ export class AuthService {
   // confirmation link, and issue NO session — the user must verify before they
   // can log in. So nobody gets a callable identity on an unowned email.
   async register(dto: RegisterDto): Promise<{ verificationRequired: true; email: string }> {
+    if (this.config.get('BETA_ACCESS_ENABLED', { infer: true })) {
+      throw new ForbiddenException('Closed beta access is required');
+    }
+    const user = await this.createRegisteredUser(dto);
+    await this.sendEmailVerification(user.id, user.email);
+    return { verificationRequired: true, email: user.email };
+  }
+
+  async createBetaTester(dto: RegisterDto): Promise<PublicUser> {
+    if (!this.config.get('BETA_ACCESS_ENABLED', { infer: true })) {
+      throw new NotFoundException();
+    }
+    const user = await this.createRegisteredUser(dto);
+    await this.usersService.markEmailVerified(user.id);
+    user.emailVerifiedAt = new Date();
+    return this.toPublic(user);
+  }
+
+  private async createRegisteredUser(dto: RegisterDto): Promise<User> {
     await this.passwordBreach.assertNotBreached(dto.password);
 
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
@@ -152,9 +172,7 @@ export class AuthService {
 
     this.signupsCounter.inc();
 
-    await this.sendEmailVerification(user.id, user.email);
-
-    return { verificationRequired: true, email: user.email };
+    return user;
   }
 
   // Re-send the verification link. Always succeeds (never reveals whether the
@@ -195,6 +213,7 @@ export class AuthService {
   }
 
   async googleSignIn(idToken: string, ctx: ClientContext): Promise<AuthResponse> {
+    const betaAccess = this.config.get('BETA_ACCESS_ENABLED', { infer: true });
     let identity;
     try {
       identity = await this.googleVerifier.verify(idToken);
@@ -211,8 +230,15 @@ export class AuthService {
 
     let user = await this.usersService.findByGoogleId(identity.googleId);
 
+    if (betaAccess && user && !user.emailVerifiedAt) {
+      throw new ForbiddenException('Closed beta access is required');
+    }
+
     if (!user) {
       const existing = await this.usersService.findByEmail(identity.email);
+      if (betaAccess && (!existing || !existing.emailVerifiedAt)) {
+        throw new ForbiddenException('Closed beta access is required');
+      }
       if (existing) {
         if (existing.isBlocked) {
           throw new UnauthorizedException('Account is blocked');

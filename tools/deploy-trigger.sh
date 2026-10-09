@@ -35,4 +35,10 @@ chmod 644 compose.server.yml.next
 chmod 755 tools/server.sh.next
 mv compose.server.yml.next compose.server.yml
 mv tools/server.sh.next tools/server.sh
+if [ -f .beta.env ]; then
+  mobile_sha="$(git --git-dir=source.git show "$tag:infra/server/mobile-web.ref")"
+  [[ "$mobile_sha" =~ ^[a-f0-9]{40}$ ]] || { echo 'Invalid pinned browser commit' >&2; exit 1; }
+  printf 'MOVA_MOBILE_WEB_TAG=%s\n' "$mobile_sha" > .beta.env.next
+  mv .beta.env.next .beta.env
+fi
 tools/server.sh deploy "$tag"

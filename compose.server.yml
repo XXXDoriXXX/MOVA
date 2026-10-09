@@ -117,6 +117,8 @@ services:
   web:
     image: ${MOVA_IMAGE_PREFIX:-ghcr.io/xxxdorixxx/mova}-web:${IMAGE_TAG:?Set IMAGE_TAG}
     restart: unless-stopped
+    environment:
+      MOVA_MOBILE_WEB_ENABLED: '${MOVA_MOBILE_WEB_ENABLED:-false}'
     ports: ['${MOVA_BIND_IP:-0.0.0.0}:${MOVA_PORT:-8794}:80']
     depends_on:
       api-gateway: {condition: service_healthy}
@@ -125,6 +127,19 @@ services:
     cpus: 0.5
     healthcheck:
       test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1/health/ready']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging: *logging
+
+  mobile-web:
+    profiles: [beta]
+    image: ghcr.io/xxxdorixxx/mova-browser:${MOVA_MOBILE_WEB_TAG:-not-enabled}
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.5
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1/']
       interval: 10s
       timeout: 5s
       retries: 12

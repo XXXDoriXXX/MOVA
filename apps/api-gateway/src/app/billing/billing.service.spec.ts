@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { QueryFailedError, Repository } from 'typeorm';
 
 import {
@@ -76,13 +77,20 @@ describe('BillingService', () => {
   let usage: jest.Mocked<Repository<UsageRecord>>;
   let payments: jest.Mocked<Repository<PaymentEvent>>;
   let svc: BillingService;
+  let provider: {
+    name: string;
+    createCheckout: jest.Mock;
+    verifyWebhook: jest.Mock;
+    webhookAck: jest.Mock;
+    chargeRecurring: jest.Mock;
+  };
 
   beforeEach(() => {
     plans = makeRepo<Plan>();
     subs = makeRepo<Subscription>();
     usage = makeRepo<UsageRecord>();
     payments = makeRepo<PaymentEvent>();
-    const provider = {
+    provider = {
       name: 'mock',
       createCheckout: jest.fn(),
       verifyWebhook: jest.fn(),
@@ -98,6 +106,86 @@ describe('BillingService', () => {
       provider as never,
       config as never,
     );
+  });
+
+  describe('settleMock', () => {
+    it('rejects mock checkout settlement for a real provider before touching payments', async () => {
+      provider.name = 'wayforpay';
+      const settle = jest.spyOn(svc, 'settlePayment').mockResolvedValue(undefined);
+
+      await expect(svc.settleMock('pending-real-order')).rejects.toBeInstanceOf(NotFoundException);
+
+      expect(settle).not.toHaveBeenCalled();
+      expect(payments.save).not.toHaveBeenCalled();
+      expect(subs.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('keeps mock checkout settlement available for the mock provider', async () => {
+      const settle = jest.spyOn(svc, 'settlePayment').mockResolvedValue(undefined);
+
+      await svc.settleMock('pending-mock-order');
+
+      expect(settle).toHaveBeenCalledWith('pending-mock-order', {
+        approved: true,
+        recToken: 'mock-rec-token',
+        providerTxnId: 'mock-txn',
+      });
+    });
+  });
+
+  describe('runSubscriptionRenewals', () => {
+    function prepareRenewal(claimed: number) {
+      const sub = makeSub({
+        plan: makePlan({ code: PlanCode.PLUS, monthlyPriceCents: 9900 }),
+        recToken: 'mandate',
+        cancelAtPeriodEnd: false,
+      });
+      const query = {
+        innerJoinAndSelect: jest.fn().mockReturnThis(),
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([sub]),
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: claimed }),
+      };
+      subs.createQueryBuilder.mockReturnValue(query as never);
+      provider.chargeRecurring.mockResolvedValue({ approved: true, providerTxnId: 'txn' });
+      return query;
+    }
+
+    it('only discovers subscriptions whose user has not been deleted', async () => {
+      const query = prepareRenewal(1);
+      query.getMany.mockResolvedValue([]);
+
+      expect(await svc.runSubscriptionRenewals()).toEqual({ renewed: 0, downgraded: 0 });
+      expect(query.innerJoin).toHaveBeenCalledWith('s.user', 'u', 'u."deletedAt" IS NULL');
+      expect(provider.chargeRecurring).not.toHaveBeenCalled();
+    });
+
+    it('does not charge if deletion prevents the renewal claim after discovery', async () => {
+      const query = prepareRenewal(0);
+
+      expect(await svc.runSubscriptionRenewals()).toEqual({ renewed: 0, downgraded: 0 });
+      expect(query.where).toHaveBeenLastCalledWith(
+        expect.stringContaining('EXISTS (SELECT 1 FROM "users" WHERE "id" = :userId AND "deletedAt" IS NULL)'),
+        expect.objectContaining({ userId: USER_ID }),
+      );
+      expect(provider.chargeRecurring).not.toHaveBeenCalled();
+      expect(payments.save).not.toHaveBeenCalled();
+    });
+
+    it('still renews an active user when its guarded claim succeeds', async () => {
+      prepareRenewal(1);
+
+      expect(await svc.runSubscriptionRenewals()).toEqual({ renewed: 1, downgraded: 0 });
+      expect(provider.chargeRecurring).toHaveBeenCalledTimes(1);
+      expect(provider.chargeRecurring).toHaveBeenCalledWith(expect.objectContaining({
+        recToken: 'mandate',
+        amountCents: 9900,
+      }));
+      expect(payments.save).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('nextMonthBoundary', () => {

@@ -11,11 +11,30 @@ if [ -f .release.env ]; then
   source .release.env
 fi
 export IMAGE_TAG="${IMAGE_TAG:-not-deployed}"
-compose=(docker compose --project-name "$project" --env-file .env.production -f compose.server.yml)
+
+configure_beta() {
+  local config="${1:-.beta.env}" line=''
+  export MOVA_MOBILE_WEB_ENABLED=false MOVA_MOBILE_WEB_TAG=not-enabled
+  if [ -s "$config" ]; then
+    line=$(cat "$config")
+    [[ "$line" =~ ^MOVA_MOBILE_WEB_TAG=([a-f0-9]{40})$ ]] || { echo 'Beta config must contain only MOVA_MOBILE_WEB_TAG=full-commit-SHA' >&2; return 1; }
+    export MOVA_MOBILE_WEB_TAG="${BASH_REMATCH[1]}" MOVA_MOBILE_WEB_ENABLED=true
+  fi
+  compose=(docker compose --project-name "$project" --env-file .env.production -f compose.server.yml)
+  if [ "$MOVA_MOBILE_WEB_ENABLED" = true ]; then compose+=(--profile beta); fi
+}
+
+restore_beta_on_failure() {
+  local result=$?
+  if [ "$result" -ne 0 ] && [ -f .release.env ]; then
+    if [ -s .release.beta.env ]; then cp .release.beta.env .beta.env; else rm -f .beta.env; fi
+  fi
+  return "$result"
+}
 
 case "$command" in
-  status) "${compose[@]}" ps ;;
-  logs) "${compose[@]}" logs --tail=100 -f "${@:2}" ;;
+  status) configure_beta; "${compose[@]}" ps ;;
+  logs) configure_beta; "${compose[@]}" logs --tail=100 -f "${@:2}" ;;
   deploy|rollback)
     command -v flock >/dev/null || { echo 'flock is required on the deployment host' >&2; exit 1; }
     exec 9>.deploy.lock
@@ -27,6 +46,8 @@ case "$command" in
     fi
     [[ "$tag" =~ ^[a-f0-9]{40}$ ]] || { echo 'Provide the full 40-character commit SHA' >&2; exit 1; }
     export IMAGE_TAG="$tag"
+    trap restore_beta_on_failure EXIT
+    if [ "$command" = rollback ]; then configure_beta .previous-release.beta.env; else configure_beta; fi
     "${compose[@]}" config --quiet
     if [ "$command" = deploy ]; then "${compose[@]}" pull; fi
     "${compose[@]}" up -d --wait --wait-timeout 120 postgres redis
@@ -35,11 +56,28 @@ case "$command" in
       "${compose[@]}" run --rm --no-deps migrations
     fi
     "${compose[@]}" up -d --no-deps --wait --wait-timeout 180 api-gateway realtime-service agent-worker
+    if [ "$MOVA_MOBILE_WEB_ENABLED" = true ]; then
+      "${compose[@]}" up -d --no-deps --wait --wait-timeout 90 mobile-web
+    fi
     # nginx resolves container names at startup; recreate it after an application swap.
     "${compose[@]}" up -d --no-deps --force-recreate --wait --wait-timeout 90 web
     "${compose[@]}" exec -T web wget -q -O /dev/null http://127.0.0.1/health/ready
     "${compose[@]}" exec -T web wget -q -O /dev/null 'http://realtime-service:3002/socket.io/?EIO=4&transport=polling'
-    [ ! -f .release.env ] || cp .release.env .previous-release.env
+    "${compose[@]}" exec -T web wget -q -O /dev/null http://127.0.0.1/admin/
+    if [ "$MOVA_MOBILE_WEB_ENABLED" = true ]; then
+      "${compose[@]}" exec -T web wget -q -O /dev/null http://127.0.0.1/
+    fi
+    if [ -f .release.env ]; then
+      cp .release.env .previous-release.env
+      if [ -f .release.beta.env ]; then cp .release.beta.env .previous-release.beta.env; else : > .previous-release.beta.env; fi
+    fi
+    if [ "$MOVA_MOBILE_WEB_ENABLED" = true ]; then
+      printf 'MOVA_MOBILE_WEB_TAG=%s\n' "$MOVA_MOBILE_WEB_TAG" > .release.beta.env
+      cp .release.beta.env .beta.env
+    else
+      : > .release.beta.env
+      rm -f .beta.env
+    fi
     printf 'IMAGE_TAG=%s\n' "$tag" > .release.env.tmp
     mv .release.env.tmp .release.env
     echo "Mova release $tag is healthy"

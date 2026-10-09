@@ -125,4 +125,7 @@ RUN npm run build --workspace=apps/admin
 
 FROM nginx:1.28-alpine AS web
 COPY infra/server/nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=admin-builder /app/dist/apps/admin /usr/share/nginx/html
+COPY infra/server/nginx.beta.conf /etc/nginx/mova-beta.conf
+COPY --chmod=755 infra/server/10-mova-beta.sh /docker-entrypoint.d/10-mova-beta.sh
+COPY --from=admin-builder /app/dist/apps/admin /usr/share/nginx/html/admin
+COPY --from=admin-builder /app/dist/apps/admin/index.html /usr/share/nginx/html/index.html

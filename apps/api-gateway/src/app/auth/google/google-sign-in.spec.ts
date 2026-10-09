@@ -1,7 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
-import { UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { getToken } from '@willsoto/nestjs-prometheus';
 
 import { PasswordBreachService } from '@mova-back/shared-auth';
@@ -42,6 +42,7 @@ function buildUser(overrides: Record<string, unknown> = {}) {
 }
 
 async function buildSubject(overrides: {
+  betaEnabled?: boolean;
   verifyResult?: Promise<GoogleIdentity>;
   findByGoogleId?: jest.Mock;
   findByEmail?: jest.Mock;
@@ -82,7 +83,7 @@ async function buildSubject(overrides: {
         useValue: { inc: jest.fn() },
       },
       { provide: GOOGLE_TOKEN_VERIFIER, useValue: verifier },
-      { provide: ConfigService, useValue: { get: jest.fn() } },
+      { provide: ConfigService, useValue: { get: jest.fn((key) => key === 'BETA_ACCESS_ENABLED' ? overrides.betaEnabled ?? false : undefined) } },
       { provide: EMAIL_SENDER, useValue: { send: jest.fn() } },
     ],
   }).compile();
@@ -97,6 +98,45 @@ async function buildSubject(overrides: {
 }
 
 describe('AuthService.googleSignIn', () => {
+  it('does not create an uninvited Google user during closed beta', async () => {
+    const { service, users, events, refreshTokens } = await buildSubject({ betaEnabled: true });
+    await expect(service.googleSignIn('valid-id-token', ctx)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(users.createFromGoogle).not.toHaveBeenCalled();
+    expect(users.linkGoogleId).not.toHaveBeenCalled();
+    expect(events.emitAsync).not.toHaveBeenCalled();
+    expect(refreshTokens.issue).not.toHaveBeenCalled();
+  });
+
+  it('does not approve an existing unverified public signup through Google during beta', async () => {
+    const { service, users, refreshTokens } = await buildSubject({
+      betaEnabled: true,
+      findByEmail: jest.fn().mockResolvedValue(buildUser({ emailVerifiedAt: null })),
+    });
+    await expect(service.googleSignIn('valid-id-token', ctx)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(users.linkGoogleId).not.toHaveBeenCalled();
+    expect(refreshTokens.issue).not.toHaveBeenCalled();
+  });
+
+  it('allows an already approved beta tester to sign in with matching verified Google identity', async () => {
+    const { service, users } = await buildSubject({
+      betaEnabled: true,
+      findByEmail: jest.fn().mockResolvedValue(buildUser({ emailVerifiedAt: new Date() })),
+    });
+    const response = await service.googleSignIn('valid-id-token', ctx);
+    expect(users.linkGoogleId).toHaveBeenCalledWith('user-1', 'google-sub-123');
+    expect(users.createFromGoogle).not.toHaveBeenCalled();
+    expect(response.tokens.accessToken).toBe('access-jwt');
+  });
+
+  it('does not issue a beta session to an unverified account already linked to Google', async () => {
+    const { service, refreshTokens } = await buildSubject({
+      betaEnabled: true,
+      findByGoogleId: jest.fn().mockResolvedValue(buildUser({ googleId: validIdentity.googleId, emailVerifiedAt: null })),
+    });
+    await expect(service.googleSignIn('valid-id-token', ctx)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(refreshTokens.issue).not.toHaveBeenCalled();
+  });
+
   it('creates a brand-new user when Google id is unknown and email is free', async () => {
     const created = buildUser({ id: 'fresh-1', googleId: 'google-sub-123' });
     const { service, users, events } = await buildSubject({
